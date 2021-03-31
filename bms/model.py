@@ -120,8 +120,8 @@ class DecoderWithAttention(nn.Module):
         h, c = self.init_hidden_state(encoder_out)  # (batch_size, decoder_dim)
         # set decode length by caption length - 1 because of omitting start token
         decode_lengths = (caption_lengths - 1).tolist()
-        predictions = torch.zeros(batch_size, self.max_len, vocab_size).to(self.device)
-        alphas = torch.zeros(batch_size, self.max_len, num_pixels).to(self.device)
+        predictions = torch.zeros(batch_size, max(decode_lengths), vocab_size).to(self.device)
+        alphas = torch.zeros(batch_size, max(decode_lengths), num_pixels).to(self.device)
         # predict sequence
         for t in range(max(decode_lengths)):
             batch_size_t = sum([l > t for l in decode_lengths])
