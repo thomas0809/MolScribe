@@ -1,14 +1,11 @@
 import os
 import sys
-import gc
 import re
 import time
 import random
-import shutil
 import pickle
-from pathlib import Path
-from contextlib import contextmanager
-from collections import defaultdict, Counter
+import argparse
+import collections
 import scipy as sp
 import numpy as np
 import pandas as pd
@@ -24,34 +21,28 @@ from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
 
-from albumentations import (
-    Compose, OneOf, Normalize, Resize, RandomResizedCrop, RandomCrop, HorizontalFlip, VerticalFlip, 
-    RandomBrightness, RandomContrast, RandomBrightnessContrast, Rotate, ShiftScaleRotate, Cutout, 
-    IAAAdditiveGaussianNoise, Transpose, Blur
-    )
+import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from albumentations import ImageOnlyTransform
 
 from bms.dataset import TrainDataset, TestDataset, bms_collate
 from bms.model import Encoder, DecoderWithAttention
-from bms.utils import init_logger, seed_torch, get_score, AverageMeter, asMinutes, timeSince
+from bms.utils import init_logger, seed_torch, get_score, AverageMeter, asMinutes, timeSince, FORMAT_INFO
 
 
 import warnings 
 warnings.filterwarnings('ignore')
 
 
-OUTPUT_DIR = "output/"
-
 class CFG:
     debug=False
     max_len=275
-    print_freq=1000
+    print_freq=500
     num_workers=4
     model_name='resnet34'
     size=224
     scheduler='CosineAnnealingLR' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
-    epochs=2 # not to exceed 9h
+    epochs=4 # not to exceed 9h
     #factor=0.2 # ReduceLROnPlateau
     #patience=4 # ReduceLROnPlateau
     #eps=1e-6 # ReduceLROnPlateau
@@ -69,9 +60,17 @@ class CFG:
     decoder_dim=512
     dropout=0.5
     seed=42
-    n_fold=5
-    trn_fold=[0] # [0, 1, 2, 3, 4]
+    n_fold=10
+    trn_fold=[0]
     train=True
+    
+
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--format', type=str, choices=['inchi','atomtok','spe'], default='inchi')
+    parser.add_argument('--save-path', type=str, default='output/')
+    args = parser.parse_args()
+    return args
 
 
 def train_fn(train_loader, encoder, decoder, criterion, 
@@ -121,7 +120,7 @@ def train_fn(train_loader, encoder, decoder, criterion,
         end = time.time()
         if step % CFG.print_freq == 0 or step == (len(train_loader)-1):
             print('Epoch: [{0}][{1}/{2}] '
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
+                  'Data {data_time.avg:.3f}s '
                   'Elapsed {remain:s} '
                   'Loss: {loss.val:.4f}({loss.avg:.4f}) '
                   'Encoder Grad: {encoder_grad_norm:.4f}  '
@@ -179,43 +178,64 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, criterion, device):
 
 def get_transforms(*, data):
     if data == 'train':
-        return Compose([
-            Resize(CFG.size, CFG.size),
-            Normalize(
+        return A.Compose([
+            A.Resize(CFG.size, CFG.size),
+            A.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225],
             ),
             ToTensorV2(),
         ])
+    
     elif data == 'valid':
-        return Compose([
-            Resize(CFG.size, CFG.size),
-            Normalize(
+        return A.Compose([
+            A.Resize(CFG.size, CFG.size),
+            A.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225],
             ),
             ToTensorV2(),
         ])
 
+    
+def get_model(tokenizer, device, load_path=None):
+    encoder = Encoder(CFG.model_name, pretrained=True)
+    decoder = DecoderWithAttention(attention_dim=CFG.attention_dim,
+                                   embed_dim=CFG.embed_dim,
+                                   decoder_dim=CFG.decoder_dim,
+                                   max_len=CFG.max_len,
+                                   vocab_size=len(tokenizer),
+                                   dropout=CFG.dropout,
+                                   device=device)
+    if load_path:
+        states = torch.load(os.path.join(load_path, f'{CFG.model_name}_fold0_best.pth'), 
+                            map_location=torch.device('cpu'))
+        encoder.load_state_dict(states['encoder'])
+        decoder.load_state_dict(states['decoder'])
+    encoder.to(device)
+    decoder.to(device)
+    if CFG.n_gpu > 1:
+        encoder = nn.DataParallel(encoder)
+        decoder = nn.DataParallel(decoder)
+    return encoder, decoder
+    
 
-def train_loop(folds, fold, tokenizer, LOGGER):
-
-    LOGGER.info(f"========== fold: {fold} training ==========")
+def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
+    
+    LOGGER = init_logger()
+    LOGGER.info(f"========== training ==========")
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+    os.makedirs(save_path, exist_ok=True)
+    
     # ====================================================
     # loader
     # ====================================================
-    trn_idx = folds[folds['fold'] != fold].index
-    val_idx = folds[folds['fold'] == fold].index
 
-    train_folds = folds.loc[trn_idx].reset_index(drop=True)
-    valid_folds = folds.loc[val_idx].reset_index(drop=True)
     valid_labels = valid_folds['InChI'].values
 
-    train_dataset = TrainDataset(train_folds, tokenizer, transform=get_transforms(data='train'))
-    valid_dataset = TestDataset(valid_folds, transform=get_transforms(data='valid'))
+    train_dataset = TrainDataset(args, train_folds, tokenizer, transform=get_transforms(data='train'))
+    valid_dataset = TestDataset(args, valid_folds, transform=get_transforms(data='valid'))
 
     train_loader = DataLoader(train_dataset, 
                               batch_size=CFG.batch_size, 
@@ -246,25 +266,14 @@ def train_loop(folds, fold, tokenizer, LOGGER):
     # ====================================================
     # model & optimizer
     # ====================================================
-    encoder = Encoder(CFG.model_name, pretrained=True)
-    encoder.to(device)
+    
+    encoder, decoder = get_model(tokenizer, device)
+    
     encoder_optimizer = Adam(encoder.parameters(), lr=CFG.encoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
     encoder_scheduler = get_scheduler(encoder_optimizer)
     
-    decoder = DecoderWithAttention(attention_dim=CFG.attention_dim,
-                                   embed_dim=CFG.embed_dim,
-                                   decoder_dim=CFG.decoder_dim,
-                                   max_len=CFG.max_len,
-                                   vocab_size=len(tokenizer),
-                                   dropout=CFG.dropout,
-                                   device=device)
-    decoder.to(device)
     decoder_optimizer = Adam(decoder.parameters(), lr=CFG.decoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
     decoder_scheduler = get_scheduler(decoder_optimizer)
-    
-    if CFG.n_gpu > 1:
-        encoder = nn.DataParallel(encoder)
-        decoder = nn.DataParallel(decoder)
 
     # ====================================================
     # loop
@@ -322,43 +331,87 @@ def train_loop(folds, fold, tokenizer, LOGGER):
                         'decoder_scheduler': decoder_scheduler.state_dict(), 
                         'text_preds': text_preds,
                        },
-                        OUTPUT_DIR+f'{CFG.model_name}_fold{fold}_best.pth')
+                       os.path.join(save_path, f'{CFG.model_name}_best.pth'))
 
 
+def inference(args, test, tokenizer, load_path):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    test_dataset = TestDataset(args, test, transform=get_transforms(data='valid'))
+    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=CFG.num_workers)
+    
+    encoder, decoder = get_model(tokenizer, device, load_path)
+    encoder.eval()
+    decoder.eval()
+    
+    text_preds = []
+    tk0 = tqdm(test_loader, total=len(test_loader))
+    for images in tk0:
+        images = images.to(device)
+        with torch.no_grad():
+            features = encoder(images)
+            predictions = decoder.predict(features, CFG.max_len, tokenizer)
+        predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
+        _text_preds = tokenizer.predict_captions(predicted_sequence)
+        text_preds.append(_text_preds)
+    text_preds = np.concatenate(text_preds)
+    
+    if args.format == 'inchi':
+        test['InChI'] = [f"InChI=1S/{text}" for text in text_preds]
+        test[['image_id', 'InChI']].to_csv(os.path.join(load_path, 'submission.csv'), index=False)
+    else:
+        field = FORMAT_INFO[args.format]['name']
+        test[field] = text_preds
+        test[['image_id', field]].to_csv(os.path.join(load_path, 'submission.csv'), index=False)
+    return text_preds
+            
 
 def get_train_file_path(image_id):
-    return "data/train/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id )
+    return "data/train/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
+
+def get_test_file_path(image_id):
+    return "data/test/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
 
 
 def main():
     
+    args = get_args()
+    
     seed_torch(seed=CFG.seed)
-    LOGGER = init_logger()
     
     CFG.n_gpu = torch.cuda.device_count()
     
-    train = pd.read_pickle('data/train2.pkl')
+    train = pd.read_pickle('data/train.pkl')
     train['file_path'] = train['image_id'].apply(get_train_file_path)
     print(f'train.shape: {train.shape}')
+    
+    test = pd.read_csv('data/sample_submission.csv')
+    test['file_path'] = test['image_id'].apply(get_test_file_path)
+    print(f'test.shape: {test.shape}')
     
     if CFG.debug:
         CFG.epochs = 1
         train = train.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
     
-    tokenizer = torch.load('data/tokenizer2.pth')
-    print(f"tokenizer.stoi: {tokenizer.stoi}")
+    tokenizer = torch.load('data/' + FORMAT_INFO[args.format]['tokenizer'])
+    # print(f"tokenizer.stoi: {tokenizer.stoi}")
     
     folds = train.copy()
     Fold = StratifiedKFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
-    for n, (train_index, val_index) in enumerate(Fold.split(folds, folds['InChI_length'])):
+    for n, (train_index, val_index) in enumerate(Fold.split(folds, [1] * len(folds))):
         folds.loc[val_index, 'fold'] = int(n)
     folds['fold'] = folds['fold'].astype(int)
     
     if CFG.train:
         # train
-        for fold in range(CFG.n_fold):
-            if fold in CFG.trn_fold:
-                train_loop(folds, fold, tokenizer, LOGGER)
+        for fold in CFG.trn_fold:
+            trn_idx = folds[folds['fold'] != fold].index
+            val_idx = folds[folds['fold'] == fold].index
+            train_folds = folds.loc[trn_idx].reset_index(drop=True)
+            valid_folds = folds.loc[val_idx].reset_index(drop=True)
+            train_loop(args, train_folds, valid_folds, tokenizer, args.save_path)
+    else:
+        inference(args, test, tokenizer, args.save_path)
     
 
 if __name__ == "__main__":

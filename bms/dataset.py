@@ -1,20 +1,23 @@
 import cv2
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
-import numpy as np
+import albumentations as A
 
-from bms.utils import PAD_ID
+from bms.utils import PAD_ID, FORMAT_INFO
 
 
 class TrainDataset(Dataset):
-    def __init__(self, df, tokenizer, transform=None):
+    def __init__(self, args, df, tokenizer, transform=None):
         super().__init__()
         self.df = df
         self.tokenizer = tokenizer
         self.file_paths = df['file_path'].values
-        self.labels = df['InChI_text'].values
+        field = FORMAT_INFO[args.format]['name']
+        self.labels = df[field].values
         self.transform = transform
+        self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
     
     def __len__(self):
         return len(self.df)
@@ -23,6 +26,9 @@ class TrainDataset(Dataset):
         file_path = self.file_paths[idx]
         image = cv2.imread(file_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32)
+        h, w, _ = image.shape
+        if h > w:
+            image = self.fix_transform(image=image)['image']
         if self.transform:
             augmented = self.transform(image=image)
             image = augmented['image']
@@ -34,11 +40,12 @@ class TrainDataset(Dataset):
     
 
 class TestDataset(Dataset):
-    def __init__(self, df, transform=None):
+    def __init__(self, args, df, transform=None):
         super().__init__()
         self.df = df
         self.file_paths = df['file_path'].values
         self.transform = transform
+        self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
     
     def __len__(self):
         return len(self.df)
@@ -47,6 +54,9 @@ class TestDataset(Dataset):
         file_path = self.file_paths[idx]
         image = cv2.imread(file_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32)
+        h, w, _ = image.shape
+        if h > w:
+            image = self.fix_transform(image=image)['image']
         if self.transform:
             augmented = self.transform(image=image)
             image = augmented['image']

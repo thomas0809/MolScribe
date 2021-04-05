@@ -3,3 +3,4 @@ data/
 output/
 *.log
 **/__pycache__
+submission.csv

@@ -49,30 +49,46 @@ def main():
     # ====================================================
     train = pd.read_csv('data/train_labels.csv')
     print(f'train.shape: {train.shape}')
+    
     # ====================================================
     # preprocess train.csv
     # ====================================================
     train['InChI_1'] = train['InChI'].progress_apply(lambda x: x.split('/')[1])
     train['InChI_text'] = train['InChI_1'].progress_apply(split_form) + ' ' + \
                             train['InChI'].apply(lambda x: '/'.join(x.split('/')[2:])).progress_apply(split_form2).values
+    
+    # ====================================================
+    # SMILES
+    # ====================================================
+    smiles = pd.read_csv('data/train_smiles.csv')
+    train['SMILES'] = smiles['smiles']
+    smiles_atomtok = pd.read_csv('data/train_smiles_atomtok.csv')
+    train['SMILES_atomtok'] = smiles_atomtok['smiles']
+    smiles_spe = pd.read_csv('data/train_smiles_spe_chembl.csv')
+    train['SMILES_spe'] = smiles_spe['smiles']
+    
     # ====================================================
     # create tokenizer
     # ====================================================
     tokenizer = Tokenizer()
     tokenizer.fit_on_texts(train['InChI_text'].values)
-    torch.save(tokenizer, 'data/tokenizer2.pth')
-    print('Saved tokenizer')
-    # ====================================================
-    # preprocess train.csv
-    # ====================================================
-    lengths = []
-    tk0 = tqdm(train['InChI_text'].values, total=len(train))
-    for text in tk0:
-        seq = tokenizer.text_to_sequence(text)
-        length = len(seq) - 2
-        lengths.append(length)
-    train['InChI_length'] = lengths
-    train.to_pickle('data/train2.pkl')
+    torch.save(tokenizer, 'data/tokenizer_inchi.pth')
+    print('Saved tokenizer_inchi')
+    print(f"tokenizer.stoi: {tokenizer.stoi}")
+    
+    tokenizer = Tokenizer()
+    tokenizer.fit_on_texts(train['SMILES_atomtok'].values)
+    torch.save(tokenizer, 'data/tokenizer_smiles_atomtok.pth')
+    print('Saved tokenizer_smiles_atomtok')
+    print(f"tokenizer.stoi: {tokenizer.stoi}")
+    
+    tokenizer = Tokenizer()
+    tokenizer.fit_on_texts(train['SMILES_spe'].values)
+    torch.save(tokenizer, 'data/tokenizer_smiles_spe.pth')
+    print('Saved tokenizer_smiles_spe')
+    print(f"tokenizer.stoi: {tokenizer.stoi}")
+
+    train.to_pickle('data/train.pkl')
     print('Saved preprocessed train.pkl')
 
 

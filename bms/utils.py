@@ -7,6 +7,22 @@ import time
 import Levenshtein
 
 
+FORMAT_INFO = {
+    "inchi": {
+        "name": "InChI_text",
+        "tokenizer": "tokenizer_inchi.pth"
+    },
+    "atomtok": {
+        "name": "SMILES_atomtok",
+        "tokenizer": "tokenizer_smiles_atomtok.pth"
+    },
+    "spe": {
+        "name": "SMILES_spe",
+        "tokenizer": "tokenizer_smiles_spe.pth"
+    }
+}
+
+
 def get_score(y_true, y_pred):
     scores = []
     for true, pred in zip(y_true, y_pred):
@@ -36,7 +52,7 @@ def seed_torch(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-    
+
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
