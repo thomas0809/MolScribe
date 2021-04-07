@@ -27,7 +27,7 @@ from albumentations import ImageOnlyTransform
 
 from bms.dataset import TrainDataset, TestDataset, bms_collate
 from bms.model import Encoder, DecoderWithAttention
-from bms.utils import init_logger, seed_torch, get_score, AverageMeter, asMinutes, timeSince, FORMAT_INFO
+from bms.utils import init_logger, seed_torch, get_score, AverageMeter, timeSince, batch_convert_smiles_to_inchi, FORMAT_INFO
 
 
 import warnings 
@@ -42,11 +42,8 @@ class CFG:
     model_name='resnet34'
     size=224
     scheduler='CosineAnnealingLR' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
-    epochs=4 # not to exceed 9h
-    #factor=0.2 # ReduceLROnPlateau
-    #patience=4 # ReduceLROnPlateau
-    #eps=1e-6 # ReduceLROnPlateau
-    T_max=4 # CosineAnnealingLR
+    epochs=6 # not to exceed 9h
+    T_max=6 # CosineAnnealingLR
     #T_0=4 # CosineAnnealingWarmRestarts
     encoder_lr=1e-4
     decoder_lr=4e-4
@@ -62,13 +59,14 @@ class CFG:
     seed=42
     n_fold=10
     trn_fold=[0]
-    train=True
     
 
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--format', type=str, choices=['inchi','atomtok','spe'], default='inchi')
     parser.add_argument('--save-path', type=str, default='output/')
+    parser.add_argument('--do-train', action='store_true')
+    parser.add_argument('--do-test', action='store_true')
     args = parser.parse_args()
     return args
 
@@ -208,7 +206,7 @@ def get_model(tokenizer, device, load_path=None):
                                    dropout=CFG.dropout,
                                    device=device)
     if load_path:
-        states = torch.load(os.path.join(load_path, f'{CFG.model_name}_fold0_best.pth'), 
+        states = torch.load(os.path.join(load_path, f'{CFG.model_name}_best.pth'), 
                             map_location=torch.device('cpu'))
         encoder.load_state_dict(states['encoder'])
         decoder.load_state_dict(states['decoder'])
@@ -232,7 +230,11 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
     # loader
     # ====================================================
 
-    valid_labels = valid_folds['InChI'].values
+    if args.format == 'inchi':
+        valid_labels = valid_folds['InChI'].values
+    else:
+        valid_labels = valid_folds['SMILES'].values
+        valid_inchi = valid_folds['InChI'].values
 
     train_dataset = TrainDataset(args, train_folds, tokenizer, transform=get_transforms(data='train'))
     valid_dataset = TestDataset(args, valid_folds, transform=get_transforms(data='valid'))
@@ -294,12 +296,17 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
 
         # eval
         text_preds = valid_fn(valid_loader, encoder, decoder, tokenizer, criterion, device)
-        text_preds = [f"InChI=1S/{text}" for text in text_preds]
+        if args.format == 'inchi':
+            text_preds = [f"InChI=1S/{text}" for text in text_preds]
+            score = get_score(valid_labels, text_preds)
+        else:
+            pred_inchi, r_success = batch_convert_smiles_to_inchi(text_preds)
+            LOGGER.info(f'Epoch {epoch+1} - SMILES to InChI: {r_success:.4f}')
+            smiles_score = get_score(valid_labels, text_preds)
+            score = get_score(valid_inchi, pred_inchi)
+            
         LOGGER.info(f"labels: {valid_labels[:5]}")
         LOGGER.info(f"preds: {text_preds[:5]}")
-        
-        # scoring
-        score = get_score(valid_labels, text_preds)
         
         if isinstance(encoder_scheduler, ReduceLROnPlateau):
             encoder_scheduler.step(score)
@@ -319,6 +326,8 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
 
         LOGGER.info(f'Epoch {epoch+1} - avg_train_loss: {avg_loss:.4f}  time: {elapsed:.0f}s')
         LOGGER.info(f'Epoch {epoch+1} - Score: {score:.4f}')
+        if args.format != 'inchi':
+            LOGGER.info(f'Epoch {epoch+1} - SMILES Score: {smiles_score:.4f}')
         
         if score < best_score:
             best_score = score
@@ -360,9 +369,16 @@ def inference(args, test, tokenizer, load_path):
         test['InChI'] = [f"InChI=1S/{text}" for text in text_preds]
         test[['image_id', 'InChI']].to_csv(os.path.join(load_path, 'submission.csv'), index=False)
     else:
+        # SMILES
         field = FORMAT_INFO[args.format]['name']
         test[field] = text_preds
-        test[['image_id', field]].to_csv(os.path.join(load_path, 'submission.csv'), index=False)
+        test[['image_id', field]].to_csv(os.path.join(load_path, 'prediction.csv'), index=False)
+        # InChI
+        print('Converting SMILES to InChI ...')
+        inchi_list, r_success = batch_convert_smiles_to_inchi(text_preds)
+        print(f'SMILES to InChI success ratio: {r_success:.4f}')
+        test['InChI'] = inchi_list
+        test[['image_id', 'InChI']].to_csv(os.path.join(load_path, 'submission.csv'), index=False)
     return text_preds
             
 
@@ -402,7 +418,7 @@ def main():
         folds.loc[val_index, 'fold'] = int(n)
     folds['fold'] = folds['fold'].astype(int)
     
-    if CFG.train:
+    if args.do_train:
         # train
         for fold in CFG.trn_fold:
             trn_idx = folds[folds['fold'] != fold].index
@@ -410,7 +426,8 @@ def main():
             train_folds = folds.loc[trn_idx].reset_index(drop=True)
             valid_folds = folds.loc[val_idx].reset_index(drop=True)
             train_loop(args, train_folds, valid_folds, tokenizer, args.save_path)
-    else:
+    
+    if args.do_test:
         inference(args, test, tokenizer, args.save_path)
     
 

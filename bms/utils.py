@@ -4,7 +4,11 @@ import numpy as np
 import torch
 import math
 import time
+import multiprocessing
 import Levenshtein
+import rdkit
+import rdkit.Chem as Chem
+rdkit.RDLogger.DisableLog('rdApp.*')
 
 
 FORMAT_INFO = {
@@ -21,6 +25,24 @@ FORMAT_INFO = {
         "tokenizer": "tokenizer_smiles_spe.pth"
     }
 }
+
+
+def convert_smiles_to_inchi(smiles):
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        inchi = Chem.MolToInchi(mol)
+    except:
+        inchi = None
+    return inchi
+
+
+def batch_convert_smiles_to_inchi(smiles_list, num_workers=8):
+    with multiprocessing.Pool(num_workers) as p:
+        inchi_list = p.map(convert_smiles_to_inchi, smiles_list)
+    n_success = sum([x is not None for x in inchi_list])
+    r_success = n_success / len(inchi_list)
+    inchi_list = [x if x else 'InChI=1S/H2O/h1H2' for x in inchi_list]
+    return inchi_list, r_success
 
 
 def get_score(y_true, y_pred):
