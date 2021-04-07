@@ -20,8 +20,8 @@ class Encoder(nn.Module):
         features = self.cnn(x)
         features = features.permute(0, 2, 3, 1)
         return features
-    
-    
+
+
 class Attention(nn.Module):
     """
     Attention network for calculate attention value
