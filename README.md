@@ -26,5 +26,26 @@ This will generate `train.pkl` and tokenizers.
 
 ## Train
 ```
-CUDA_VISIBLE_DEVICES=0 python train.py --format atomtok --save-path output/ --do-train --do-test
+CUDA_VISIBLE_DEVICES=0 python train.py \
+  --format atomtok \
+  --save-path output/ \
+  --do-train \
+  --do-test
 ```
+
+## TODO:
+- [x] Inference
+
+- [ ] Encoder
+  - [x] CNN
+  - [x] ResNet
+  - [ ] Spatial Transformer
+  - [ ] Pre-training
+
+- [ ] Decoder
+  - [x] Output format: InChI vs. SMILES (atomtok vs. BPE)
+  - [x] Attentional LSTM
+  - [ ] Transformer (sub-molecule structure)
+  - [ ] Pre-trained CLIP as reranker
+
+- [ ] MolVec Baseline
