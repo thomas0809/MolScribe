@@ -197,7 +197,7 @@ def get_transforms(*, data):
 
     
 def get_model(tokenizer, device, load_path=None):
-    encoder = Encoder(CFG.model_name, pretrained=False)
+    encoder = Encoder(CFG.model_name, pretrained=True)
     decoder = DecoderWithAttention(attention_dim=CFG.attention_dim,
                                    embed_dim=CFG.embed_dim,
                                    decoder_dim=CFG.decoder_dim,
