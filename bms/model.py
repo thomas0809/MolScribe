@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import timm
+import math
 
 
 class Encoder(nn.Module):
@@ -69,11 +70,10 @@ class DecoderWithAttention(nn.Module):
         self.decoder_dim = decoder_dim
         self.max_len = max_len
         self.vocab_size = vocab_size
-        self.dropout = dropout
         self.device = device
         self.attention = Attention(encoder_dim, decoder_dim, attention_dim)  # attention network
         self.embedding = nn.Embedding(vocab_size, embed_dim)  # embedding layer
-        self.dropout = nn.Dropout(p=self.dropout)
+        self.dropout = nn.Dropout(p=dropout)
         self.decode_step = nn.LSTMCell(embed_dim + encoder_dim, decoder_dim, bias=True)  # decoding LSTMCell
         self.init_h = nn.Linear(encoder_dim, decoder_dim)  # linear layer to find initial hidden state of LSTMCell
         self.init_c = nn.Linear(encoder_dim, decoder_dim)  # linear layer to find initial cell state of LSTMCell
@@ -163,3 +163,96 @@ class DecoderWithAttention(nn.Module):
                 break
             embeddings = self.embedding(torch.argmax(preds, -1))
         return predictions
+
+
+class PositionalEncoding(nn.Module):
+    """
+    Position encoding used with Transformer
+    """
+    def __init__(self, decoder_dim, max_len, dropout=0.1):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, decoder_dim)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, decoder_dim, 2).float() *
+                             -(math.log(10000.0) / decoder_dim))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:x.size(0), :]
+        return self.dropout(x)
+
+
+class DecoderWithTransformer(nn.Module):
+    """
+    Decoder network with Transformer.
+    """
+    def __init__(self, d_model, n_head, num_layers, max_len, vocab_size, device, dropout):
+        super(DecoderWithTransformer, self).__init__()
+
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.pos_encoder = PositionalEncoding(d_model, max_len)
+        self.decoder_layer = nn.TransformerDecoderLayer(d_model=d_model, nhead=n_head)
+        self.transformer_decoder = nn.TransformerDecoder(self.decoder_layer, num_layers=num_layers)
+        self.fc = nn.Linear(d_model, vocab_size)
+
+        self.d_model = d_model
+        self.max_len = max_len
+        self.device = device
+
+    def init_weights(self):
+        init_range = 0.1
+        self.embedding.weight.data.uniform_(-init_range, init_range)
+        self.fc.bias.data.fill_(0)
+        self.fc.weight.data.uniform_(-init_range, init_range)
+
+    def generate_square_subsequent_mask(self, sz):
+        """
+        Generate a square mask for the sequence.
+        The masked positions are filled with float('-inf').
+        Unmasked positions are filled with float(0.0).
+        """
+        mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        return mask
+
+    def forward(self, memory, tgt, tgt_mask=None):
+        """
+        :param memory: output of encoder network (batch_size, H, W, C)
+        :param tgt: target sequence of token indexes (batch_size, T)
+        :param tgt_mask: attention mask, generate on-the-fly if None
+        """
+        batch_size = memory.shape[0]
+        assert memory.shape[1] == self.d_model
+        memory = memory.view(batch_size, -1, memory.shape[-1]).permute(1, 0, 2)
+        tgt = self.pos_encoder(self.embedding(tgt)) # / torch.sqrt(self.d_model)
+        tgt = tgt.permute(1, 0, 2)
+
+        if tgt_mask is None:
+            tgt_mask = self.generate_square_subsequent_mask(tgt.shape[1])
+        output = self.transformer_decoder(tgt, memory, tgt_mask=tgt_mask)
+        output = self.fc(output) # seq_len, batch_size, vocab_size
+
+        return output.permute(1, 0, 2)
+
+    def predict(self, memory, tokenizer):
+        batch_size = memory.shape[0]
+        memory = memory.view(batch_size, -1, memory.shape[-1]).permute(1, 0, 2)
+
+        preds = torch.zeros((batch_size, self.max_len, dtype=torch.long)).to(self.device)
+        preds[:, 0] = torch.tensor([tokenizer.stoi["<sos>"]] * batch_size).to(self.device)
+        for i in range(1, self.max_len):
+            # there should be a smarter way of doing this
+            # we should definitely cache the encodings of the past tokens
+            pred = self.embedding(preds[:,:i].transpose(0, 1))
+            pred = self.pos_encoder(pred)
+            output = self.transformer_decoder(pred, memory)
+            output = self.fc(output)
+            preds[:, i]= output[-1].argmax(1).reshape(-1)
+
+        return preds
+

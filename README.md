@@ -10,11 +10,12 @@ Required data
 
 ```
 mkdir data; cd data
-ln -s /data/rsg/chemistry/jiang_guo/chemai/literature-ie/bms-kaggle/data/train ./train
-ln -s /data/rsg/chemistry/jiang_guo/chemai/literature-ie/bms-kaggle/data/train_labels.csv ./train_labels.csv
-ln -s /data/rsg/chemistry/jiang_guo/chemai/literature-ie/bms-kaggle/data/train_labels.csv ./train_smiles.csv
-ln -s /data/rsg/chemistry/jiang_guo/chemai/literature-ie/bms-kaggle/data/train_labels.csv ./train_smiles_atomtok.csv
-ln -s /data/rsg/chemistry/jiang_guo/chemai/literature-ie/bms-kaggle/data/train_labels.csv ./train_smiles_spe_chembl.csv
+export BMS_DATA=/data/rsg/chemistry/jiang_guo/chemai/literature-ie/bms-kaggle/data
+ln -s ${BMS_DATA}/train ./train
+ln -s ${BMS_DATA}/train_labels.csv ./train_labels.csv
+ln -s ${BMS_DATA}/train_labels.csv ./train_smiles.csv
+ln -s ${BMS_DATA}/train_labels.csv ./train_smiles_atomtok.csv
+ln -s ${BMS_DATA}/train_labels.csv ./train_smiles_spe_chembl.csv
 ```
 
 ## Preprocess
