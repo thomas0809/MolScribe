@@ -26,7 +26,7 @@ from albumentations.pytorch import ToTensorV2
 from albumentations import ImageOnlyTransform
 
 from bms.dataset import TrainDataset, TestDataset, bms_collate
-from bms.model import Encoder, DecoderWithAttention
+from bms.model import Encoder, DecoderWithAttention, DecoderWithTransformer
 from bms.utils import init_logger, seed_torch, get_score, AverageMeter, timeSince, batch_convert_smiles_to_inchi, FORMAT_INFO
 
 
@@ -40,7 +40,7 @@ class CFG:
     print_freq=500
     num_workers=4
     encoder='resnet34'
-    decoder='lstm'
+    decoder='transformer'
     size=224
     scheduler='CosineAnnealingLR' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
     epochs=6 # not to exceed 9h
@@ -60,6 +60,8 @@ class CFG:
     seed=42
     n_fold=10
     trn_fold=[0]
+    n_selfattn_heads=8
+    num_transformer_layers=4
 
 
 def get_args():
@@ -91,15 +93,8 @@ def train_fn(train_loader, encoder, decoder, criterion,
         label_lengths = label_lengths.to(device)
         batch_size = images.size(0)
         features = encoder(images)
-        predictions, caps_sorted, decode_lengths = decoder(features, labels, label_lengths)
-        targets = caps_sorted[:, 1:]
-        # multi-gpu: needs to sort
-        decode_lengths, sort_ind = decode_lengths.sort(dim=0, descending=True)
-        predictions = predictions[sort_ind]
-        targets = targets[sort_ind]
-        decode_lengths = decode_lengths.tolist()
-        predictions = pack_padded_sequence(predictions, decode_lengths, batch_first=True).data
-        targets = pack_padded_sequence(targets, decode_lengths, batch_first=True).data
+        predictions = decoder(features, labels)
+
         loss = criterion(predictions, targets)
         # record loss
         losses.update(loss.item(), batch_size)
@@ -199,13 +194,17 @@ def get_transforms(*, data):
 
 def get_model(tokenizer, device, load_path=None):
     encoder = Encoder(CFG.encoder, pretrained=True)
-    decoder = DecoderWithAttention(attention_dim=CFG.attention_dim,
-                                   embed_dim=CFG.embed_dim,
-                                   decoder_dim=CFG.decoder_dim,
-                                   max_len=CFG.max_len,
-                                   vocab_size=len(tokenizer),
-                                   dropout=CFG.dropout,
-                                   device=device)
+    # d_model has to be the same dimension with embedding_dim (and attention_dim)
+    # which is a restriction
+    d_model = CFG.embedding_dim
+    decoder = DecoderWithTransformer(d_model=d_model,
+                                     n_head=CFG.n_selfattn_heads,
+                                     num_layers=CFG.num_transformer_layers,
+                                     max_len=CFG.max_len,
+                                     vocab_size=len(tokenizer),
+                                     dropout=CFG.dropout,
+                                     device=device)
+
     if load_path:
         states = torch.load(
             os.path.join(load_path, f'{CFG.encoder}_{CFG.decoder}_best.pth'),
