@@ -35,7 +35,7 @@ warnings.filterwarnings('ignore')
 
 
 class CFG:
-    debug=False
+    debug=True
     max_len=120
     print_freq=500
     num_workers=4
@@ -54,7 +54,7 @@ class CFG:
     gradient_accumulation_steps=1
     max_grad_norm=5
     attention_dim=256
-    embed_dim=256
+    embed_dim=512
     decoder_dim=512
     dropout=0.5
     seed=42
@@ -95,7 +95,10 @@ def train_fn(train_loader, encoder, decoder, criterion,
         features = encoder(images)
         predictions = decoder(features, labels)
 
-        loss = criterion(predictions, targets)
+        loss = criterion(
+            predictions.reshape(-1, predictions.shape[-1]),
+            labels.view(-1)
+        )
         # record loss
         losses.update(loss.item(), batch_size)
         if CFG.gradient_accumulation_steps > 1:
@@ -196,7 +199,7 @@ def get_model(tokenizer, device, load_path=None):
     encoder = Encoder(CFG.encoder, pretrained=True)
     # d_model has to be the same dimension with embedding_dim (and attention_dim)
     # which is a restriction
-    d_model = CFG.embedding_dim
+    d_model = CFG.embed_dim
     decoder = DecoderWithTransformer(d_model=d_model,
                                      n_head=CFG.n_selfattn_heads,
                                      num_layers=CFG.num_transformer_layers,

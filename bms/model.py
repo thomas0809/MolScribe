@@ -169,14 +169,14 @@ class PositionalEncoding(nn.Module):
     """
     Position encoding used with Transformer
     """
-    def __init__(self, decoder_dim, max_len, dropout=0.1):
+    def __init__(self, d_model, max_len, dropout=0.1):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
-        pe = torch.zeros(max_len, decoder_dim)
+        pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, decoder_dim, 2).float() *
-                             -(math.log(10000.0) / decoder_dim))
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() *
+                             -(math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
@@ -227,13 +227,14 @@ class DecoderWithTransformer(nn.Module):
         :param tgt_mask: attention mask, generate on-the-fly if None
         """
         batch_size = memory.shape[0]
-        assert memory.shape[1] == self.d_model
+        assert memory.shape[-1] == self.d_model
         memory = memory.view(batch_size, -1, memory.shape[-1]).permute(1, 0, 2)
-        tgt = self.pos_encoder(self.embedding(tgt)) # / torch.sqrt(self.d_model)
-        tgt = tgt.permute(1, 0, 2)
+        tgt = tgt.transpose(1, 0)
+        tgt = self.embedding(tgt)
+        tgt = self.pos_encoder(tgt) # / torch.sqrt(self.d_model)
 
         if tgt_mask is None:
-            tgt_mask = self.generate_square_subsequent_mask(tgt.shape[1])
+            tgt_mask = self.generate_square_subsequent_mask(tgt.shape[0]).to(self.device)
         output = self.transformer_decoder(tgt, memory, tgt_mask=tgt_mask)
         output = self.fc(output) # seq_len, batch_size, vocab_size
 
@@ -243,7 +244,7 @@ class DecoderWithTransformer(nn.Module):
         batch_size = memory.shape[0]
         memory = memory.view(batch_size, -1, memory.shape[-1]).permute(1, 0, 2)
 
-        preds = torch.zeros((batch_size, self.max_len, dtype=torch.long)).to(self.device)
+        preds = torch.zeros((batch_size, self.max_len), dtype=torch.long).to(self.device)
         preds[:, 0] = torch.tensor([tokenizer.stoi["<sos>"]] * batch_size).to(self.device)
         for i in range(1, self.max_len):
             # there should be a smarter way of doing this
