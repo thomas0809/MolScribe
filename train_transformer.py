@@ -153,7 +153,7 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, criterion, device):
         batch_size = images.size(0)
         with torch.no_grad():
             features = encoder(images)
-            predictions = decoder.predict(features, CFG.max_len, tokenizer)
+            predictions = decoder.predict(features, tokenizer)
         predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
         _text_preds = tokenizer.predict_captions(predicted_sequence)
         text_preds.append(_text_preds)
@@ -365,7 +365,7 @@ def inference(args, test, tokenizer, load_path):
         images = images.to(device)
         with torch.no_grad():
             features = encoder(images)
-            predictions = decoder.predict(features, CFG.max_len, tokenizer)
+            predictions = decoder.predict(features, tokenizer)
         predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
         _text_preds = tokenizer.predict_captions(predicted_sequence)
         text_preds.append(_text_preds)
