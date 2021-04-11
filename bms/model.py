@@ -136,7 +136,7 @@ class DecoderWithAttention(nn.Module):
             alphas[:batch_size_t, t, :] = alpha
         decode_lengths = torch.Tensor(decode_lengths).to(self.device)
         return predictions, encoded_captions, decode_lengths
-    
+
     def predict(self, encoder_out, decode_lengths, tokenizer):
         batch_size = encoder_out.size(0)
         encoder_dim = encoder_out.size(-1)
@@ -200,6 +200,7 @@ class DecoderWithTransformer(nn.Module):
         self.transformer_decoder = nn.TransformerDecoder(self.decoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(d_model, vocab_size)
 
+        self.vocab_size = vocab_size
         self.d_model = d_model
         self.max_len = max_len
         self.device = device
@@ -235,6 +236,7 @@ class DecoderWithTransformer(nn.Module):
 
         if tgt_mask is None:
             tgt_mask = self.generate_square_subsequent_mask(tgt.shape[0]).to(self.device)
+
         output = self.transformer_decoder(tgt, memory, tgt_mask=tgt_mask)
         output = self.fc(output) # seq_len, batch_size, vocab_size
 
@@ -244,16 +246,17 @@ class DecoderWithTransformer(nn.Module):
         batch_size = memory.shape[0]
         memory = memory.view(batch_size, -1, memory.shape[-1]).permute(1, 0, 2)
 
-        preds = torch.zeros((batch_size, self.max_len), dtype=torch.long).to(self.device)
-        preds[:, 0] = torch.tensor([tokenizer.stoi["<sos>"]] * batch_size).to(self.device)
+        predictions = torch.zeros((batch_size, self.max_len), dtype=torch.long).to(self.device)
+        predictions[:, 0] = torch.tensor([tokenizer.stoi["<sos>"]] * batch_size).to(self.device)
         for i in range(1, self.max_len):
             # there should be a smarter way of doing this
             # we should definitely cache the encodings of the past tokens
-            pred = self.embedding(preds[:,:i].transpose(0, 1))
+            pred = self.embedding(predictions[:,:i].transpose(0, 1))
             pred = self.pos_encoder(pred)
             output = self.transformer_decoder(pred, memory)
             output = self.fc(output)
-            preds[:, i]= output[-1].argmax(1).reshape(-1)
 
-        return preds
+            predictions[:, i]= output[-1].argmax(1).reshape(-1)
+
+        return predictions
 

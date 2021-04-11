@@ -30,12 +30,12 @@ from bms.model import Encoder, DecoderWithAttention, DecoderWithTransformer
 from bms.utils import init_logger, seed_torch, get_score, AverageMeter, timeSince, batch_convert_smiles_to_inchi, FORMAT_INFO
 
 
-import warnings 
+import warnings
 warnings.filterwarnings('ignore')
 
 
 class CFG:
-    debug=True
+    debug=False
     max_len=120
     print_freq=500
     num_workers=4
@@ -153,9 +153,9 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, criterion, device):
         batch_size = images.size(0)
         with torch.no_grad():
             features = encoder(images)
-            predictions = decoder.predict(features, tokenizer)
-        predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
-        _text_preds = tokenizer.predict_captions(predicted_sequence)
+            predictions = decoder.predict(features, tokenizer).cpu().numpy()
+        # predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
+        _text_preds = tokenizer.predict_captions(predictions[:,1:])
         text_preds.append(_text_preds)
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -296,12 +296,25 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
         start_time = time.time()
 
         # train
-        avg_loss = train_fn(train_loader, encoder, decoder, criterion, 
-                            encoder_optimizer, decoder_optimizer, epoch, 
-                            encoder_scheduler, decoder_scheduler, device)
+        avg_loss = train_fn(train_loader,
+                            encoder,
+                            decoder,
+                            criterion,
+                            encoder_optimizer,
+                            decoder_optimizer,
+                            epoch,
+                            encoder_scheduler,
+                            decoder_scheduler,
+                            device)
 
         # eval
-        text_preds = valid_fn(valid_loader, encoder, decoder, tokenizer, criterion, device)
+        text_preds = valid_fn(valid_loader,
+                              encoder,
+                              decoder,
+                              tokenizer,
+                              criterion,
+                              device)
+
         if args.format == 'inchi':
             text_preds = [f"InChI=1S/{text}" for text in text_preds]
             score = get_score(valid_labels, text_preds)
@@ -365,9 +378,9 @@ def inference(args, test, tokenizer, load_path):
         images = images.to(device)
         with torch.no_grad():
             features = encoder(images)
-            predictions = decoder.predict(features, tokenizer)
-        predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
-        _text_preds = tokenizer.predict_captions(predicted_sequence)
+            predictions = decoder.predict(features, tokenizer).cpu().numpy()
+        # predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
+        _text_preds = tokenizer.predict_captions(predictions[:,1:])
         text_preds.append(_text_preds)
     text_preds = np.concatenate(text_preds)
 
@@ -386,7 +399,7 @@ def inference(args, test, tokenizer, load_path):
         test['InChI'] = inchi_list
         test[['image_id', 'InChI']].to_csv(os.path.join(load_path, 'submission.csv'), index=False)
     return text_preds
-            
+
 
 def get_train_file_path(image_id):
     return "data/train/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
