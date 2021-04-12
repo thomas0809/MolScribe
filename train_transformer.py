@@ -90,15 +90,13 @@ def train_fn(train_loader, encoder, decoder, criterion,
         data_time.update(time.time() - end)
         images = images.to(device)
         labels = labels.to(device)
-        label_lengths = label_lengths.to(device)
         batch_size = images.size(0)
         features = encoder(images)
         predictions = decoder(features, labels)
+        predictions = predictions.view(-1, predictions.shape[-1])
 
-        loss = criterion(
-            predictions.reshape(-1, predictions.shape[-1]),
-            labels.view(-1)
-        )
+        loss = criterion(predictions, labels.view(-1))
+
         # record loss
         losses.update(loss.item(), batch_size)
         if CFG.gradient_accumulation_steps > 1:
@@ -119,7 +117,7 @@ def train_fn(train_loader, encoder, decoder, criterion,
             print('Epoch: [{0}][{1}/{2}] '
                   'Data {data_time.avg:.3f}s '
                   'Elapsed {remain:s} '
-                  'Loss: {loss.val:.4f}({loss.avg:.4f}) '
+                  'Loss: {loss.val:.6f}({loss.avg:.6f}) '
                   'Encoder Grad: {encoder_grad_norm:.4f}  '
                   'Decoder Grad: {decoder_grad_norm:.4f}  '
                   #'Encoder LR: {encoder_lr:.6f}  '
@@ -425,8 +423,9 @@ def main():
     print(f'test.shape: {test.shape}')
 
     if CFG.debug:
-        CFG.epochs = 1
+        CFG.epochs = 4
         train = train.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
+        test = test.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
 
     tokenizer = torch.load('data/' + FORMAT_INFO[args.format]['tokenizer'])
     # print(f"tokenizer.stoi: {tokenizer.stoi}")

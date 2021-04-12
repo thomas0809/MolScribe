@@ -412,6 +412,7 @@ def main():
     if CFG.debug:
         CFG.epochs = 1
         train = train.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
+        test = test.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
 
     tokenizer = torch.load('data/' + FORMAT_INFO[args.format]['tokenizer'])
     # print(f"tokenizer.stoi: {tokenizer.stoi}")

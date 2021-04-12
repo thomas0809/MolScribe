@@ -200,6 +200,8 @@ class DecoderWithTransformer(nn.Module):
         self.transformer_decoder = nn.TransformerDecoder(self.decoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(d_model, vocab_size)
 
+        self.init_weights()  # initialize some layers with the uniform distribution
+
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.max_len = max_len
@@ -230,7 +232,8 @@ class DecoderWithTransformer(nn.Module):
         batch_size = memory.shape[0]
         assert memory.shape[-1] == self.d_model
         memory = memory.view(batch_size, -1, memory.shape[-1]).permute(1, 0, 2)
-        tgt = tgt.transpose(1, 0)
+
+        tgt = tgt.transpose(0, 1)
         tgt = self.embedding(tgt)
         tgt = self.pos_encoder(tgt) # / torch.sqrt(self.d_model)
 
@@ -240,7 +243,7 @@ class DecoderWithTransformer(nn.Module):
         output = self.transformer_decoder(tgt, memory, tgt_mask=tgt_mask)
         output = self.fc(output) # seq_len, batch_size, vocab_size
 
-        return output.permute(1, 0, 2)
+        return output.permute(1, 0, 2).contiguous()
 
     def predict(self, memory, tokenizer):
         batch_size = memory.shape[0]
@@ -256,7 +259,7 @@ class DecoderWithTransformer(nn.Module):
             output = self.transformer_decoder(pred, memory)
             output = self.fc(output)
 
-            predictions[:, i]= output[-1].argmax(1).reshape(-1)
+            predictions[:, i] = output[-1].argmax(1).reshape(-1)
 
         return predictions
 
