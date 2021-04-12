@@ -60,8 +60,8 @@ class CFG:
     seed=42
     n_fold=10
     trn_fold=[0]
-    n_selfattn_heads=8
-    num_transformer_layers=4
+    n_selfattn_heads=4
+    num_transformer_layers=1
 
 
 def get_args():
@@ -92,10 +92,11 @@ def train_fn(train_loader, encoder, decoder, criterion,
         labels = labels.to(device)
         batch_size = images.size(0)
         features = encoder(images)
-        predictions = decoder(features, labels)
-        predictions = predictions.view(-1, predictions.shape[-1])
+        predictions = decoder(features, labels[:, :-1])
+        predictions = predictions.reshape(-1, predictions.shape[-1])
 
-        loss = criterion(predictions, labels.view(-1))
+        targets = labels[:, 1:]
+        loss = criterion(predictions, targets.reshape(-1))
 
         # record loss
         losses.update(loss.item(), batch_size)

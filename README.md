@@ -13,9 +13,11 @@ mkdir data; cd data
 export BMS_DATA=/data/rsg/chemistry/jiang_guo/chemai/literature-ie/bms-kaggle/data
 ln -s ${BMS_DATA}/train ./train
 ln -s ${BMS_DATA}/train_labels.csv ./train_labels.csv
-ln -s ${BMS_DATA}/train_labels.csv ./train_smiles.csv
-ln -s ${BMS_DATA}/train_labels.csv ./train_smiles_atomtok.csv
-ln -s ${BMS_DATA}/train_labels.csv ./train_smiles_spe_chembl.csv
+ln -s ${BMS_DATA}/train_smiles_labels.csv ./train_smiles.csv
+ln -s ${BMS_DATA}/train_smiles_atomtok.csv ./train_smiles_atomtok.csv
+ln -s ${BMS_DATA}/train_smiles_spe_chembl.csv ./train_smiles_spe_chembl.csv
+ln -s ${BMS_DATA}/sample_submission.csv ./sample_submission.csv
+ln -s ${BMS_DATA}/extra_approved_InChIs.csv ./extra_approved_InChIs.csv
 ```
 
 ## Preprocess
@@ -40,6 +42,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
 - [ ] Encoder
   - [x] CNN
   - [x] ResNet
+  - [ ] Image Transformers (ViT, TNT, Deit, etc.)
   - [ ] Spatial Transformer
   - [ ] Pre-training
 
@@ -48,5 +51,6 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
   - [x] Attentional LSTM
   - [ ] Transformer (sub-molecule structure)
   - [ ] Pre-trained CLIP as reranker
+  - [ ] Extra set of InChIs (newly provided by organizers)
 
 - [ ] MolVec Baseline

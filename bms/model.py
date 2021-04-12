@@ -243,7 +243,7 @@ class DecoderWithTransformer(nn.Module):
         output = self.transformer_decoder(tgt, memory, tgt_mask=tgt_mask)
         output = self.fc(output) # seq_len, batch_size, vocab_size
 
-        return output.permute(1, 0, 2).contiguous()
+        return output.permute(1, 0, 2)
 
     def predict(self, memory, tokenizer):
         batch_size = memory.shape[0]
