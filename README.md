@@ -1,5 +1,9 @@
 # BMS
 
+## Documents
+[Presentation](https://docs.google.com/spreadsheets/d/1mBak3YB7iAUzhaTbrqkybi2RzqYKS07TRsSD0PA_ozE/edit#gid=0)
+[Experiment results](https://drive.google.com/file/d/1nqjjXtA-COamCz2O0bHV9DDuYc2ksbqf/view?usp=sharing)
+
 ## Data
 Required data
 - `data/train_labels.csv`
@@ -49,7 +53,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
 - [ ] Decoder
   - [x] Output format: InChI vs. SMILES (atomtok vs. BPE)
   - [x] Attentional LSTM
-  - [ ] Transformer (sub-molecule structure)
+  - [x] Transformer (sub-molecule structure)
   - [ ] Pre-trained CLIP as reranker
   - [ ] Extra set of InChIs (newly provided by organizers)
 
