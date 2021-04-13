@@ -41,7 +41,7 @@ class CFG:
     num_workers=4
     encoder='resnet34'
     decoder='transformer'
-    size=288
+    size=224
     scheduler='CosineAnnealingLR' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
     epochs=8 # not to exceed 9h
     T_max=6 # CosineAnnealingLR
@@ -60,8 +60,8 @@ class CFG:
     seed=42
     n_fold=10
     trn_fold=[0]
-    n_selfattn_heads=8
-    num_transformer_layers=4
+    n_selfattn_heads=4
+    num_transformer_layers=2
 
 
 def get_args():
