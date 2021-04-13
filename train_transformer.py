@@ -41,9 +41,9 @@ class CFG:
     num_workers=4
     encoder='resnet34'
     decoder='transformer'
-    size=224
+    size=288
     scheduler='CosineAnnealingLR' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
-    epochs=6 # not to exceed 9h
+    epochs=8 # not to exceed 9h
     T_max=6 # CosineAnnealingLR
     #T_0=4 # CosineAnnealingWarmRestarts
     encoder_lr=1e-4
@@ -60,8 +60,8 @@ class CFG:
     seed=42
     n_fold=10
     trn_fold=[0]
-    n_selfattn_heads=4
-    num_transformer_layers=1
+    n_selfattn_heads=8
+    num_transformer_layers=4
 
 
 def get_args():
@@ -199,17 +199,19 @@ def get_model(tokenizer, device, load_path=None):
     # d_model has to be the same dimension with embedding_dim (and attention_dim)
     # which is a restriction
     d_model = CFG.embed_dim
-    decoder = DecoderWithTransformer(d_model=d_model,
-                                     n_head=CFG.n_selfattn_heads,
-                                     num_layers=CFG.num_transformer_layers,
-                                     max_len=CFG.max_len,
-                                     vocab_size=len(tokenizer),
-                                     dropout=CFG.dropout,
-                                     device=device)
+    decoder = DecoderWithTransformer(
+                    d_model=d_model,
+                    n_head=CFG.n_selfattn_heads,
+                    num_layers=CFG.num_transformer_layers,
+                    max_len=CFG.max_len,
+                    vocab_size=len(tokenizer),
+                    dropout=CFG.dropout,
+                    device=device
+                )
 
     if load_path:
         states = torch.load(
-            os.path.join(load_path, f'{CFG.encoder}_{CFG.decoder}_best.pth'),
+            os.path.join(load_path, f'best_model.pth'),
             map_location=torch.device('cpu')
         )
         encoder.load_state_dict(states['encoder'])
@@ -224,8 +226,7 @@ def get_model(tokenizer, device, load_path=None):
 
 
 def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
-
-    LOGGER = init_logger()
+    LOGGER = init_logger(f'{save_path}/train.log')
     LOGGER.info(f"========== training ==========")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -241,33 +242,64 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
         valid_labels = valid_folds['SMILES'].values
         valid_inchi = valid_folds['InChI'].values
 
-    train_dataset = TrainDataset(args, train_folds, tokenizer, transform=get_transforms(data='train'))
-    valid_dataset = TestDataset(args, valid_folds, transform=get_transforms(data='valid'))
+    train_dataset = TrainDataset(
+                        args,
+                        train_folds,
+                        tokenizer,
+                        transform=get_transforms(data='train')
+                    )
+    valid_dataset = TestDataset(
+                        args,
+                        valid_folds,
+                        transform=get_transforms(data='valid')
+                    )
 
-    train_loader = DataLoader(train_dataset, 
-                              batch_size=CFG.batch_size, 
-                              shuffle=True, 
-                              num_workers=CFG.num_workers, 
-                              pin_memory=True,
-                              drop_last=True, 
-                              collate_fn=bms_collate)
-    valid_loader = DataLoader(valid_dataset, 
-                              batch_size=CFG.batch_size, 
-                              shuffle=False, 
-                              num_workers=CFG.num_workers,
-                              pin_memory=True, 
-                              drop_last=False)
+    train_loader = DataLoader(
+                        train_dataset,
+                        batch_size=CFG.batch_size,
+                        shuffle=True,
+                        num_workers=CFG.num_workers,
+                        pin_memory=True,
+                        drop_last=True,
+                        collate_fn=bms_collate
+                    )
+    valid_loader = DataLoader(
+                        valid_dataset,
+                        batch_size=CFG.batch_size,
+                        shuffle=False,
+                        num_workers=CFG.num_workers,
+                        pin_memory=True,
+                        drop_last=False
+                    )
 
     # ====================================================
-    # scheduler 
+    # scheduler
     # ====================================================
     def get_scheduler(optimizer):
         if CFG.scheduler=='ReduceLROnPlateau':
-            scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=CFG.factor, patience=CFG.patience, verbose=True, eps=CFG.eps)
+            scheduler = ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=CFG.factor,
+                patience=CFG.patience,
+                verbose=True,
+                eps=CFG.eps
+            )
         elif CFG.scheduler=='CosineAnnealingLR':
-            scheduler = CosineAnnealingLR(optimizer, T_max=CFG.T_max, eta_min=CFG.min_lr, last_epoch=-1)
+            scheduler = CosineAnnealingLR(
+                optimizer,
+                T_max=CFG.T_max,
+                eta_min=CFG.min_lr,
+                last_epoch=-1
+            )
         elif CFG.scheduler=='CosineAnnealingWarmRestarts':
-            scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=CFG.T_0, T_mult=1, eta_min=CFG.min_lr, last_epoch=-1)
+            scheduler = CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=CFG.T_0,
+                T_mult=1,
+                eta_min=CFG.min_lr,
+                last_epoch=-1
+            )
         return scheduler
 
     # ====================================================
@@ -276,10 +308,20 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
 
     encoder, decoder = get_model(tokenizer, device)
 
-    encoder_optimizer = Adam(encoder.parameters(), lr=CFG.encoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
+    encoder_optimizer = Adam(
+        encoder.parameters(),
+        lr=CFG.encoder_lr,
+        weight_decay=CFG.weight_decay,
+        amsgrad=False
+    )
     encoder_scheduler = get_scheduler(encoder_optimizer)
 
-    decoder_optimizer = Adam(decoder.parameters(), lr=CFG.decoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
+    decoder_optimizer = Adam(
+        decoder.parameters(),
+        lr=CFG.decoder_lr,
+        weight_decay=CFG.weight_decay,
+        amsgrad=False
+    )
     decoder_scheduler = get_scheduler(decoder_optimizer)
 
     # ====================================================
@@ -291,28 +333,27 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
     best_loss = np.inf
 
     for epoch in range(CFG.epochs):
-
         start_time = time.time()
 
         # train
-        avg_loss = train_fn(train_loader,
-                            encoder,
-                            decoder,
-                            criterion,
-                            encoder_optimizer,
-                            decoder_optimizer,
-                            epoch,
-                            encoder_scheduler,
-                            decoder_scheduler,
-                            device)
+        avg_loss = train_fn(
+            train_loader,
+            encoder, decoder,
+            criterion,
+            encoder_optimizer, decoder_optimizer,
+            epoch,
+            encoder_scheduler, decoder_scheduler,
+            device
+        )
 
         # eval
-        text_preds = valid_fn(valid_loader,
-                              encoder,
-                              decoder,
-                              tokenizer,
-                              criterion,
-                              device)
+        text_preds = valid_fn(
+            valid_loader,
+            encoder, decoder,
+            tokenizer,
+            criterion,
+            device
+        )
 
         if args.format == 'inchi':
             text_preds = [f"InChI=1S/{text}" for text in text_preds]
@@ -350,15 +391,19 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
         if score < best_score:
             best_score = score
             LOGGER.info(f'Epoch {epoch+1} - Save Best Score: {best_score:.4f} Model')
-            torch.save({'encoder': encoder.state_dict(), 
-                        'encoder_optimizer': encoder_optimizer.state_dict(), 
-                        'encoder_scheduler': encoder_scheduler.state_dict(), 
+            torch.save({'encoder': encoder.state_dict(),
+                        'encoder_optimizer': encoder_optimizer.state_dict(),
+                        'encoder_scheduler': encoder_scheduler.state_dict(),
                         'decoder': decoder.state_dict(), 
-                        'decoder_optimizer': decoder_optimizer.state_dict(), 
-                        'decoder_scheduler': decoder_scheduler.state_dict(), 
-                        'text_preds': text_preds,
+                        'decoder_optimizer': decoder_optimizer.state_dict(),
+                        'decoder_scheduler': decoder_scheduler.state_dict(),
                        },
-                       os.path.join(save_path, f'{CFG.encoder}_{CFG.decoder}_best.pth'))
+                       f'{save_path}/best_model.pth')
+            valid_outputs = valid_folds.copy()
+            valid_outputs['prediction'] = text_preds
+            field = FORMAT_INFO[args.format]['name']
+            valid_outputs[['image_id', field, 'prediction']].to_csv(
+                os.path.join(save_path, "valid_outputs.csv"), index=False)
 
 
 def inference(args, test, tokenizer, load_path):
@@ -408,11 +453,8 @@ def get_test_file_path(image_id):
 
 
 def main():
-
     args = get_args()
-
     seed_torch(seed=CFG.seed)
-
     CFG.n_gpu = torch.cuda.device_count()
 
     train = pd.read_pickle('data/train.pkl')
@@ -424,7 +466,7 @@ def main():
     print(f'test.shape: {test.shape}')
 
     if CFG.debug:
-        CFG.epochs = 4
+        CFG.epochs = 1
         train = train.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
         test = test.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
 
@@ -437,6 +479,16 @@ def main():
         folds.loc[val_index, 'fold'] = int(n)
     folds['fold'] = folds['fold'].astype(int)
 
+    # for saving model, log, and predictions
+    runtime_dir = "debug" if CFG.debug \
+                    else os.path.join(args.save_path, '{}_{}_h{}_l{}_i{}_b{}'.format(
+                        CFG.encoder, CFG.decoder,
+                        CFG.n_selfattn_heads, CFG.num_transformer_layers,
+                        CFG.size,
+                        CFG.batch_size
+                     ))
+    os.makedirs(runtime_dir, exist_ok=True)
+
     if args.do_train:
         # train
         for fold in CFG.trn_fold:
@@ -444,10 +496,10 @@ def main():
             val_idx = folds[folds['fold'] == fold].index
             train_folds = folds.loc[trn_idx].reset_index(drop=True)
             valid_folds = folds.loc[val_idx].reset_index(drop=True)
-            train_loop(args, train_folds, valid_folds, tokenizer, args.save_path)
+            train_loop(args, train_folds, valid_folds, tokenizer, runtime_dir)
 
     if args.do_test:
-        inference(args, test, tokenizer, args.save_path)
+        inference(args, test, tokenizer, runtime_dir)
 
 
 if __name__ == "__main__":
