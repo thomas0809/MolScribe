@@ -32,10 +32,10 @@ class TrainDataset(Dataset):
         self.labels = df[field].values
         self.transform = get_transforms(args)
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
-    
+
     def __len__(self):
         return len(self.df)
-    
+
     def __getitem__(self, idx):
         file_path = self.file_paths[idx]
         image = cv2.imread(file_path)
@@ -51,7 +51,7 @@ class TrainDataset(Dataset):
         label_length = len(label)
         label_length = torch.LongTensor([label_length])
         return image, torch.LongTensor(label), label_length
-    
+
 
 class TestDataset(Dataset):
     def __init__(self, args, df):
@@ -60,10 +60,10 @@ class TestDataset(Dataset):
         self.file_paths = df['file_path'].values
         self.transform = get_transforms(args)
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
-    
+
     def __len__(self):
         return len(self.df)
-    
+
     def __getitem__(self, idx):
         file_path = self.file_paths[idx]
         image = cv2.imread(file_path)

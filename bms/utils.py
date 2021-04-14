@@ -117,14 +117,14 @@ EOS_ID = 2
 
 
 class Tokenizer(object):
-    
+
     def __init__(self):
         self.stoi = {}
         self.itos = {}
 
     def __len__(self):
         return len(self.stoi)
-    
+
     def fit_on_texts(self, texts):
         vocab = set()
         for text in texts:
@@ -136,7 +136,7 @@ class Tokenizer(object):
         assert self.stoi[PAD] == PAD_ID
         assert self.stoi[SOS] == SOS_ID
         assert self.stoi[EOS] == EOS_ID
-        
+
     def text_to_sequence(self, text):
         sequence = []
         sequence.append(self.stoi['<sos>'])
@@ -144,7 +144,7 @@ class Tokenizer(object):
             sequence.append(self.stoi[s])
         sequence.append(self.stoi['<eos>'])
         return sequence
-    
+
     def texts_to_sequences(self, texts):
         sequences = []
         for text in texts:
@@ -154,14 +154,14 @@ class Tokenizer(object):
 
     def sequence_to_text(self, sequence):
         return ''.join(list(map(lambda i: self.itos[i], sequence)))
-    
+
     def sequences_to_texts(self, sequences):
         texts = []
         for sequence in sequences:
             text = self.sequence_to_text(sequence)
             texts.append(text)
         return texts
-    
+
     def predict_caption(self, sequence):
         caption = ''
         for i in sequence:
@@ -169,11 +169,11 @@ class Tokenizer(object):
                 break
             caption += self.itos[i]
         return caption
-    
+
     def predict_captions(self, sequences):
         captions = []
         for sequence in sequences:
             caption = self.predict_caption(sequence)
             captions.append(caption)
         return captions
-    
+
