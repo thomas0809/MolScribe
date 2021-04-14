@@ -23,11 +23,10 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealin
 
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-from albumentations import ImageOnlyTransform
 
 from bms.dataset import TrainDataset, TestDataset, bms_collate
 from bms.model import Encoder, DecoderWithAttention
-from bms.utils import init_logger, seed_torch, get_score, AverageMeter, timeSince, batch_convert_smiles_to_inchi, FORMAT_INFO
+from bms.utils import init_logger, seed_torch, get_score, AverageMeter, asMinutes, timeSince, batch_convert_smiles_to_inchi, FORMAT_INFO
 
 
 import warnings 
@@ -39,11 +38,10 @@ class CFG:
     max_len=275
     print_freq=500
     num_workers=4
-    model_name='resnet34'
     size=224
     scheduler='CosineAnnealingLR' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
-    epochs=6 # not to exceed 9h
-    T_max=6 # CosineAnnealingLR
+    epochs=8 # not to exceed 9h
+    T_max=8 # CosineAnnealingLR
     #T_0=4 # CosineAnnealingWarmRestarts
     encoder_lr=1e-4
     decoder_lr=4e-4
@@ -63,7 +61,9 @@ class CFG:
 
 def get_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--model-name', type=str, default='resnet34')
     parser.add_argument('--format', type=str, choices=['inchi','atomtok','spe'], default='inchi')
+    parser.add_argument('--input-size', type=int, default=224)
     parser.add_argument('--save-path', type=str, default='output/')
     parser.add_argument('--do-train', action='store_true')
     parser.add_argument('--do-test', action='store_true')
@@ -118,21 +118,22 @@ def train_fn(train_loader, encoder, decoder, criterion,
         end = time.time()
         if step % CFG.print_freq == 0 or step == (len(train_loader)-1):
             print('Epoch: [{0}][{1}/{2}] '
-                  'Data {data_time.avg:.3f}s '
+                  'Data {data_time.avg:.3f}s ({sum_data_time}) '
                   'Elapsed {remain:s} '
                   'Loss: {loss.val:.4f}({loss.avg:.4f}) '
                   'Encoder Grad: {encoder_grad_norm:.4f}  '
                   'Decoder Grad: {decoder_grad_norm:.4f}  '
-                  #'Encoder LR: {encoder_lr:.6f}  '
-                  #'Decoder LR: {decoder_lr:.6f}  '
+                  'Encoder LR: {encoder_lr:.6f}  '
+                  'Decoder LR: {decoder_lr:.6f}  '
                   .format(
                    epoch+1, step, len(train_loader), batch_time=batch_time,
                    data_time=data_time, loss=losses,
+                   sum_data_time=asMinutes(data_time.sum),
                    remain=timeSince(start, float(step+1)/len(train_loader)),
                    encoder_grad_norm=encoder_grad_norm,
                    decoder_grad_norm=decoder_grad_norm,
-                   #encoder_lr=encoder_scheduler.get_lr()[0],
-                   #decoder_lr=decoder_scheduler.get_lr()[0],
+                   encoder_lr=encoder_scheduler.get_lr()[0],
+                   decoder_lr=decoder_scheduler.get_lr()[0],
                    ))
     return losses.avg
 
@@ -173,31 +174,9 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, criterion, device):
     text_preds = np.concatenate(text_preds)
     return text_preds
 
-
-def get_transforms(*, data):
-    if data == 'train':
-        return A.Compose([
-            A.Resize(CFG.size, CFG.size),
-            A.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            ),
-            ToTensorV2(),
-        ])
     
-    elif data == 'valid':
-        return A.Compose([
-            A.Resize(CFG.size, CFG.size),
-            A.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            ),
-            ToTensorV2(),
-        ])
-
-    
-def get_model(tokenizer, device, load_path=None):
-    encoder = Encoder(CFG.model_name, pretrained=True)
+def get_model(args, tokenizer, device, load_path=None):
+    encoder = Encoder(args.model_name, pretrained=True)
     decoder = DecoderWithAttention(attention_dim=CFG.attention_dim,
                                    embed_dim=CFG.embed_dim,
                                    decoder_dim=CFG.decoder_dim,
@@ -206,7 +185,7 @@ def get_model(tokenizer, device, load_path=None):
                                    dropout=CFG.dropout,
                                    device=device)
     if load_path:
-        states = torch.load(os.path.join(load_path, f'{CFG.model_name}_best.pth'), 
+        states = torch.load(os.path.join(load_path, f'{args.model_name}_best.pth'), 
                             map_location=torch.device('cpu'))
         encoder.load_state_dict(states['encoder'])
         decoder.load_state_dict(states['decoder'])
@@ -236,8 +215,8 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
         valid_labels = valid_folds['SMILES'].values
         valid_inchi = valid_folds['InChI'].values
 
-    train_dataset = TrainDataset(args, train_folds, tokenizer, transform=get_transforms(data='train'))
-    valid_dataset = TestDataset(args, valid_folds, transform=get_transforms(data='valid'))
+    train_dataset = TrainDataset(args, train_folds, tokenizer)
+    valid_dataset = TestDataset(args, valid_folds)
 
     train_loader = DataLoader(train_dataset, 
                               batch_size=CFG.batch_size, 
@@ -269,7 +248,7 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
     # model & optimizer
     # ====================================================
     
-    encoder, decoder = get_model(tokenizer, device)
+    encoder, decoder = get_model(args, tokenizer, device)
     
     encoder_optimizer = Adam(encoder.parameters(), lr=CFG.encoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
     encoder_scheduler = get_scheduler(encoder_optimizer)
@@ -340,16 +319,16 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
                         'decoder_scheduler': decoder_scheduler.state_dict(), 
                         'text_preds': text_preds,
                        },
-                       os.path.join(save_path, f'{CFG.model_name}_best.pth'))
+                       os.path.join(save_path, f'{args.model_name}_best.pth'))
 
 
 def inference(args, test, tokenizer, load_path):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    test_dataset = TestDataset(args, test, transform=get_transforms(data='valid'))
-    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=CFG.num_workers)
+    test_dataset = TestDataset(args, test)
+    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=CFG.num_workers, pin_memory=True)
     
-    encoder, decoder = get_model(tokenizer, device, load_path)
+    encoder, decoder = get_model(args, tokenizer, device, load_path)
     encoder.eval()
     decoder.eval()
     

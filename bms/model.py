@@ -8,17 +8,23 @@ import timm
 
 
 class Encoder(nn.Module):
-    def __init__(self, model_name='resnet18', pretrained=False):
+    def __init__(self, model_name='resnet18', pretrained=False, encoder_dim=512):
         super().__init__()
         self.cnn = timm.create_model(model_name, pretrained=pretrained)
-        self.n_features = self.cnn.fc.in_features
+        self.n_features = self.cnn.num_features
         self.cnn.global_pool = nn.Identity()
         self.cnn.fc = nn.Identity()
+        if self.n_features != encoder_dim:
+            self.linear = nn.Linear(self.n_features, encoder_dim)
+        else:
+            self.linear = None
 
     def forward(self, x):
         bs = x.size(0)
         features = self.cnn(x)
         features = features.permute(0, 2, 3, 1)
+        if self.linear:
+            features = self.linear(features)
         return features
     
     

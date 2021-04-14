@@ -4,3 +4,4 @@ output/
 *.log
 **/__pycache__
 submission.csv
+ensemble.csv
