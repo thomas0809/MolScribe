@@ -23,13 +23,16 @@ def get_transforms(args):
 
 
 class TrainDataset(Dataset):
-    def __init__(self, args, df, tokenizer):
+    def __init__(self, args, df, tokenizer, labelled=True):
         super().__init__()
         self.df = df
         self.tokenizer = tokenizer
         self.file_paths = df['file_path'].values
-        field = FORMAT_INFO[args.format]['name']
-        self.labels = df[field].values
+        if labelled:
+            field = FORMAT_INFO[args.format]['name']
+            self.labels = df[field].values
+        else:
+            self.labels = None
         self.transform = get_transforms(args)
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
 
@@ -46,13 +49,17 @@ class TrainDataset(Dataset):
         if self.transform:
             augmented = self.transform(image=image)
             image = augmented['image']
-        label = self.labels[idx]
-        label = self.tokenizer.text_to_sequence(label)
-        label_length = len(label)
-        label_length = torch.LongTensor([label_length])
-        return image, torch.LongTensor(label), label_length
+        if self.labels:
+            label = self.labels[idx]
+            label = self.tokenizer.text_to_sequence(label)
+            label_length = len(label)
+            label_length = torch.LongTensor([label_length])
+            return image, torch.LongTensor(label), label_length
+        else:
+            return image
 
 
+# Deprecated
 class TestDataset(Dataset):
     def __init__(self, args, df):
         super().__init__()

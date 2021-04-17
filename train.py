@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import time
+import json
 import random
 import pickle
 import argparse
@@ -11,7 +12,7 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from sklearn.model_selection import StratifiedKFold, GroupKFold, KFold
+from sklearn.model_selection import StratifiedKFold
 
 import torch
 import torch.nn as nn
@@ -67,9 +68,35 @@ def get_args():
     parser.add_argument('--input-size', type=int, default=224)
     parser.add_argument('--save-path', type=str, default='output/')
     parser.add_argument('--do-train', action='store_true')
+    parser.add_argument('--do-valid', action='store_true')
     parser.add_argument('--do-test', action='store_true')
     args = parser.parse_args()
     return args
+
+
+def get_model(args, tokenizer, device, load_path=None):
+    encoder = Encoder(args.encoder, pretrained=True)
+    decoder = DecoderWithAttention(attention_dim=CFG.attention_dim,
+                                   embed_dim=CFG.embed_dim,
+                                   decoder_dim=CFG.decoder_dim,
+                                   max_len=CFG.max_len,
+                                   vocab_size=len(tokenizer),
+                                   dropout=CFG.dropout,
+                                   device=device)
+    if load_path:
+        states = torch.load(
+            os.path.join(load_path, f'{args.encoder}_{args.decoder}_best.pth'),
+            map_location=torch.device('cpu')
+        )
+        encoder.load_state_dict(states['encoder'])
+        decoder.load_state_dict(states['decoder'])
+    encoder.to(device)
+    decoder.to(device)
+    if CFG.n_gpu > 1:
+        encoder = nn.DataParallel(encoder)
+        decoder = nn.DataParallel(decoder)
+
+    return encoder, decoder
 
 
 def train_fn(train_loader, encoder, decoder, criterion, 
@@ -139,7 +166,7 @@ def train_fn(train_loader, encoder, decoder, criterion,
     return losses.avg
 
 
-def valid_fn(valid_loader, encoder, decoder, tokenizer, criterion, device):
+def valid_fn(valid_loader, encoder, decoder, tokenizer, device):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     # switch to evaluation mode
@@ -176,32 +203,7 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, criterion, device):
     return text_preds
 
 
-def get_model(args, tokenizer, device, load_path=None):
-    encoder = Encoder(args.encoder, pretrained=True)
-    decoder = DecoderWithAttention(attention_dim=CFG.attention_dim,
-                                   embed_dim=CFG.embed_dim,
-                                   decoder_dim=CFG.decoder_dim,
-                                   max_len=CFG.max_len,
-                                   vocab_size=len(tokenizer),
-                                   dropout=CFG.dropout,
-                                   device=device)
-    if load_path:
-        states = torch.load(
-            os.path.join(load_path, f'{args.encoder}_{args.decoder}_best.pth'),
-            map_location=torch.device('cpu')
-        )
-        encoder.load_state_dict(states['encoder'])
-        decoder.load_state_dict(states['decoder'])
-    encoder.to(device)
-    decoder.to(device)
-    if CFG.n_gpu > 1:
-        encoder = nn.DataParallel(encoder)
-        decoder = nn.DataParallel(decoder)
-
-    return encoder, decoder
-
-
-def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
+def train_loop(args, train_df, valid_df, tokenizer, save_path):
 
     LOGGER = init_logger()
     LOGGER.info(f"========== training ==========")
@@ -213,15 +215,7 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
     # loader
     # ====================================================
 
-    if args.format == 'inchi':
-        valid_labels = valid_folds['InChI'].values
-    else:
-        valid_labels = valid_folds['SMILES'].values
-        valid_inchi = valid_folds['InChI'].values
-
-    train_dataset = TrainDataset(args, train_folds, tokenizer)
-    valid_dataset = TestDataset(args, valid_folds)
-
+    train_dataset = TrainDataset(args, train_df, tokenizer, labelled=True)
     train_loader = DataLoader(train_dataset, 
                               batch_size=CFG.batch_size, 
                               shuffle=True, 
@@ -229,12 +223,6 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
                               pin_memory=True,
                               drop_last=True, 
                               collate_fn=bms_collate)
-    valid_loader = DataLoader(valid_dataset, 
-                              batch_size=CFG.batch_size, 
-                              shuffle=False, 
-                              num_workers=CFG.num_workers,
-                              pin_memory=True, 
-                              drop_last=False)
 
     # ====================================================
     # scheduler 
@@ -277,18 +265,8 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
                             encoder_scheduler, decoder_scheduler, device)
 
         # eval
-        text_preds = valid_fn(valid_loader, encoder, decoder, tokenizer, criterion, device)
-        if args.format == 'inchi':
-            text_preds = [f"InChI=1S/{text}" for text in text_preds]
-            score = get_score(valid_labels, text_preds)
-        else:
-            pred_inchi, r_success = batch_convert_smiles_to_inchi(text_preds)
-            LOGGER.info(f'Epoch {epoch+1} - SMILES to InChI: {r_success:.4f}')
-            smiles_score = get_score(valid_labels, text_preds)
-            score = get_score(valid_inchi, pred_inchi)
-
-        LOGGER.info(f"labels: {valid_labels[:5]}")
-        LOGGER.info(f"preds: {text_preds[:5]}")
+        scores = inference(args, valid_df, tokenizer, encoder, decoder, save_path, split='valid')
+        score = scores['inchi']
 
         if isinstance(encoder_scheduler, ReduceLROnPlateau):
             encoder_scheduler.step(score)
@@ -307,9 +285,7 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
         elapsed = time.time() - start_time
 
         LOGGER.info(f'Epoch {epoch+1} - avg_train_loss: {avg_loss:.4f}  time: {elapsed:.0f}s')
-        LOGGER.info(f'Epoch {epoch+1} - Score: {score:.4f}')
-        if args.format != 'inchi':
-            LOGGER.info(f'Epoch {epoch+1} - SMILES Score: {smiles_score:.4f}')
+        LOGGER.info(f'Epoch {epoch+1} - Score: ' + json.dumps(scores))
 
         if score < best_score:
             best_score = score
@@ -325,44 +301,50 @@ def train_loop(args, train_folds, valid_folds, tokenizer, save_path):
                        os.path.join(save_path, f'{args.encoder}_{args.decoder}_best.pth'))
 
 
-def inference(args, test, tokenizer, load_path):
+def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=None, split='test'):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    test_dataset = TestDataset(args, test)
-    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=CFG.num_workers, pin_memory=True)
+    dataset = TrainDataset(args, data_df, tokenizer, labelled=False)
+    dataloader = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=CFG.num_workers, pin_memory=True, drop_last=False)
     
-    encoder, decoder = get_model(args, tokenizer, device, load_path)
-
-    encoder.eval()
-    decoder.eval()
-
-    text_preds = []
-    tk0 = tqdm(test_loader, total=len(test_loader))
-    for images in tk0:
-        images = images.to(device)
-        with torch.no_grad():
-            features = encoder(images)
-            predictions = decoder.predict(features, CFG.max_len, tokenizer)
-        predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
-        _text_preds = tokenizer.predict_captions(predicted_sequence)
-        text_preds.append(_text_preds)
-    text_preds = np.concatenate(text_preds)
-
+    if encoder is None or decoder is None:
+        encoder, decoder = get_model(args, tokenizer, device, save_path)
+    
+    text_preds = valid_fn(dataloader, encoder, decoder, tokenizer, device)
+    pred_df = data_df[['image_id']].copy()
+    
     if args.format == 'inchi':
-        test['InChI'] = [f"InChI=1S/{text}" for text in text_preds]
-        test[['image_id', 'InChI']].to_csv(os.path.join(load_path, 'submission.csv'), index=False)
+        # InChI
+        pred_df['InChI'] = [f"InChI=1S/{text}" for text in text_preds]
     else:
         # SMILES
-        field = FORMAT_INFO[args.format]['name']
-        test[field] = text_preds
-        test[['image_id', field]].to_csv(os.path.join(load_path, 'prediction.csv'), index=False)
-        # InChI
+        pred_df['SMILES'] = text_preds
         print('Converting SMILES to InChI ...')
         inchi_list, r_success = batch_convert_smiles_to_inchi(text_preds)
-        print(f'SMILES to InChI success ratio: {r_success:.4f}')
-        test['InChI'] = inchi_list
-        test[['image_id', 'InChI']].to_csv(os.path.join(load_path, 'submission.csv'), index=False)
-    return text_preds
+        pred_df['InChI'] = inchi_list
+        print(f'{split} SMILES to InChI success ratio: {r_success:.4f}')
+        
+    # Compute scores
+    scores = {}
+    if split == 'valid':
+        scores['inchi'] = get_score(data_df['InChI'].values, pred_df['InChI'].values)
+        if args.format != 'inchi':
+            scores['smiles'] = get_score(data_df['SMILES'].values, pred_df['SMILES'].values)
+            print('label:')
+            print(data_df['SMILES'].values[:5])
+            print('pred:')
+            print(pred_df['SMILES'].values[:5])
+            
+    # Save predictions
+    if split == 'test':
+        df[['image_id', 'InChI']].to_csv(os.path.join(save_path, 'submission.csv'), index=False)
+    else:
+        fields = ['image_id', 'InChI']
+        if args.format != 'inchi':
+            fields.append('SMILES')
+        pred_df[fields].to_csv(os.path.join(save_path, f'prediction_{split}.csv'), index=False)
+
+    return scores
             
 
 def get_train_file_path(image_id):
@@ -379,40 +361,39 @@ def main():
     seed_torch(seed=CFG.seed)
 
     CFG.n_gpu = torch.cuda.device_count()
-
-    train = pd.read_pickle('data/train.pkl')
-    train['file_path'] = train['image_id'].apply(get_train_file_path)
-    print(f'train.shape: {train.shape}')
-
-    test = pd.read_csv('data/sample_submission.csv')
-    test['file_path'] = test['image_id'].apply(get_test_file_path)
-    print(f'test.shape: {test.shape}')
+    
+    if args.do_train:
+        train_df = pd.read_csv('data/train_folds.csv')
+        train_df['file_path'] = train_df['image_id'].apply(get_train_file_path)
+        print(f'train.shape: {train_df.shape}')
+    
+    if args.do_train or args.do_valid:
+        valid_df = pd.read_csv('data/valid_folds.csv')
+        valid_df['file_path'] = valid_df['image_id'].apply(get_train_file_path)
+        print(f'valid.shape: {valid_df.shape}')
+    
+    if args.do_test:
+        test_df = pd.read_csv('data/sample_submission.csv')
+        test_df['file_path'] = test_df['image_id'].apply(get_test_file_path)
+        print(f'test.shape: {test_df.shape}')
 
     if CFG.debug:
         CFG.epochs = 1
         train = train.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
+        valid = valid.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
         test = test.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
 
     tokenizer = torch.load('data/' + FORMAT_INFO[args.format]['tokenizer'])
-    # print(f"tokenizer.stoi: {tokenizer.stoi}")
-
-    folds = train.copy()
-    Fold = StratifiedKFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
-    for n, (train_index, val_index) in enumerate(Fold.split(folds, [1] * len(folds))):
-        folds.loc[val_index, 'fold'] = int(n)
-    folds['fold'] = folds['fold'].astype(int)
 
     if args.do_train:
-        # train
-        for fold in CFG.trn_fold:
-            trn_idx = folds[folds['fold'] != fold].index
-            val_idx = folds[folds['fold'] == fold].index
-            train_folds = folds.loc[trn_idx].reset_index(drop=True)
-            valid_folds = folds.loc[val_idx].reset_index(drop=True)
-            train_loop(args, train_folds, valid_folds, tokenizer, args.save_path)
+        train_loop(args, train_df, valid_df, tokenizer, args.save_path)
+        
+    if args.do_valid:
+        scores = inference(args, valid_df, tokenizer, save_path=args.save_path, split='valid')
+        print(scores)
 
     if args.do_test:
-        inference(args, test, tokenizer, args.save_path)
+        inference(args, test_df, tokenizer, save_path=args.save_path, split='test')
 
 
 if __name__ == "__main__":

@@ -41,6 +41,15 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
   --do-test
 ```
 
+## Evaluate on validation set
+```
+CUDA_VISIBLE_DEVICES=0 python train.py \
+  --format atomtok \
+  --save-path output/resnet34_input_288_atomtok_epoch_8 \
+  --input-size 288 \
+  --do-valid
+```
+
 ## TODO:
 - [x] Inference
 

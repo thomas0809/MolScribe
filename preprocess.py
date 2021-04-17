@@ -5,6 +5,7 @@ import pandas as pd
 from tqdm.auto import tqdm
 tqdm.pandas()
 import torch
+from sklearn.model_selection import StratifiedKFold
 
 from bms.utils import Tokenizer
 
@@ -88,8 +89,22 @@ def main():
     print('Saved tokenizer_smiles_spe')
     print(f"tokenizer.stoi: {tokenizer.stoi}")
 
-    train.to_pickle('data/train.pkl')
-    print('Saved preprocessed train.pkl')
+#     train.to_pickle('data/train.pkl')
+#     print('Saved preprocessed train.pkl')
+    
+    folds = train.copy()
+    Fold = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+    for n, (train_index, val_index) in enumerate(Fold.split(folds, [1] * len(folds))):
+        folds.loc[val_index, 'fold'] = int(n)
+    folds['fold'] = folds['fold'].astype(int)
+    
+    trn_idx = folds[folds['fold'] != 0].index
+    val_idx = folds[folds['fold'] == 0].index
+    train_folds = folds.loc[trn_idx].reset_index(drop=True)
+    valid_folds = folds.loc[val_idx].reset_index(drop=True)
+    
+    train_folds.to_csv('data/train_folds.csv', index=False)
+    valid_folds.to_csv('data/valid_folds.csv', index=False)
 
 
 if __name__ == '__main__':
