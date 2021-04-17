@@ -12,8 +12,6 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from sklearn.model_selection import StratifiedKFold
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,9 +19,6 @@ from torch.optim import Adam, SGD
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
-
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 
 from bms.dataset import TrainDataset, TestDataset, bms_collate
 from bms.model import Encoder, DecoderWithAttention
