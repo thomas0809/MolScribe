@@ -54,6 +54,7 @@ def get_args():
     parser.add_argument('--encoder', type=str, default='resnet34')
     parser.add_argument('--decoder', type=str, default='lstm')
     parser.add_argument('--decoder_scale', type=int, default=1)
+    parser.add_argument('--decoder_layer', type=int, default=1)
     # Data
     parser.add_argument('--format', type=str, choices=['inchi','atomtok','spe'], default='atomtok')
     parser.add_argument('--input_size', type=int, default=224)
@@ -79,9 +80,9 @@ def get_model(args, tokenizer, device, load_path=None, ddp=True):
                                    decoder_dim=CFG.decoder_dim * args.decoder_scale,
                                    max_len=CFG.max_len,
                                    dropout=CFG.dropout,
+                                   n_layer=args.decoder_layer,
                                    vocab_size=len(tokenizer),
-                                   tokenizer=tokenizer,
-                                   device=device)
+                                   tokenizer=tokenizer)
     if load_path:
         states = torch.load(
             os.path.join(load_path, f'{args.encoder}_{args.decoder}_best.pth'),
@@ -203,7 +204,7 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device):
         batch_size = images.size(0)
         with torch.no_grad():
             features = encoder(images)
-            predictions = decoder.predict(features, CFG.max_len)
+            predictions = decoder.predict(features)
         predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
         _text_preds = tokenizer.predict_captions(predicted_sequence)
 #         text_preds.append(_text_preds)
