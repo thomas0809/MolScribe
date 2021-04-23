@@ -9,23 +9,19 @@ import math
 
 
 class Encoder(nn.Module):
-    def __init__(self, model_name='resnet18', pretrained=False, encoder_dim=512):
+    def __init__(self, model_name='resnet18', pretrained=False):
         super().__init__()
         self.cnn = timm.create_model(model_name, pretrained=pretrained)
-        self.n_features = self.cnn.num_features
+        self.n_features = self.cnn.num_features  # encoder_dim
         self.cnn.global_pool = nn.Identity()
         self.cnn.fc = nn.Identity()
-        if self.n_features != encoder_dim:
-            self.linear = nn.Linear(self.n_features, encoder_dim)
-        else:
-            self.linear = None
 
     def forward(self, x):
         bs = x.size(0)
         features = self.cnn(x)
         features = features.permute(0, 2, 3, 1)
-        if self.linear:
-            features = self.linear(features)
+#         if self.linear:
+#             features = self.linear(features)
         return features
 
 
@@ -60,7 +56,7 @@ class DecoderWithAttention(nn.Module):
     Decoder network with attention network used for training
     """
 
-    def __init__(self, attention_dim, embed_dim, decoder_dim, max_len, vocab_size, device, encoder_dim=512, dropout=0.5):
+    def __init__(self, attention_dim, embed_dim, decoder_dim, max_len, vocab_size, tokenizer, device, encoder_dim=512, dropout=0.5):
         """
         :param attention_dim: input size of attention network
         :param embed_dim: input size of embedding network
@@ -76,6 +72,7 @@ class DecoderWithAttention(nn.Module):
         self.decoder_dim = decoder_dim
         self.max_len = max_len
         self.vocab_size = vocab_size
+        self.tokenizer = tokenizer
         self.device = device
         self.attention = Attention(encoder_dim, decoder_dim, attention_dim)  # attention network
         self.embedding = nn.Embedding(vocab_size, embed_dim)  # embedding layer
@@ -126,8 +123,9 @@ class DecoderWithAttention(nn.Module):
         h, c = self.init_hidden_state(encoder_out)  # (batch_size, decoder_dim)
         # set decode length by caption length - 1 because of omitting start token
         decode_lengths = (caption_lengths - 1).tolist()
-        predictions = torch.zeros(batch_size, max(decode_lengths), vocab_size).to(self.device)
-        alphas = torch.zeros(batch_size, max(decode_lengths), num_pixels).to(self.device)
+#         max(decode_lengths)
+        predictions = torch.zeros(batch_size, self.max_len, vocab_size).to(self.device)
+        alphas = torch.zeros(batch_size, self.max_len, num_pixels).to(self.device)
         # predict sequence
         for t in range(max(decode_lengths)):
             batch_size_t = sum([l > t for l in decode_lengths])
@@ -143,14 +141,14 @@ class DecoderWithAttention(nn.Module):
         decode_lengths = torch.Tensor(decode_lengths).to(self.device)
         return predictions, encoded_captions, decode_lengths
 
-    def predict(self, encoder_out, decode_lengths, tokenizer):
+    def predict(self, encoder_out, decode_lengths):
         batch_size = encoder_out.size(0)
         encoder_dim = encoder_out.size(-1)
         vocab_size = self.vocab_size
         encoder_out = encoder_out.view(batch_size, -1, encoder_dim)  # (batch_size, num_pixels, encoder_dim)
         num_pixels = encoder_out.size(1)
         # embed start tocken for LSTM input
-        start_tockens = torch.ones(batch_size, dtype=torch.long).to(self.device) * tokenizer.stoi["<sos>"]
+        start_tockens = torch.ones(batch_size, dtype=torch.long).to(self.device) * self.tokenizer.stoi["<sos>"]
         embeddings = self.embedding(start_tockens)
         # initialize hidden state and cell state of LSTM cell
         h, c = self.init_hidden_state(encoder_out)  # (batch_size, decoder_dim)
@@ -165,7 +163,7 @@ class DecoderWithAttention(nn.Module):
                 (h, c))  # (batch_size_t, decoder_dim)
             preds = self.fc(self.dropout(h))  # (batch_size_t, vocab_size)
             predictions[:, t, :] = preds
-            if np.argmax(preds.detach().cpu().numpy()) == tokenizer.stoi["<eos>"]:
+            if np.argmax(preds.detach().cpu().numpy()) == self.tokenizer.stoi["<eos>"]:
                 break
             embeddings = self.embedding(torch.argmax(preds, -1))
         return predictions

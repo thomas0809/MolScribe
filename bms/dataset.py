@@ -49,14 +49,14 @@ class TrainDataset(Dataset):
         if self.transform:
             augmented = self.transform(image=image)
             image = augmented['image']
-        if self.labels:
+        if self.labels is not None:
             label = self.labels[idx]
             label = self.tokenizer.text_to_sequence(label)
             label_length = len(label)
             label_length = torch.LongTensor([label_length])
             return image, torch.LongTensor(label), label_length
         else:
-            return image
+            return idx, image
 
 
 # Deprecated

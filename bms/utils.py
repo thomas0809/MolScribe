@@ -4,11 +4,14 @@ import numpy as np
 import torch
 import math
 import time
+from datetime import datetime
 import multiprocessing
 import Levenshtein
 import rdkit
 import rdkit.Chem as Chem
 rdkit.RDLogger.DisableLog('rdApp.*')
+
+from tensorboardX import SummaryWriter
 
 
 FORMAT_INFO = {
@@ -66,6 +69,9 @@ def init_logger(log_file='train.log'):
     logger.addHandler(handler2)
     return logger
 
+def init_summary_writer(save_path):
+    summary = SummaryWriter(os.path.join(save_path, datetime.now().strftime("%Y%m%d-%H%M%S")))
+    return summary
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -108,6 +114,14 @@ def timeSince(since, percent):
     return '%s (remain %s)' % (asMinutes(s), asMinutes(rs))
 
 
+def print_rank_0(message):
+    if torch.distributed.is_initialized():
+        if torch.distributed.get_rank() == 0:
+            print(message, flush=True)
+    else:
+        print(message, flush=True)
+
+
 PAD = '<pad>'
 SOS = '<sos>'
 EOS = '<eos>'
@@ -124,7 +138,16 @@ class Tokenizer(object):
 
     def __len__(self):
         return len(self.stoi)
-
+    
+    def save(self, path):
+        with open(path, 'w') as f:
+            json.dump(self.stoi, f)
+    
+    def load(self, path):
+        with open(path) as f:
+            self.stoi = json.load(f)
+        self.itos = {item[1]: item[0] for item in self.stoi.items()}
+            
     def fit_on_texts(self, texts):
         vocab = set()
         for text in texts:
