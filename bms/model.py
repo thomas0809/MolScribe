@@ -11,17 +11,35 @@ import math
 class Encoder(nn.Module):
     def __init__(self, model_name='resnet18', pretrained=False):
         super().__init__()
-        self.cnn = timm.create_model(model_name, pretrained=pretrained)
-        self.n_features = self.cnn.num_features  # encoder_dim
-        self.cnn.global_pool = nn.Identity()
-        self.cnn.fc = nn.Identity()
+        self.model_name = model_name
+        if model_name.startswith('resnet'):
+            self.cnn = timm.create_model(model_name, pretrained=pretrained)
+            self.n_features = self.cnn.num_features  # encoder_dim
+            self.cnn.global_pool = nn.Identity()
+            self.cnn.fc = nn.Identity()
+        elif model_name.startswith('swin'):
+            self.transformer = timm.create_model(model_name, pretrained=pretrained)
+            self.n_features = self.transformer.num_features
+            self.transformer.head = nn.Identity()
+        else:
+            raise NotImplemented
 
     def forward(self, x):
-        bs = x.size(0)
-        features = self.cnn(x)
-        features = features.permute(0, 2, 3, 1)
-#         if self.linear:
-#             features = self.linear(features)
+        if self.model_name.startswith('resnet'):
+            features = self.cnn(x)
+            features = features.permute(0, 2, 3, 1)
+        elif self.model_name.startswith('swin'):
+            def swin_features(transformer, x):
+                x = transformer.patch_embed(x)
+                if transformer.absolute_pos_embed is not None:
+                    x = x + transformer.absolute_pos_embed
+                x = transformer.pos_drop(x)
+                x = transformer.layers(x)
+                x = transformer.norm(x)  # B L C
+                return x
+            features = swin_features(self.transformer, x)
+        else:
+            raise NotImplemented
         return features
 
 
@@ -120,7 +138,7 @@ class DecoderWithAttention(nn.Module):
         preds = self.fc(self.dropout(x))
         return preds, h, c, hh, cc
 
-    def forward(self, encoder_out, encoded_captions, caption_lengths):
+    def forward(self, encoder_out, encoded_captions=None, caption_lengths=None):
         """
         :param encoder_out: output of encoder network
         :param encoded_captions: transformed sequence from character to integer

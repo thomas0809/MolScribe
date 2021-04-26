@@ -1,11 +1,16 @@
 import os
 import re
+import argparse
 import numpy as np
 import pandas as pd
+from collections import Counter
+import multiprocessing
 from tqdm.auto import tqdm
 tqdm.pandas()
+
 import torch
 from sklearn.model_selection import StratifiedKFold
+import rdkit.Chem as Chem
 
 from bms.utils import Tokenizer
 
@@ -41,15 +46,41 @@ def split_form2(form):
         string += f"/{elem} {num_string}"
     return string.rstrip(' ')
 
+def mol_stats(inchi):
+    mol = Chem.MolFromInchi(inchi)
+    num_atom = mol.GetNumAtoms()
+    num_bond = mol.GetNumBonds()
+    num_ring = mol.GetRingInfo().NumRings()
+    chiral = Counter([atom.GetChiralTag() for atom in mol.GetAtoms()])
+    num_cw = chiral[Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CW]
+    num_ccw = chiral[Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CCW]
+    return num_atom, num_bond, num_ring, num_cw, num_ccw
+
 # ====================================================
 # main
 # ====================================================
 def main():
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--tokenizer', action='store_true')
+    args = parser.parse_args()
+    
     # ====================================================
     # Data Loading
     # ====================================================
     train = pd.read_csv('data/train_labels.csv')
     print(f'train.shape: {train.shape}')
+    
+    inchi_list = train['InChI'].values
+    with multiprocessing.Pool(64) as p:
+        data = p.map(mol_stats, inchi_list)
+        data = np.array(data)
+        
+        train['num_atom'] = data[:,0]
+        train['num_bond'] = data[:,1]
+        train['num_ring'] = data[:,2]
+        train['num_cw'] = data[:,3]
+        train['num_ccw'] = data[:,4]
     
     # ====================================================
     # preprocess train.csv
@@ -71,30 +102,31 @@ def main():
     # ====================================================
     # create tokenizer
     # ====================================================
-    tokenizer = Tokenizer()
-    tokenizer.fit_on_texts(train['InChI_text'].values)
-    torch.save(tokenizer, 'data/tokenizer_inchi.pth')
-    tokenizer.save('data/tokenizer_inchi.json')
-    print('Saved tokenizer_inchi')
-#     print(f"tokenizer.stoi: {tokenizer.stoi}")
-    
-    tokenizer = Tokenizer()
-    tokenizer.fit_on_texts(train['SMILES_atomtok'].values)
-    torch.save(tokenizer, 'data/tokenizer_smiles_atomtok.pth')
-    tokenizer.save('data/tokenizer_smiles_atomtok.json')
-    print('Saved tokenizer_smiles_atomtok')
-#     print(f"tokenizer.stoi: {tokenizer.stoi}")
-    
-    tokenizer = Tokenizer()
-    tokenizer.fit_on_texts(train['SMILES_spe'].values)
-    torch.save(tokenizer, 'data/tokenizer_smiles_spe.pth')
-    tokenizer.save('data/tokenizer_smiles_spe.json')
-    print('Saved tokenizer_smiles_spe')
-#     print(f"tokenizer.stoi: {tokenizer.stoi}")
+    if args.tokenizer:
+        tokenizer = Tokenizer()
+        tokenizer.fit_on_texts(train['InChI_text'].values)
+        torch.save(tokenizer, 'data/tokenizer_inchi.pth')
+        tokenizer.save('data/tokenizer_inchi.json')
+        print('Saved tokenizer_inchi')
+    #     print(f"tokenizer.stoi: {tokenizer.stoi}")
+
+        tokenizer = Tokenizer()
+        tokenizer.fit_on_texts(train['SMILES_atomtok'].values)
+        torch.save(tokenizer, 'data/tokenizer_smiles_atomtok.pth')
+        tokenizer.save('data/tokenizer_smiles_atomtok.json')
+        print('Saved tokenizer_smiles_atomtok')
+    #     print(f"tokenizer.stoi: {tokenizer.stoi}")
+
+        tokenizer = Tokenizer()
+        tokenizer.fit_on_texts(train['SMILES_spe'].values)
+        torch.save(tokenizer, 'data/tokenizer_smiles_spe.pth')
+        tokenizer.save('data/tokenizer_smiles_spe.json')
+        print('Saved tokenizer_smiles_spe')
+    #     print(f"tokenizer.stoi: {tokenizer.stoi}")
 
 #     train.to_pickle('data/train.pkl')
 #     print('Saved preprocessed train.pkl')
-    
+
     folds = train.copy()
     Fold = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
     for n, (train_index, val_index) in enumerate(Fold.split(folds, [1] * len(folds))):

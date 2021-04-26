@@ -50,11 +50,14 @@ def batch_convert_smiles_to_inchi(smiles_list, num_workers=8):
 
 def get_score(y_true, y_pred):
     scores = []
+    exact_match = 0
     for true, pred in zip(y_true, y_pred):
         score = Levenshtein.distance(true, pred)
         scores.append(score)
+        exact_match += int(true == pred)
     avg_score = np.mean(scores)
-    return avg_score
+    exact_match = exact_match / len(y_true)
+    return avg_score, exact_match
 
 
 def init_logger(log_file='train.log'):

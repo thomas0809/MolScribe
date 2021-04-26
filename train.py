@@ -33,7 +33,7 @@ warnings.filterwarnings('ignore')
 
 class CFG:
     max_len=120
-    print_freq=100
+    print_freq=200
     num_workers=4
     scheduler='CosineAnnealingLR' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
     encoder_lr=1e-4
@@ -108,9 +108,8 @@ def get_model(args, tokenizer, device, load_path=None, ddp=True):
     return encoder, decoder
 
 
-def train_fn(train_loader, encoder, decoder, criterion, 
-             encoder_optimizer, decoder_optimizer, epoch,
-             encoder_scheduler, decoder_scheduler, device, args):
+def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch,
+             encoder_scheduler, decoder_scheduler, device, global_step, SUMMARY, args):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -119,7 +118,7 @@ def train_fn(train_loader, encoder, decoder, criterion,
     decoder.train()
     
     start = end = time.time()
-    global_step = 0
+
     for step, (images, labels, label_lengths) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
@@ -151,6 +150,8 @@ def train_fn(train_loader, encoder, decoder, criterion,
             encoder_optimizer.zero_grad()
             decoder_optimizer.zero_grad()
             global_step += 1
+            if SUMMARY and global_step % 10 == 0:
+                SUMMARY.add_scalar('train_loss', losses.avg, global_step)
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
@@ -183,7 +184,7 @@ def train_fn(train_loader, encoder, decoder, criterion,
     elif isinstance(decoder_scheduler, CosineAnnealingWarmRestarts):
         decoder_scheduler.step()
         
-    return losses.avg
+    return losses.avg, global_step
 
 
 def valid_fn(valid_loader, encoder, decoder, tokenizer, device):
@@ -208,7 +209,7 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device):
         predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
         _text_preds = tokenizer.predict_captions(predicted_sequence)
 #         text_preds.append(_text_preds)
-        for idx, text in zip(indices, _text_preds):
+        for idx, text in zip(indices.tolist(), _text_preds):
             text_preds[idx] = text
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -231,7 +232,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     
     SUMMARY = None
     
-    if args.local_rank == 0:
+    if args.local_rank == 0 and not args.debug:
         # LOGGER = init_logger()
         SUMMARY = init_summary_writer(save_path)
         
@@ -284,6 +285,8 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
 
     best_score = np.inf
     best_loss = np.inf
+    
+    global_step = 0
 
     for epoch in range(args.epochs):
         
@@ -293,9 +296,9 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
         start_time = time.time()
 
         # train
-        avg_loss = train_fn(train_loader, encoder, decoder, criterion, 
-                            encoder_optimizer, decoder_optimizer, epoch, 
-                            encoder_scheduler, decoder_scheduler, device, args)
+        avg_loss, global_step = train_fn(
+            train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch, 
+            encoder_scheduler, decoder_scheduler, device, global_step, SUMMARY, args)
         
         # eval
         scores = inference(args, valid_df, tokenizer, encoder, decoder, save_path, split='valid')
@@ -308,7 +311,6 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
         print_rank_0(f'Epoch {epoch+1} - avg_train_loss: {avg_loss:.4f}  time: {elapsed:.0f}s')
         print_rank_0(f'Epoch {epoch+1} - Score: ' + json.dumps(scores))
         
-        SUMMARY.add_scalar('train_loss', avg_loss, epoch)
         for key in scores:
             SUMMARY.add_scalar(f'valid_{key}', scores[key], epoch)
 
@@ -321,7 +323,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
                    }
         torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
 
-        score = scores['inchi']
+        score = scores['inchi'] if args.format == 'inchi' else scores['smiles']
 
         if score < best_score:
             best_score = score
@@ -347,7 +349,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                             drop_last=False)
     
     if encoder is None or decoder is None:
-        encoder, decoder = get_model(args, tokenizer, device, save_path, ddp=False)
+        encoder, decoder = get_model(args, tokenizer, device, save_path, ddp=True)
     
     local_preds = valid_fn(dataloader, encoder, decoder, tokenizer, device)
     all_preds = [None for i in range(dist.get_world_size())]
@@ -377,13 +379,13 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     # Compute scores
     scores = {}
     if split == 'valid':
-        scores['inchi'] = get_score(data_df['InChI'].values, pred_df['InChI'].values)
+        scores['inchi'], scores['inchi_em'] = get_score(data_df['InChI'].values, pred_df['InChI'].values)
         if args.format != 'inchi':
-            scores['smiles'] = get_score(data_df['SMILES'].values, pred_df['SMILES'].values)
+            scores['smiles'], scores['smiles_em'] = get_score(data_df['SMILES'].values, pred_df['SMILES'].values)
             print('label:')
-            print(data_df['SMILES'].values[:5])
+            print(data_df['SMILES'].values[:4])
             print('pred:')
-            print(pred_df['SMILES'].values[:5])
+            print(pred_df['SMILES'].values[:4])
             
     # Save predictions
     if split == 'test':
