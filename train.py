@@ -62,11 +62,14 @@ def get_args():
     parser.add_argument('--epochs', type=int, default=8)
     parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
+    parser.add_argument('--load_path', type=str, default=None)
     parser.add_argument('--save_path', type=str, default='output/')
     parser.add_argument('--do_train', action='store_true')
     parser.add_argument('--do_valid', action='store_true')
     parser.add_argument('--do_test', action='store_true')
+    parser.add_argument('--concat_valid', action='store_true', help='Concatenate valid data for training.')
     parser.add_argument('--local_rank', type=int, default=-1, metavar='N', help='Local process rank.')
+    parser.add_argument('--init_scheduler', action='store_true')
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
     return args
@@ -93,11 +96,10 @@ def get_model(args, tokenizer, device, load_path=None, ddp=True):
         encoder.load_state_dict(remove_prefix(states['encoder']))
         decoder.load_state_dict(remove_prefix(states['decoder']))
         print_rank_0(f"Model loaded from {load_path}")
+    
     encoder.to(device)
     decoder.to(device)
-#     print('to device', args.local_rank)
-#     dist.barrier()
-#     print('barrier', args.local_rank, flush=True)
+    
     if ddp and args.local_rank != -1:
         encoder = DDP(encoder, device_ids=[args.local_rank], output_device=args.local_rank)
         decoder = DDP(decoder, device_ids=[args.local_rank], output_device=args.local_rank)
@@ -106,6 +108,42 @@ def get_model(args, tokenizer, device, load_path=None, ddp=True):
 #         decoder = nn.DataParallel(decoder)
 
     return encoder, decoder
+
+
+def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
+    
+    def get_scheduler(optimizer):
+        if CFG.scheduler=='ReduceLROnPlateau':
+            scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=CFG.factor, patience=CFG.patience, verbose=True, eps=CFG.eps)
+        elif CFG.scheduler=='CosineAnnealingLR':
+            scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=CFG.min_lr, last_epoch=-1)
+        elif CFG.scheduler=='CosineAnnealingWarmRestarts':
+            scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=CFG.T_0, T_mult=1, eta_min=CFG.min_lr, last_epoch=-1)
+        return scheduler
+    
+    encoder_optimizer = AdamW(encoder.parameters(), lr=CFG.encoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
+    encoder_scheduler = get_scheduler(encoder_optimizer)
+
+    decoder_optimizer = AdamW(decoder.parameters(), lr=CFG.decoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
+    decoder_scheduler = get_scheduler(decoder_optimizer)
+    
+    if load_path:
+        states = torch.load(
+            os.path.join(load_path, f'{args.encoder}_{args.decoder}_best.pth'),
+            map_location=torch.device('cpu')
+        )
+        encoder_optimizer.load_state_dict(states['encoder_optimizer'])
+        decoder_optimizer.load_state_dict(states['decoder_optimizer'])
+        if not args.init_scheduler:
+            for group in encoder_optimizer.param_groups:
+                group['lr'] = CFG.encoder_lr
+            for group in decoder_optimizer.param_groups:
+                group['lr'] = CFG.decoder_lr
+            encoder_scheduler.load_state_dict(states['encoder_scheduler'])
+            decoder_scheduler.load_state_dict(states['decoder_scheduler'])
+        print_rank_0(f"Optimizer loaded from {load_path}")
+        
+    return encoder_optimizer, encoder_scheduler, decoder_optimizer, decoder_scheduler
 
 
 def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch,
@@ -150,8 +188,6 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
             encoder_optimizer.zero_grad()
             decoder_optimizer.zero_grad()
             global_step += 1
-            if SUMMARY and global_step % 10 == 0:
-                SUMMARY.add_scalar('train_loss', losses.avg, global_step)
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
@@ -256,27 +292,12 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
                               collate_fn=bms_collate)
 
     # ====================================================
-    # scheduler 
-    # ====================================================
-    def get_scheduler(optimizer):
-        if CFG.scheduler=='ReduceLROnPlateau':
-            scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=CFG.factor, patience=CFG.patience, verbose=True, eps=CFG.eps)
-        elif CFG.scheduler=='CosineAnnealingLR':
-            scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=CFG.min_lr, last_epoch=-1)
-        elif CFG.scheduler=='CosineAnnealingWarmRestarts':
-            scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=CFG.T_0, T_mult=1, eta_min=CFG.min_lr, last_epoch=-1)
-        return scheduler
-
-    # ====================================================
     # model & optimizer
     # ====================================================
-    encoder, decoder = get_model(args, tokenizer, device)
+    encoder, decoder = get_model(args, tokenizer, device, load_path=args.load_path)
     
-    encoder_optimizer = AdamW(encoder.parameters(), lr=CFG.encoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
-    encoder_scheduler = get_scheduler(encoder_optimizer)
-
-    decoder_optimizer = AdamW(decoder.parameters(), lr=CFG.decoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
-    decoder_scheduler = get_scheduler(decoder_optimizer)
+    encoder_optimizer, encoder_scheduler, decoder_optimizer, decoder_scheduler = \
+        get_optimizer_and_scheduler(args, encoder, decoder, load_path=args.load_path)
 
     # ====================================================
     # loop
@@ -287,13 +308,16 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     best_loss = np.inf
     
     global_step = 0
+    start_epoch = encoder_scheduler.last_epoch
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         
         dist.barrier()
         train_sampler.set_epoch(epoch)
         
         start_time = time.time()
+        encoder_lr = encoder_scheduler.get_lr()[0]
+        decoder_lr = decoder_scheduler.get_lr()[0]
 
         # train
         avg_loss, global_step = train_fn(
@@ -311,15 +335,20 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
         print_rank_0(f'Epoch {epoch+1} - avg_train_loss: {avg_loss:.4f}  time: {elapsed:.0f}s')
         print_rank_0(f'Epoch {epoch+1} - Score: ' + json.dumps(scores))
         
-        for key in scores:
-            SUMMARY.add_scalar(f'valid_{key}', scores[key], epoch)
+        if SUMMARY:
+            SUMMARY.add_scalar('train/loss', avg_loss, epoch)
+            SUMMARY.add_scalar('train/encoder_lr', encoder_lr, epoch)
+            SUMMARY.add_scalar('train/decoder_lr', decoder_lr, epoch)
+            for key in scores:
+                SUMMARY.add_scalar(f'valid/{key}', scores[key], epoch)
 
         save_obj = {'encoder': encoder.state_dict(), 
                     'encoder_optimizer': encoder_optimizer.state_dict(), 
                     'encoder_scheduler': encoder_scheduler.state_dict(), 
                     'decoder': decoder.state_dict(),
                     'decoder_optimizer': decoder_optimizer.state_dict(), 
-                    'decoder_scheduler': decoder_scheduler.state_dict()
+                    'decoder_scheduler': decoder_scheduler.state_dict(),
+                    'global_step': global_step
                    }
         torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
 
@@ -426,6 +455,8 @@ def main():
         valid_df = pd.read_csv('data/valid_folds.csv')
         valid_df['file_path'] = valid_df['image_id'].apply(get_train_file_path)
         print_rank_0(f'valid.shape: {valid_df.shape}')
+        if args.concat_valid:
+            train_df = pd.concat([train_df, valid_df])
     
     if args.do_test:
         test_df = pd.read_csv('data/sample_submission.csv')
@@ -433,7 +464,7 @@ def main():
         print_rank_0(f'test.shape: {test_df.shape}')
 
     if args.debug:
-        args.epochs = 2
+#         args.epochs = 2
         args.save_path = 'output/debug'
         CFG.print_freq = 50
         if args.do_train:

@@ -5,3 +5,4 @@ output/
 **/__pycache__
 submission.csv
 ensemble.csv
+tmp.ipynb
