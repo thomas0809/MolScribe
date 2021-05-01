@@ -12,30 +12,37 @@ python -m torch.distributed.launch \
     train.py \
     --format atomtok \
     --input_size 384 \
-    --encoder swin_base_patch4_window12_384 \
+    --encoder swin_large_patch4_window12_384 \
     --decoder_scale 2 \
-    --save_path output/swin_base_384_epoch_16_cont \
-    --load_path output/swin_base_384_epoch_16 \
-    --epochs 20 \
+    --load_path output/swin_large_384_epoch_16 \
+    --save_path output/swin_large_384_epoch_16 \
+    --epochs 16 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
-    --init_scheduler \
     --do_train \
-    --do_test
+    --do_test \
+    --fp16
 
 #     --do_train \
 #     --do_test \
 
 
 # swin_base
-#     --encoder swin_large_patch4_window12_384 \
-#     --decoder_scale 2 \
-#     --save_path output/swin_large_384_epoch_16 \
-
-# swin_large
 #     --encoder swin_base_patch4_window12_384 \
 #     --decoder_scale 2 \
 #     --save_path output/swin_base_384_epoch_16 \
+
+#     --encoder swin_base_patch4_window12_384 \
+#     --decoder_scale 2 \
+#     --save_path output/swin_base_384_epoch_16_cont \
+#     --load_path output/swin_base_384_epoch_16 \
+#     --init_scheduler \
+
+# swin_large
+#     --encoder swin_large_patch4_window12_384 \
+#     --decoder_scale 2 \
+#     --load_path output/swin_large_384_epoch_16 \
+#     --save_path output/swin_large_384_epoch_16 \
 
 # resnet101
 #     --encoder resnet101d \

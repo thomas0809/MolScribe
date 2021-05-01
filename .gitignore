@@ -6,3 +6,4 @@ output/
 submission.csv
 ensemble.csv
 tmp.ipynb
+tmp/

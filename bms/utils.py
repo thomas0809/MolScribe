@@ -73,7 +73,8 @@ def init_logger(log_file='train.log'):
     return logger
 
 def init_summary_writer(save_path):
-    summary = SummaryWriter(os.path.join(save_path, datetime.now().strftime("%Y%m%d-%H%M%S")))
+    # summary = SummaryWriter(os.path.join(save_path, datetime.now().strftime("%Y%m%d-%H%M%S")))
+    summary = SummaryWriter(save_path)
     return summary
 
 def seed_torch(seed=42):

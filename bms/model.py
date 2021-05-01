@@ -160,8 +160,8 @@ class DecoderWithAttention(nn.Module):
         # set decode length by caption length - 1 because of omitting start token
         decode_lengths = (caption_lengths - 1).tolist()
 #         max(decode_lengths)
-        predictions = torch.zeros(batch_size, self.max_len, vocab_size).to(device)
-        alphas = torch.zeros(batch_size, self.max_len, num_pixels).to(device)
+        predictions = torch.zeros(batch_size, self.max_len, vocab_size, device=device)
+        alphas = torch.zeros(batch_size, self.max_len, num_pixels, device=device)
         # predict sequence
         for t in range(max(decode_lengths)):
             batch_size_t = sum([l > t for l in decode_lengths])
@@ -176,7 +176,7 @@ class DecoderWithAttention(nn.Module):
             preds, h, c, hh, cc = self.lstm_step(x, h, c, hh, cc, batch_size_t)
             predictions[:batch_size_t, t, :] = preds
             alphas[:batch_size_t, t, :] = alpha
-        decode_lengths = torch.Tensor(decode_lengths).to(device)
+#         decode_lengths = torch.Tensor(decode_lengths).to(device)
         return predictions, encoded_captions, decode_lengths
 
     def predict(self, encoder_out):

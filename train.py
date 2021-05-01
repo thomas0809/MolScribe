@@ -15,11 +15,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch.optim import Adam, AdamW, SGD
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, RandomSampler
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+
+from apex import amp
 
 from bms.dataset import TrainDataset, TestDataset, bms_collate
 from bms.model import Encoder, DecoderWithAttention
@@ -69,6 +71,7 @@ def get_args():
     parser.add_argument('--do_test', action='store_true')
     parser.add_argument('--concat_valid', action='store_true', help='Concatenate valid data for training.')
     parser.add_argument('--local_rank', type=int, default=-1, metavar='N', help='Local process rank.')
+    parser.add_argument('--fp16', action='store_true')
     parser.add_argument('--init_scheduler', action='store_true')
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
@@ -99,13 +102,6 @@ def get_model(args, tokenizer, device, load_path=None, ddp=True):
     
     encoder.to(device)
     decoder.to(device)
-    
-    if ddp and args.local_rank != -1:
-        encoder = DDP(encoder, device_ids=[args.local_rank], output_device=args.local_rank)
-        decoder = DDP(decoder, device_ids=[args.local_rank], output_device=args.local_rank)
-        print_rank_0("DDP setup finished")
-#         encoder = nn.DataParallel(encoder)
-#         decoder = nn.DataParallel(decoder)
 
     return encoder, decoder
 
@@ -134,17 +130,27 @@ def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
         )
         encoder_optimizer.load_state_dict(states['encoder_optimizer'])
         decoder_optimizer.load_state_dict(states['decoder_optimizer'])
-        if not args.init_scheduler:
+        if args.init_scheduler:
             for group in encoder_optimizer.param_groups:
                 group['lr'] = CFG.encoder_lr
             for group in decoder_optimizer.param_groups:
                 group['lr'] = CFG.decoder_lr
+        else:
             encoder_scheduler.load_state_dict(states['encoder_scheduler'])
             decoder_scheduler.load_state_dict(states['decoder_scheduler'])
         print_rank_0(f"Optimizer loaded from {load_path}")
         
     return encoder_optimizer, encoder_scheduler, decoder_optimizer, decoder_scheduler
 
+
+def setup_ddp(args, models, optimizers):
+    if args.fp16:
+        models, optimizers = amp.initialize(models, optimizers, opt_level="O1")
+    if args.local_rank != -1:
+        models = [DDP(model, device_ids=[args.local_rank], output_device=args.local_rank) for model in models]
+        print_rank_0("DDP setup finished") 
+    return models, optimizers
+              
 
 def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch,
              encoder_scheduler, decoder_scheduler, device, global_step, SUMMARY, args):
@@ -157,21 +163,21 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
     
     start = end = time.time()
 
-    for step, (images, labels, label_lengths) in enumerate(train_loader):
+    for step, (images, refs) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
         images = images.to(device)
-        labels = labels.to(device)
-        label_lengths = label_lengths.to(device)
+        labels = refs[args.format][0].to(device)
+        label_lengths = refs[args.format][1].to(device)
         batch_size = images.size(0)
         features = encoder(images)
         predictions, caps_sorted, decode_lengths = decoder(features, labels, label_lengths)
         targets = caps_sorted[:, 1:]
         # multi-gpu: needs to sort
-        decode_lengths, sort_ind = decode_lengths.sort(dim=0, descending=True)
-        predictions = predictions[sort_ind]
-        targets = targets[sort_ind]
-        decode_lengths = decode_lengths.tolist()
+#         decode_lengths, sort_ind = decode_lengths.sort(dim=0, descending=True)
+#         predictions = predictions[sort_ind]
+#         targets = targets[sort_ind]
+#         decode_lengths = decode_lengths.tolist()
         predictions = pack_padded_sequence(predictions, decode_lengths, batch_first=True).data
         targets = pack_padded_sequence(targets, decode_lengths, batch_first=True).data
         loss = criterion(predictions, targets)
@@ -179,9 +185,15 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         losses.update(loss.item(), batch_size)
         if args.gradient_accumulation_steps > 1:
             loss = loss / args.gradient_accumulation_steps
-        loss.backward()
-        encoder_grad_norm = torch.nn.utils.clip_grad_norm_(encoder.parameters(), CFG.max_grad_norm)
-        decoder_grad_norm = torch.nn.utils.clip_grad_norm_(decoder.parameters(), CFG.max_grad_norm)
+        if args.fp16:
+            with amp.scale_loss(loss, [encoder_optimizer, decoder_optimizer]) as scaled_loss:
+                scaled_loss.backward()
+            encoder_grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(encoder_optimizer), CFG.max_grad_norm)
+            decoder_grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(decoder_optimizer), CFG.max_grad_norm)
+        else:
+            loss.backward()
+            encoder_grad_norm = torch.nn.utils.clip_grad_norm_(encoder.parameters(), CFG.max_grad_norm)
+            decoder_grad_norm = torch.nn.utils.clip_grad_norm_(decoder.parameters(), CFG.max_grad_norm)
         if (step + 1) % args.gradient_accumulation_steps == 0:
             encoder_optimizer.step()
             decoder_optimizer.step()
@@ -209,6 +221,7 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
                    encoder_lr=encoder_scheduler.get_lr()[0],
                    decoder_lr=decoder_scheduler.get_lr()[0],
                    ))
+            losses.reset()
             
     if isinstance(encoder_scheduler, CosineAnnealingLR):
         encoder_scheduler.step()
@@ -282,7 +295,10 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     # ====================================================
 
     train_dataset = TrainDataset(args, train_df, tokenizer, labelled=True)
-    train_sampler = DistributedSampler(train_dataset, shuffle=True)
+    if args.local_rank != -1:
+        train_sampler = DistributedSampler(train_dataset, shuffle=True)
+    else:
+        train_sampler = RandomSampler(train_dataset)
     train_loader = DataLoader(train_dataset, 
                               batch_size=args.batch_size, 
                               sampler=train_sampler,
@@ -298,6 +314,10 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     
     encoder_optimizer, encoder_scheduler, decoder_optimizer, decoder_scheduler = \
         get_optimizer_and_scheduler(args, encoder, decoder, load_path=args.load_path)
+    
+    if args.local_rank != -1 or args.fp16:
+        [encoder, decoder], [encoder_optimizer, decoder_optimizer] = \
+            setup_ddp(args, [encoder, decoder], [encoder_optimizer, decoder_optimizer])
 
     # ====================================================
     # loop
@@ -312,13 +332,14 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
 
     for epoch in range(start_epoch, args.epochs):
         
-        dist.barrier()
-        train_sampler.set_epoch(epoch)
+        if args.local_rank != -1:
+            dist.barrier()
+            train_sampler.set_epoch(epoch)
         
         start_time = time.time()
         encoder_lr = encoder_scheduler.get_lr()[0]
         decoder_lr = decoder_scheduler.get_lr()[0]
-
+        
         # train
         avg_loss, global_step = train_fn(
             train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch, 
@@ -359,7 +380,8 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
             print_rank_0(f'Epoch {epoch+1} - Save Best Score: {best_score:.4f} Model')
             torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_best.pth'))
     
-    dist.barrier()
+    if args.local_rank != -1:
+        dist.barrier()
 
 
 def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=None, split='test'):
@@ -369,9 +391,12 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     device = args.device
 
     dataset = TrainDataset(args, data_df, tokenizer, labelled=False)
-    sampler = DistributedSampler(dataset, shuffle=False)
+    if args.local_rank != -1:
+        sampler = DistributedSampler(dataset, shuffle=False)
+    else:
+        sampler = RandomSampler(dataset)
     dataloader = DataLoader(dataset, 
-                            batch_size=256, 
+                            batch_size=args.batch_size * 2, 
                             sampler=sampler, 
                             num_workers=CFG.num_workers, 
                             pin_memory=True, 
@@ -443,8 +468,9 @@ def main():
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     if args.local_rank != -1:
-        dist.init_process_group(backend='gloo', init_method='env://')
+        dist.init_process_group(backend='nccl', init_method='env://')
         torch.cuda.set_device(args.local_rank)
+        torch.backends.cudnn.benchmark = True
 
     if args.do_train:
         train_df = pd.read_csv('data/train_folds.csv')
@@ -464,11 +490,11 @@ def main():
         print_rank_0(f'test.shape: {test_df.shape}')
 
     if args.debug:
-#         args.epochs = 2
+#         args.epochs = 5
         args.save_path = 'output/debug'
         CFG.print_freq = 50
-        if args.do_train:
-            train_df = train_df.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
+#         if args.do_train:
+#             train_df = train_df.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
         if args.do_train or args.do_valid:
             valid_df = valid_df.sample(n=1000, random_state=CFG.seed).reset_index(drop=True)
         if args.do_test:
