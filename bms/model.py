@@ -159,7 +159,6 @@ class DecoderWithAttention(nn.Module):
         h, c, hh, cc = self.init_hidden_state(encoder_out)  # (batch_size, decoder_dim)
         # set decode length by caption length - 1 because of omitting start token
         decode_lengths = (caption_lengths - 1).tolist()
-#         max(decode_lengths)
         predictions = torch.zeros(batch_size, self.max_len, vocab_size, device=device)
         alphas = torch.zeros(batch_size, self.max_len, num_pixels, device=device)
         # predict sequence
@@ -168,10 +167,6 @@ class DecoderWithAttention(nn.Module):
             attention_weighted_encoding, alpha = self.attention(encoder_out[:batch_size_t], h[:batch_size_t])
             gate = self.sigmoid(self.f_beta(h[:batch_size_t]))  # gating scalar, (batch_size_t, encoder_dim)
             attention_weighted_encoding = gate * attention_weighted_encoding
-#             h, c = self.decode_step(
-#                 torch.cat([embeddings[:batch_size_t, t, :], attention_weighted_encoding], dim=1),
-#                 (h[:batch_size_t], c[:batch_size_t]))  # (batch_size_t, decoder_dim)
-#             preds = self.fc(self.dropout(h))  # (batch_size_t, vocab_size)
             x = torch.cat([embeddings[:batch_size_t, t, :], attention_weighted_encoding], dim=1)
             preds, h, c, hh, cc = self.lstm_step(x, h, c, hh, cc, batch_size_t)
             predictions[:batch_size_t, t, :] = preds
@@ -197,10 +192,6 @@ class DecoderWithAttention(nn.Module):
             attention_weighted_encoding, alpha = self.attention(encoder_out, h)
             gate = self.sigmoid(self.f_beta(h))  # gating scalar, (batch_size_t, encoder_dim)
             attention_weighted_encoding = gate * attention_weighted_encoding
-#             h, c = self.decode_step(
-#                 torch.cat([embeddings, attention_weighted_encoding], dim=1),
-#                 (h, c))  # (batch_size_t, decoder_dim)
-#             preds = self.fc(self.dropout(h))  # (batch_size_t, vocab_size)
             x = torch.cat([embeddings, attention_weighted_encoding], dim=1)
             preds, h, c, hh, cc = self.lstm_step(x, h, c, hh, cc)
             predictions[:, t, :] = preds

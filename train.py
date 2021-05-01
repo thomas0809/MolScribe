@@ -257,7 +257,6 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device):
             predictions = decoder.predict(features)
         predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
         _text_preds = tokenizer.predict_captions(predicted_sequence)
-#         text_preds.append(_text_preds)
         for idx, text in zip(indices.tolist(), _text_preds):
             text_preds[idx] = text
         # measure elapsed time
@@ -273,7 +272,6 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device):
                    sum_data_time=asMinutes(data_time.sum),
                    remain=timeSince(start, float(step+1)/len(valid_loader)),
                    ))
-#     text_preds = np.concatenate(text_preds)
     return text_preds
 
 
