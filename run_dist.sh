@@ -14,9 +14,8 @@ python -m torch.distributed.launch \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
     --decoder_scale 2 \
-    --save_path output/swin_base_384_epoch_16_all_scratch \
-    --all_data \
-    --epochs 20 \
+    --save_path output/swin_base_384_epoch_16 \
+    --epochs 16 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
