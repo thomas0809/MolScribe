@@ -34,20 +34,13 @@ This will generate `train.pkl` and tokenizers.
 
 ## Train
 ```
-CUDA_VISIBLE_DEVICES=0 python train.py \
-  --format atomtok \
-  --save-path output/ \
-  --do-train \
-  --do-test
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash run_dist.sh
 ```
 
 ## Evaluate on validation set
+Delete `--do_train --do_test` from `run_dist.sh`, and add `--do_valid`.
 ```
-CUDA_VISIBLE_DEVICES=0 python train.py \
-  --format atomtok \
-  --save-path output/resnet34_input_288_atomtok_epoch_8 \
-  --input-size 288 \
-  --do-valid
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash run_dist.sh
 ```
 
 ## TODO:
