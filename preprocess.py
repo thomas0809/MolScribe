@@ -3,6 +3,7 @@ import re
 import argparse
 import numpy as np
 import pandas as pd
+import selfies as sf
 from collections import Counter
 import multiprocessing
 from tqdm.auto import tqdm
@@ -85,19 +86,33 @@ def main():
     # ====================================================
     # preprocess train.csv
     # ====================================================
+    print('InChI')
+#     inchi = pd.read_pickle('data/train.pkl')
+#     train['InChI_text'] = inchi['InChI_text']
     train['InChI_1'] = train['InChI'].progress_apply(lambda x: x.split('/')[1])
     train['InChI_text'] = train['InChI_1'].progress_apply(split_form) + ' ' + \
-                            train['InChI'].apply(lambda x: '/'.join(x.split('/')[2:])).progress_apply(split_form2).values
+                          train['InChI'].apply(lambda x: '/'.join(x.split('/')[2:])).progress_apply(split_form2).values
     
     # ====================================================
     # SMILES
     # ====================================================
+    print('SMILES')
     smiles = pd.read_csv('data/train_smiles.csv')
     train['SMILES'] = smiles['smiles']
     smiles_atomtok = pd.read_csv('data/train_smiles_atomtok.csv')
     train['SMILES_atomtok'] = smiles_atomtok['smiles']
-    smiles_spe = pd.read_csv('data/train_smiles_spe_chembl.csv')
-    train['SMILES_spe'] = smiles_spe['smiles']
+#     smiles_spe = pd.read_csv('data/train_smiles_spe_chembl.csv')
+#     train['SMILES_spe'] = smiles_spe['smiles']
+    print('Max length:', max([len(s.split()) for s in train['SMILES_atomtok'].values]))
+    
+    print('SELFIES')
+    with multiprocessing.Pool(64) as p:
+        selfies = p.map(sf.encoder, smiles['smiles'].values)
+#     selfies = [sf.encoder(s) for s in smiles['smiles'].values]
+    selfies_tok = [' '.join(list(sf.split_selfies(s))) for s in selfies]
+    train['SELFIES'] = selfies
+    train['SELFIES_tok'] = selfies_tok
+    print('Max length:', max([len(s.split()) for s in train['SELFIES_tok'].values]))
     
     # ====================================================
     # create tokenizer
@@ -117,12 +132,18 @@ def main():
         print('Saved tokenizer_smiles_atomtok')
     #     print(f"tokenizer.stoi: {tokenizer.stoi}")
 
-        tokenizer = Tokenizer()
-        tokenizer.fit_on_texts(train['SMILES_spe'].values)
-        torch.save(tokenizer, 'data/tokenizer_smiles_spe.pth')
-        tokenizer.save('data/tokenizer_smiles_spe.json')
-        print('Saved tokenizer_smiles_spe')
+#         tokenizer = Tokenizer()
+#         tokenizer.fit_on_texts(train['SMILES_spe'].values)
+#         torch.save(tokenizer, 'data/tokenizer_smiles_spe.pth')
+#         tokenizer.save('data/tokenizer_smiles_spe.json')
+#         print('Saved tokenizer_smiles_spe')
     #     print(f"tokenizer.stoi: {tokenizer.stoi}")
+    
+        tokenizer = Tokenizer()
+        tokenizer.fit_on_texts(train['SELFIES_tok'].values)
+        torch.save(tokenizer, 'data/tokenizer_selfies.pth')
+        tokenizer.save('data/tokenizer_selfies.json')
+        print('Saved tokenizer_selfies')
 
 #     train.to_pickle('data/train.pkl')
 #     print('Saved preprocessed train.pkl')

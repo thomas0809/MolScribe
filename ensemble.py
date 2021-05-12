@@ -13,7 +13,6 @@ for i in range(len(inchi1)):
     if inchi1[i] == 'InChI=1S/H2O/h1H2':
         inchi1[i] = inchi2[i]
         replaced += 1
-        # print(i, inchi2[i])
 
 print(f'Replaced {replaced}')
 

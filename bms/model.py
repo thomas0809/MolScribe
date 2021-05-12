@@ -7,28 +7,39 @@ import torch.nn.functional as F
 import timm
 import math
 
+from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID
+from bms.inference import GreedySearch, BeamSearch
+
 
 class Encoder(nn.Module):
-    def __init__(self, model_name='resnet18', pretrained=False):
+    def __init__(self, model_name='resnet18', pretrained=False, use_checkpoint=False):
         super().__init__()
         self.model_name = model_name
         if model_name.startswith('resnet'):
+            self.model_type = 'resnet'
             self.cnn = timm.create_model(model_name, pretrained=pretrained)
             self.n_features = self.cnn.num_features  # encoder_dim
             self.cnn.global_pool = nn.Identity()
             self.cnn.fc = nn.Identity()
         elif model_name.startswith('swin'):
-            self.transformer = timm.create_model(model_name, pretrained=pretrained)
+            self.model_type = 'swin'
+            self.transformer = timm.create_model(model_name, pretrained=pretrained, use_checkpoint=use_checkpoint)
             self.n_features = self.transformer.num_features
             self.transformer.head = nn.Identity()
+        elif 'efficientnet' in model_name:
+            self.model_type = 'efficientnet'
+            self.cnn = timm.create_model(model_name, pretrained=pretrained)
+            self.n_features = self.cnn.num_features
+            self.cnn.global_pool = nn.Identity()
+            self.cnn.classifier = nn.Identity()
         else:
             raise NotImplemented
 
     def forward(self, x):
-        if self.model_name.startswith('resnet'):
+        if self.model_type in ['resnet', 'efficientnet']:
             features = self.cnn(x)
             features = features.permute(0, 2, 3, 1)
-        elif self.model_name.startswith('swin'):
+        elif self.model_type == 'swin':
             def swin_features(transformer, x):
                 x = transformer.patch_embed(x)
                 if transformer.absolute_pos_embed is not None:
@@ -74,7 +85,7 @@ class DecoderWithAttention(nn.Module):
     Decoder network with attention network used for training
     """
 
-    def __init__(self, attention_dim, embed_dim, decoder_dim, max_len, vocab_size, tokenizer, n_layer=1, encoder_dim=512, dropout=0.5):
+    def __init__(self, attention_dim, embed_dim, decoder_dim, max_len, tokenizer, n_layer=1, encoder_dim=512, dropout=0.5):
         """
         :param attention_dim: input size of attention network
         :param embed_dim: input size of embedding network
@@ -89,10 +100,10 @@ class DecoderWithAttention(nn.Module):
         self.embed_dim = embed_dim
         self.decoder_dim = decoder_dim
         self.max_len = max_len
-        self.vocab_size = vocab_size
+        self.vocab_size = len(tokenizer)
         self.tokenizer = tokenizer
         self.attention = Attention(encoder_dim, decoder_dim, attention_dim)  # attention network
-        self.embedding = nn.Embedding(vocab_size, embed_dim)  # embedding layer
+        self.embedding = nn.Embedding(self.vocab_size, embed_dim)  # embedding layer
         self.dropout = nn.Dropout(p=dropout)
         self.decode_step = nn.LSTMCell(embed_dim + encoder_dim, decoder_dim, bias=True)  # decoding LSTMCell
         self.n_layer = n_layer
@@ -104,7 +115,7 @@ class DecoderWithAttention(nn.Module):
         self.init_c = nn.Linear(encoder_dim, decoder_dim)  # linear layer to find initial cell state of LSTMCell
         self.f_beta = nn.Linear(decoder_dim, encoder_dim)  # linear layer to create a sigmoid-activated gate
         self.sigmoid = nn.Sigmoid()
-        self.fc = nn.Linear(decoder_dim, vocab_size)  # linear layer to find scores over vocabulary
+        self.fc = nn.Linear(decoder_dim, self.vocab_size)  # linear layer to find scores over vocabulary
         self.init_weights()  # initialize some layers with the uniform distribution
 
     def init_weights(self):
@@ -195,12 +206,123 @@ class DecoderWithAttention(nn.Module):
             x = torch.cat([embeddings, attention_weighted_encoding], dim=1)
             preds, h, c, hh, cc = self.lstm_step(x, h, c, hh, cc)
             predictions[:, t, :] = preds
-            if np.argmax(preds.detach().cpu().numpy()) == self.tokenizer.stoi["<eos>"]:
+            if np.all(np.argmax(preds.detach().cpu().numpy(), -1) == self.tokenizer.stoi["<eos>"]):
                 break
             embeddings = self.embedding(torch.argmax(preds, -1))
         return predictions
+    
+    def decode(self, encoder_out, beam_size=1, n_best=1):
+        """An alternative to `predict`, decoding with greedy or beam search.
+        """
+        memory_bank = encoder_out # rename
+        if encoder_out.dim() == 4: # for resnet encoders
+            memory_bank = memory_bank.view(encoder_out.size(0), -1, encoder_out.size(-1))  # (batch_size, memory_length, encoder_dim)
+        batch_size, memory_length, encoder_dim = memory_bank.shape
+
+        if beam_size == 1:
+            decode_strategy = GreedySearch(
+                pad=PAD_ID,
+                bos=SOS_ID,
+                eos=EOS_ID,
+                batch_size=batch_size,
+                min_length=0,
+                return_attention=False,
+                max_length=self.max_len,
+                sampling_temp=1,
+                keep_topk=1)
+        else:
+            decode_strategy = BeamSearch(
+                pad=PAD_ID,
+                bos=SOS_ID,
+                eos=EOS_ID,
+                batch_size=batch_size,
+                beam_size=beam_size,
+                n_best=n_best,
+                min_length=0,
+                return_attention=False,
+                max_length=self.max_len)
+
+        # fill in first decoding step as self.bos (self.alive_seq)
+        _, memory_bank = decode_strategy.initialize(memory_bank)
+        # initialize hidden state and cell state of LSTM cell
+        h, c, hh, cc = self.init_hidden_state(memory_bank)
+
+        # for beam search
+        # if fn_map_state is not None:
+        #     self.map_state(fn_map_state)
+
+        for step in range(self.max_len):
+            decoder_input = decode_strategy.current_predictions
+            embeddings = self.embedding(decoder_input)
+
+            # Decoder forward
+            attention_weighted_encoding, alpha = self.attention(memory_bank, h)
+            gate = self.sigmoid(self.f_beta(h))
+            attention_weighted_encoding = gate * attention_weighted_encoding
+            x = torch.cat([embeddings, attention_weighted_encoding], dim=1)
+            preds, h, c, hh, cc = self.lstm_step(x, h, c, hh, cc)
+
+            # convert preds to log_probs (critic for beam-search)
+            log_probs = F.log_softmax(preds, dim=-1)
+
+            decode_strategy.advance(log_probs, alpha)
+            any_finished = decode_strategy.is_finished.any()
+            if any_finished:
+                decode_strategy.update_finished()
+                if decode_strategy.done:
+                    break
+
+            select_indices = decode_strategy.select_indices
+            if beam_size > 1 or any_finished:
+                memory_bank = memory_bank.index_select(0, select_indices)
+                h = h.index_select(0, select_indices)
+                c = c.index_select(0, select_indices)
+                hh = [x.index_select(0, select_indices) for x in hh]
+                cc = [x.index_select(0, select_indices) for x in cc]
+
+        return decode_strategy.predictions
 
 
+class MultiTaskDecoder(nn.Module):
+    
+    def __init__(self, formats, attention_dim, embed_dim, decoder_dim, max_len, tokenizer, n_layer=1, encoder_dim=512, dropout=0.5):
+        super(MultiTaskDecoder, self).__init__()
+        self.formats = formats
+        decoder = {}
+        for format_ in self.formats:
+            decoder[format_] = DecoderWithAttention(
+                attention_dim=attention_dim,
+                embed_dim=embed_dim,
+                encoder_dim=encoder_dim,
+                decoder_dim=decoder_dim,
+                max_len=FORMAT_INFO[format_]['max_len'],
+                dropout=dropout,
+                n_layer=n_layer,
+                tokenizer=tokenizer[format_])
+        self.decoder = nn.ModuleDict(decoder)
+        
+    def forward(self, encoder_out, refs):
+        results = {}
+        device = encoder_out.device
+        for format_ in self.formats:
+            labels = refs[format_][0].to(device)
+            label_lengths = refs[format_][1].to(device)
+            results[format_] = self.decoder[format_](encoder_out, labels, label_lengths)
+        return results
+    
+    def predict(self, encoder_out):
+        results = {}
+        for format_ in self.formats:
+            results[format_] = self.decoder[format_].predict(encoder_out)
+        return results
+    
+    def decode(self, encoder_out, beam_size=1, n_best=1):
+        results = {}
+        for format_ in self.formats:
+            results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
+        return results
+    
+    
 class PositionalEncoding(nn.Module):
     """
     Position encoding used with Transformer

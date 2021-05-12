@@ -4,11 +4,14 @@ import numpy as np
 import torch
 import math
 import time
+import json
+import copy
 from datetime import datetime
 import multiprocessing
 import Levenshtein
 import rdkit
 import rdkit.Chem as Chem
+import selfies as sf
 rdkit.RDLogger.DisableLog('rdApp.*')
 
 from tensorboardX import SummaryWriter
@@ -17,18 +20,39 @@ from tensorboardX import SummaryWriter
 FORMAT_INFO = {
     "inchi": {
         "name": "InChI_text",
-        "tokenizer": "tokenizer_inchi.pth"
+        "tokenizer": "tokenizer_inchi.pth",
+        "max_len": 300
     },
     "atomtok": {
         "name": "SMILES_atomtok",
-        "tokenizer": "tokenizer_smiles_atomtok.pth"
+        "tokenizer": "tokenizer_smiles_atomtok.pth",
+        "max_len": 120
     },
     "spe": {
         "name": "SMILES_spe",
         "tokenizer": "tokenizer_smiles_spe.pth"
+    },
+    "selfies": {
+        "name": "SELFIES_tok",
+        "tokenizer": "tokenizer_selfies.pth",
+        "max_len": 120
     }
 }
 
+
+def is_valid(str_, format_='smiles'):
+    try:
+        if format_ == 'smiles':
+            mol = Chem.MolFromSmiles(str_)
+            return True
+        elif format_ == 'inchi':
+            mol = Chem.MolFromInChI(str_)
+            return True
+        else:
+            return False
+    except:
+        return False
+    
 
 def convert_smiles_to_inchi(smiles):
     try:
@@ -39,13 +63,29 @@ def convert_smiles_to_inchi(smiles):
     return inchi
 
 
-def batch_convert_smiles_to_inchi(smiles_list, num_workers=8):
+def batch_convert_smiles_to_inchi(smiles_list, num_workers=16):
     with multiprocessing.Pool(num_workers) as p:
         inchi_list = p.map(convert_smiles_to_inchi, smiles_list)
     n_success = sum([x is not None for x in inchi_list])
     r_success = n_success / len(inchi_list)
     inchi_list = [x if x else 'InChI=1S/H2O/h1H2' for x in inchi_list]
     return inchi_list, r_success
+
+
+def batch_convert_selfies_to_inchi(selfies_list, num_workers=16):
+    with multiprocessing.Pool(num_workers) as p:
+        smiles_list = p.map(sf.decoder, selfies_list)
+    return batch_convert_smiles_to_inchi(smiles_list)
+
+
+def merge_inchi(inchi1, inchi2):
+    replaced = 0
+    inchi1 = copy.deepcopy(inchi1)
+    for i in range(len(inchi1)):
+        if inchi1[i] == 'InChI=1S/H2O/h1H2':
+            inchi1[i] = inchi2[i]
+            replaced += 1
+    return inchi1, replaced
 
 
 def get_score(y_true, y_pred):

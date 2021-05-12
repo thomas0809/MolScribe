@@ -21,12 +21,10 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealin
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 
-from apex import amp
-
 from bms.dataset import TrainDataset, TestDataset, bms_collate
-from bms.model import Encoder, DecoderWithAttention
-from bms.utils import init_logger, init_summary_writer, seed_torch, get_score, AverageMeter, asMinutes, timeSince, \
-                      batch_convert_smiles_to_inchi, FORMAT_INFO, print_rank_0
+from bms.model import Encoder, DecoderWithAttention, MultiTaskDecoder
+from bms.utils import init_logger, init_summary_writer, seed_torch, get_score, AverageMeter, asMinutes, timeSince, is_valid, \
+                      batch_convert_smiles_to_inchi, batch_convert_selfies_to_inchi, merge_inchi, FORMAT_INFO, PAD_ID, print_rank_0
 
 
 import warnings 
@@ -47,7 +45,6 @@ class CFG:
     embed_dim=256
     decoder_dim=512
     dropout=0.5
-    seed=42
 
 
 def get_args():
@@ -57,8 +54,10 @@ def get_args():
     parser.add_argument('--decoder', type=str, default='lstm')
     parser.add_argument('--decoder_scale', type=int, default=1)
     parser.add_argument('--decoder_layer', type=int, default=1)
+    parser.add_argument('--use_checkpoint', action='store_true')
     # Data
     parser.add_argument('--format', type=str, choices=['inchi','atomtok','spe'], default='atomtok')
+    parser.add_argument('--formats', type=str, default=None)
     parser.add_argument('--input_size', type=int, default=224)
     # Training
     parser.add_argument('--epochs', type=int, default=8)
@@ -66,34 +65,48 @@ def get_args():
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parser.add_argument('--load_path', type=str, default=None)
     parser.add_argument('--save_path', type=str, default='output/')
+    parser.add_argument('--load_ckpt', type=str, default='best')
     parser.add_argument('--do_train', action='store_true')
     parser.add_argument('--do_valid', action='store_true')
     parser.add_argument('--do_test', action='store_true')
-    parser.add_argument('--concat_valid', action='store_true', help='Concatenate valid data for training.')
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--all_data', action='store_true', help='Use both train and valid data for training.')
     parser.add_argument('--local_rank', type=int, default=-1, metavar='N', help='Local process rank.')
     parser.add_argument('--fp16', action='store_true')
     parser.add_argument('--init_scheduler', action='store_true')
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--debug', action='store_true')
+    # Inference
+    parser.add_argument('--beam_size', type=int, default=1)
+    parser.add_argument('--n_best', type=int, default=1)
     args = parser.parse_args()
     return args
 
 
+def load_states(args, load_path):
+    if args.load_ckpt == 'best':
+        path = os.path.join(load_path, f'{args.encoder}_{args.decoder}_best.pth')
+    else:
+        path = os.path.join(load_path, f'{args.encoder}_{args.decoder}_{args.load_ckpt}.pth')
+    states = torch.load(path, map_location=torch.device('cpu'))
+    return states
+
+
 def get_model(args, tokenizer, device, load_path=None, ddp=True):
-    encoder = Encoder(args.encoder, pretrained=True)
-    decoder = DecoderWithAttention(attention_dim=CFG.attention_dim * args.decoder_scale,
-                                   embed_dim=CFG.embed_dim * args.decoder_scale,
-                                   encoder_dim=encoder.n_features,
-                                   decoder_dim=CFG.decoder_dim * args.decoder_scale,
-                                   max_len=CFG.max_len,
-                                   dropout=CFG.dropout,
-                                   n_layer=args.decoder_layer,
-                                   vocab_size=len(tokenizer),
-                                   tokenizer=tokenizer)
+    encoder = Encoder(args.encoder, pretrained=True, use_checkpoint=args.use_checkpoint)
+    decoder = MultiTaskDecoder(
+        formats=args.formats,
+        attention_dim=CFG.attention_dim * args.decoder_scale,
+        embed_dim=CFG.embed_dim * args.decoder_scale,
+        encoder_dim=encoder.n_features,
+        decoder_dim=CFG.decoder_dim * args.decoder_scale,
+        max_len=CFG.max_len,
+        dropout=CFG.dropout,
+        n_layer=args.decoder_layer,
+        tokenizer=tokenizer)
+    
     if load_path:
-        states = torch.load(
-            os.path.join(load_path, f'{args.encoder}_{args.decoder}_best.pth'),
-            map_location=torch.device('cpu')
-        )
+        states = load_states(args, load_path)
         def remove_prefix(state_dict):
             return {k.replace('module.', ''): v for k,v in state_dict.items()}
         encoder.load_state_dict(remove_prefix(states['encoder']))
@@ -102,6 +115,11 @@ def get_model(args, tokenizer, device, load_path=None, ddp=True):
     
     encoder.to(device)
     decoder.to(device)
+    
+    if args.local_rank != -1:
+        encoder = DDP(encoder, device_ids=[args.local_rank], output_device=args.local_rank)
+        decoder = DDP(decoder, device_ids=[args.local_rank], output_device=args.local_rank)
+        print_rank_0("DDP setup finished")
 
     return encoder, decoder
 
@@ -123,11 +141,8 @@ def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
     decoder_optimizer = AdamW(decoder.parameters(), lr=CFG.decoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
     decoder_scheduler = get_scheduler(decoder_optimizer)
     
-    if load_path:
-        states = torch.load(
-            os.path.join(load_path, f'{args.encoder}_{args.decoder}_best.pth'),
-            map_location=torch.device('cpu')
-        )
+    if load_path and args.resume:
+        states = load_states(args, load_path)
         encoder_optimizer.load_state_dict(states['encoder_optimizer'])
         decoder_optimizer.load_state_dict(states['decoder_optimizer'])
         if args.init_scheduler:
@@ -143,60 +158,49 @@ def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
     return encoder_optimizer, encoder_scheduler, decoder_optimizer, decoder_scheduler
 
 
-def setup_ddp(args, models, optimizers):
-    if args.fp16:
-        models, optimizers = amp.initialize(models, optimizers, opt_level="O1")
-    if args.local_rank != -1:
-        models = [DDP(model, device_ids=[args.local_rank], output_device=args.local_rank) for model in models]
-        print_rank_0("DDP setup finished") 
-    return models, optimizers
-              
-
 def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch,
-             encoder_scheduler, decoder_scheduler, device, global_step, SUMMARY, args):
+             encoder_scheduler, decoder_scheduler, scaler, device, global_step, SUMMARY, args):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
+    epoch_losses = AverageMeter()
     # switch to train mode
     encoder.train()
     decoder.train()
     
     start = end = time.time()
+    encoder_grad_norm = decoder_grad_norm = 0
 
     for step, (images, refs) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
         images = images.to(device)
-        labels = refs[args.format][0].to(device)
-        label_lengths = refs[args.format][1].to(device)
         batch_size = images.size(0)
-        features = encoder(images)
-        predictions, caps_sorted, decode_lengths = decoder(features, labels, label_lengths)
-        targets = caps_sorted[:, 1:]
-        # multi-gpu: needs to sort
-#         decode_lengths, sort_ind = decode_lengths.sort(dim=0, descending=True)
-#         predictions = predictions[sort_ind]
-#         targets = targets[sort_ind]
-#         decode_lengths = decode_lengths.tolist()
-        predictions = pack_padded_sequence(predictions, decode_lengths, batch_first=True).data
-        targets = pack_padded_sequence(targets, decode_lengths, batch_first=True).data
-        loss = criterion(predictions, targets)
+        with torch.cuda.amp.autocast(enabled=args.fp16):
+            loss = 0
+            features = encoder(images)
+            results = decoder(features, refs)
+            for format_ in args.formats:
+                predictions, caps_sorted, decode_lengths = results[format_]
+                targets = caps_sorted[:, 1:]
+                predictions = pack_padded_sequence(predictions, decode_lengths, batch_first=True).data
+                targets = pack_padded_sequence(targets, decode_lengths, batch_first=True).data
+                format_loss = criterion(predictions, targets)
+                loss = loss + format_loss
         # record loss
         losses.update(loss.item(), batch_size)
+        epoch_losses.update(loss.item(), batch_size)
         if args.gradient_accumulation_steps > 1:
             loss = loss / args.gradient_accumulation_steps
-        if args.fp16:
-            with amp.scale_loss(loss, [encoder_optimizer, decoder_optimizer]) as scaled_loss:
-                scaled_loss.backward()
-            encoder_grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(encoder_optimizer), CFG.max_grad_norm)
-            decoder_grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(decoder_optimizer), CFG.max_grad_norm)
-        else:
-            loss.backward()
+        scaler.scale(loss).backward()
+        if (step + 1) % args.gradient_accumulation_steps == 0:
+            scaler.unscale_(encoder_optimizer)
+            scaler.unscale_(decoder_optimizer)
             encoder_grad_norm = torch.nn.utils.clip_grad_norm_(encoder.parameters(), CFG.max_grad_norm)
             decoder_grad_norm = torch.nn.utils.clip_grad_norm_(decoder.parameters(), CFG.max_grad_norm)
-        if (step + 1) % args.gradient_accumulation_steps == 0:
-            encoder_optimizer.step()
-            decoder_optimizer.step()
+            scaler.step(encoder_optimizer)
+            scaler.step(decoder_optimizer)
+            scaler.update()
             encoder_optimizer.zero_grad()
             decoder_optimizer.zero_grad()
             global_step += 1
@@ -233,10 +237,22 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
     elif isinstance(decoder_scheduler, CosineAnnealingWarmRestarts):
         decoder_scheduler.step()
         
-    return losses.avg, global_step
+    return epoch_losses.avg, global_step
 
 
-def valid_fn(valid_loader, encoder, decoder, tokenizer, device):
+def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
+    
+    def _pick(preds, format_):
+        """Pick the top valid prediction from n_best outputs
+        """
+        best = tokenizer[format_].predict_caption(preds[0].cpu().numpy()) # default
+        for i, p in enumerate(preds):
+            str_ = tokenizer[format_].predict_caption(p.cpu().numpy()) if i > 0 else best
+            if is_valid(str_, format_):
+                best = str_
+                break
+        return best
+    
     batch_time = AverageMeter()
     data_time = AverageMeter()
     # switch to evaluation mode
@@ -245,20 +261,27 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device):
         decoder = decoder.module
     encoder.eval()
     decoder.eval()
-    text_preds = {}
+    all_preds = {format_:{} for format_ in args.formats}
     start = end = time.time()
     for step, (indices, images) in enumerate(valid_loader):
         # measure data loading time
         data_time.update(time.time() - end)
+        indices = indices.tolist()
         images = images.to(device)
         batch_size = images.size(0)
-        with torch.no_grad():
-            features = encoder(images)
-            predictions = decoder.predict(features)
-        predicted_sequence = torch.argmax(predictions.detach().cpu(), -1).numpy()
-        _text_preds = tokenizer.predict_captions(predicted_sequence)
-        for idx, text in zip(indices.tolist(), _text_preds):
-            text_preds[idx] = text
+        with torch.cuda.amp.autocast(enabled=args.fp16):
+            with torch.no_grad():
+                features = encoder(images)
+                # predictions = decoder.predict(features)
+                # replace predict -> decode, output predicted sequence directly
+                predictions = decoder.decode(
+                    features, beam_size=args.beam_size, n_best=args.n_best)
+        for format_ in args.formats:
+            # predicted_sequence = torch.argmax(predictions[format_].detach().cpu(), -1).numpy()
+            # text_preds = tokenizer[format_].predict_captions(predicted_sequence)
+            text_preds = [_pick(x, format_) for x in predictions[format_]]
+            for idx, text in zip(indices, text_preds):
+                all_preds[format_][idx] = text
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
@@ -270,9 +293,8 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device):
                    step, len(valid_loader), batch_time=batch_time,
                    data_time=data_time,
                    sum_data_time=asMinutes(data_time.sum),
-                   remain=timeSince(start, float(step+1)/len(valid_loader)),
-                   ))
-    return text_preds
+                   remain=timeSince(start, float(step+1)/len(valid_loader))))
+    return all_preds
 
 
 def train_loop(args, train_df, valid_df, tokenizer, save_path):
@@ -313,14 +335,12 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     encoder_optimizer, encoder_scheduler, decoder_optimizer, decoder_scheduler = \
         get_optimizer_and_scheduler(args, encoder, decoder, load_path=args.load_path)
     
-    if args.local_rank != -1 or args.fp16:
-        [encoder, decoder], [encoder_optimizer, decoder_optimizer] = \
-            setup_ddp(args, [encoder, decoder], [encoder_optimizer, decoder_optimizer])
-
+    scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
+        
     # ====================================================
     # loop
     # ====================================================
-    criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.stoi["<pad>"])
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID)
 
     best_score = np.inf
     best_loss = np.inf
@@ -341,7 +361,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
         # train
         avg_loss, global_step = train_fn(
             train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch, 
-            encoder_scheduler, decoder_scheduler, device, global_step, SUMMARY, args)
+            encoder_scheduler, decoder_scheduler, scaler, device, global_step, SUMMARY, args)
         
         # eval
         scores = inference(args, valid_df, tokenizer, encoder, decoder, save_path, split='valid')
@@ -351,7 +371,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     
         elapsed = time.time() - start_time
 
-        print_rank_0(f'Epoch {epoch+1} - avg_train_loss: {avg_loss:.4f}  time: {elapsed:.0f}s')
+        print_rank_0(f'Epoch {epoch+1} - Time: {elapsed:.0f}s')
         print_rank_0(f'Epoch {epoch+1} - Score: ' + json.dumps(scores))
         
         if SUMMARY:
@@ -371,7 +391,12 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
                    }
         torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
 
-        score = scores['inchi'] if args.format == 'inchi' else scores['smiles']
+        if 'selfies' in args.formats:
+            score = scores['selfies']
+        elif 'atomtok' in args.formats:
+            score = scores['smiles']
+        else:
+            score = scores['inchi']
 
         if score < best_score:
             best_score = score
@@ -403,50 +428,81 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     if encoder is None or decoder is None:
         encoder, decoder = get_model(args, tokenizer, device, save_path, ddp=True)
     
-    local_preds = valid_fn(dataloader, encoder, decoder, tokenizer, device)
+    local_preds = valid_fn(dataloader, encoder, decoder, tokenizer, device, args)
     all_preds = [None for i in range(dist.get_world_size())]
     dist.all_gather_object(all_preds, local_preds)
     
     if args.local_rank != 0:
         return
     
-    text_preds = [None for i in range(len(dataset))]
+    predictions = {format_:[None for i in range(len(dataset))] for format_ in args.formats}
     for preds in all_preds:
-        for idx, text in preds.items():
-            text_preds[idx] = text
+        for format_ in args.formats:
+            for idx, text in preds[format_].items():
+                predictions[format_][idx] = text
 
     pred_df = data_df[['image_id']].copy()
-    
-    if args.format == 'inchi':
-        # InChI
-        pred_df['InChI'] = [f"InChI=1S/{text}" for text in text_preds]
-    else:
-        # SMILES
-        pred_df['SMILES'] = text_preds
-        print('Converting SMILES to InChI ...')
-        inchi_list, r_success = batch_convert_smiles_to_inchi(text_preds)
-        pred_df['InChI'] = inchi_list
-        print(f'{split} SMILES to InChI success ratio: {r_success:.4f}')
-        
-    # Compute scores
     scores = {}
+    
+    for format_ in args.formats:
+        text_preds = predictions[format_]
+        if format_ == 'inchi':
+            # InChI
+            pred_df['InChI'] = [f"InChI=1S/{text}" for text in text_preds]
+        elif format_ in ['atomtok', 'spe']:
+            # SMILES
+            pred_df['SMILES'] = text_preds
+            print('Converting SMILES to InChI ...')
+            inchi_list, r_success = batch_convert_smiles_to_inchi(text_preds)
+            pred_df['SMILES_InChI'] = inchi_list
+            print(f'{split} SMILES to InChI success ratio: {r_success:.4f}')
+            scores['smiles_inchi_success'] = r_success
+        elif format_ == 'selfies':
+            # SELFIES
+            pred_df['SELFIES'] = text_preds
+            print('Converting SELFIES to InChI ...')
+            inchi_list, r_success = batch_convert_selfies_to_inchi(text_preds)
+            pred_df['SELFIES_InChI'] = inchi_list
+            print(f'{split} SELFIES to InChI success ratio: {r_success:.4f}')
+            # scores['selfies_inchi_success'] = r_success
+    
+    if 'atomtok' in args.formats and 'inchi' in args.formats:
+        pred_df['merge_InChI'], _ = merge_inchi(pred_df['SMILES_InChI'].values, pred_df['InChI'].values)
+    
+    # Compute scores
     if split == 'valid':
-        scores['inchi'], scores['inchi_em'] = get_score(data_df['InChI'].values, pred_df['InChI'].values)
-        if args.format != 'inchi':
+        if 'inchi' in args.formats:
+            scores['inchi'], scores['inchi_em'] = get_score(data_df['InChI'].values, pred_df['InChI'].values)
+        if 'atomtok' in args.formats:
             scores['smiles'], scores['smiles_em'] = get_score(data_df['SMILES'].values, pred_df['SMILES'].values)
+            scores['smiles_inchi'], scores['smiles_inchi_em'] = get_score(data_df['InChI'].values, pred_df['SMILES_InChI'].values)
             print('label:')
             print(data_df['SMILES'].values[:4])
             print('pred:')
             print(pred_df['SMILES'].values[:4])
+        if 'atomtok' in args.formats and 'inchi' in args.formats:
+            scores['merge_inchi'], scores['merge_inchi_em'] = get_score(data_df['InChI'].values, pred_df['merge_InChI'].values)
+        if 'selfies' in args.formats:
+            scores['selfies'], scores['selfies_em'] = get_score(data_df['SELFIES'].values, pred_df['SELFIES'].values)
+            scores['selfies_inchi'], scores['selfies_inchi_em'] = get_score(data_df['InChI'].values, pred_df['SELFIES_InChI'].values)
+            print('label:')
+            print(data_df['SELFIES'].values[:4])
+            print('pred:')
+            print(pred_df['SELFIES'].values[:4])
             
     # Save predictions
     if split == 'test':
+        if 'atomtok' in args.formats and 'inchi' in args.formats:
+            pred_df[['image_id', 'InChI']].to_csv(os.path.join(save_path, 'test_inchi.csv'), index=False)
+        if 'atomtok' in args.formats:
+            pred_df['InChI'] = pred_df['SMILES_InChI']
+            pred_df[['image_id', 'InChI']].to_csv(os.path.join(save_path, 'test_smiles.csv'), index=False)
+        if 'selfies' in args.formats:
+            pred_df['InChI'] = pred_df['SELFIES_InChI']
         pred_df[['image_id', 'InChI']].to_csv(os.path.join(save_path, 'submission.csv'), index=False)
     else:
-        fields = ['image_id', 'InChI']
-        if args.format != 'inchi':
-            fields.append('SMILES')
-        pred_df[fields].to_csv(os.path.join(save_path, f'prediction_{split}.csv'), index=False)
+        # fields = ['image_id', 'InChI', 'SMILES', 'SMILES_InChI']
+        pred_df.to_csv(os.path.join(save_path, f'prediction_{split}.csv'), index=False)
 
     return scores
             
@@ -461,12 +517,12 @@ def get_test_file_path(image_id):
 def main():
 
     args = get_args()
-    seed_torch(seed=CFG.seed)
+    seed_torch(seed=args.seed)
     
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     if args.local_rank != -1:
-        dist.init_process_group(backend='nccl', init_method='env://')
+        dist.init_process_group(backend='gloo', init_method='env://')
         torch.cuda.set_device(args.local_rank)
         torch.backends.cudnn.benchmark = True
 
@@ -479,33 +535,44 @@ def main():
         valid_df = pd.read_csv('data/valid_folds.csv')
         valid_df['file_path'] = valid_df['image_id'].apply(get_train_file_path)
         print_rank_0(f'valid.shape: {valid_df.shape}')
-        if args.concat_valid:
+        if args.all_data:
             train_df = pd.concat([train_df, valid_df])
+            print_rank_0(f'train.shape: {train_df.shape}')
     
     if args.do_test:
         test_df = pd.read_csv('data/sample_submission.csv')
         test_df['file_path'] = test_df['image_id'].apply(get_test_file_path)
         print_rank_0(f'test.shape: {test_df.shape}')
-
+    
+#     test_df = test_df.truncate(after=2000)
+#     print_rank_0(f'test.shape: {test_df.shape}')
+    
     if args.debug:
-#         args.epochs = 5
+        args.epochs = 2
         args.save_path = 'output/debug'
         CFG.print_freq = 50
-#         if args.do_train:
-#             train_df = train_df.sample(n=10000, random_state=CFG.seed).reset_index(drop=True)
+        if args.do_train:
+            train_df = train_df.sample(n=10000, random_state=42).reset_index(drop=True)
         if args.do_train or args.do_valid:
-            valid_df = valid_df.sample(n=1000, random_state=CFG.seed).reset_index(drop=True)
+            valid_df = valid_df.sample(n=1000, random_state=42).reset_index(drop=True)
         if args.do_test:
-            test_df = test_df.sample(n=1000, random_state=CFG.seed).reset_index(drop=True)
-
-    tokenizer = torch.load('data/' + FORMAT_INFO[args.format]['tokenizer'])
-
+            test_df = test_df.sample(n=1000, random_state=42).reset_index(drop=True)
+    
+    if args.formats is None:
+        args.formats = [args.format]
+    else:
+        args.formats = args.formats.split(',')
+    print_rank_0('Output formats: ' + ' '.join(args.formats))
+    tokenizer = {}
+    for format_ in args.formats:
+        tokenizer[format_] = torch.load('data/' + FORMAT_INFO[format_]['tokenizer'])
+    
     if args.do_train:
         train_loop(args, train_df, valid_df, tokenizer, args.save_path)
         
     if args.do_valid:
         scores = inference(args, valid_df, tokenizer, save_path=args.save_path, split='valid')
-        print_rank_0(scores)
+        print_rank_0(json.dumps(scores, indent=4))
 
     if args.do_test:
         inference(args, test_df, tokenizer, save_path=args.save_path, split='test')

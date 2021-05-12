@@ -23,15 +23,13 @@ def get_transforms(args):
 
 
 class TrainDataset(Dataset):
-    def __init__(self, args, df, tokenizer, labelled=True, multi_task=False):
+    def __init__(self, args, df, tokenizer, labelled=True):
         super().__init__()
         self.df = df
         self.tokenizer = tokenizer
         self.file_paths = df['file_path'].values
         if labelled:
-            self.formats = [args.format]
-            if multi_task:
-                self.formats.append('inchi')
+            self.formats = args.formats
             self.labels = {}
             for format_ in self.formats:
                 field = FORMAT_INFO[format_]['name']
@@ -58,7 +56,7 @@ class TrainDataset(Dataset):
             ref = {}
             for format_ in self.formats:
                 label = self.labels[format_][idx]
-                label = self.tokenizer.text_to_sequence(label)
+                label = self.tokenizer[format_].text_to_sequence(label)
                 label = torch.LongTensor(label)
                 label_length = len(label)
                 label_length = torch.LongTensor([label_length])
