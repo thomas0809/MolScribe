@@ -490,20 +490,18 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             print('pred:')
             print(pred_df['SELFIES'].values[:4])
             
+    pred_df.to_csv(os.path.join(save_path, f'prediction_{split}.csv'), index=False)
+    
     # Save predictions
     if split == 'test':
         if 'atomtok' in args.formats and 'inchi' in args.formats:
-            pred_df[['image_id', 'InChI']].to_csv(os.path.join(save_path, 'test_inchi.csv'), index=False)
-        if 'atomtok' in args.formats:
+            pred_df['InChI'] = pred_df['merge_InChI']
+        elif 'atomtok' in args.formats:
             pred_df['InChI'] = pred_df['SMILES_InChI']
-            pred_df[['image_id', 'InChI']].to_csv(os.path.join(save_path, 'test_smiles.csv'), index=False)
-        if 'selfies' in args.formats:
+        elif 'selfies' in args.formats:
             pred_df['InChI'] = pred_df['SELFIES_InChI']
         pred_df[['image_id', 'InChI']].to_csv(os.path.join(save_path, 'submission.csv'), index=False)
-    else:
-        # fields = ['image_id', 'InChI', 'SMILES', 'SMILES_InChI']
-        pred_df.to_csv(os.path.join(save_path, f'prediction_{split}.csv'), index=False)
-
+    
     return scores
             
 
