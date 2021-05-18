@@ -21,6 +21,7 @@ python -m torch.distributed.launch \
     --gradient_accumulation_steps $ACCUM_STEP \
     --do_valid \
     --do_test \
+    --beam_size 15 --n_best 10 \
     --fp16
     
 #     --do_train \

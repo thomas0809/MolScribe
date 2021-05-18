@@ -242,14 +242,13 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
 
 def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
     
-    def _pick(preds, format_):
+    def _pick_valid(preds, format_):
         """Pick the top valid prediction from n_best outputs
         """
-        best = tokenizer[format_].predict_caption(preds[0].cpu().numpy()) # default
+        best = preds[0] # default
         for i, p in enumerate(preds):
-            str_ = tokenizer[format_].predict_caption(p.cpu().numpy()) if i > 0 else best
-            if is_valid(str_, format_):
-                best = str_
+            if is_valid(p, format_):
+                best = p
                 break
         return best
     
@@ -262,6 +261,7 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
     encoder.eval()
     decoder.eval()
     all_preds = {format_:{} for format_ in args.formats}
+    final_preds = {format_:{} for format_ in args.formats}
     start = end = time.time()
     for step, (indices, images) in enumerate(valid_loader):
         # measure data loading time
@@ -279,9 +279,15 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
         for format_ in args.formats:
             # predicted_sequence = torch.argmax(predictions[format_].detach().cpu(), -1).numpy()
             # text_preds = tokenizer[format_].predict_captions(predicted_sequence)
-            text_preds = [_pick(x, format_) for x in predictions[format_]]
-            for idx, text in zip(indices, text_preds):
-                all_preds[format_][idx] = text
+            text_preds = [
+                [tokenizer[format_].predict_caption(x.cpu().numpy()) for x in preds]
+                for preds in predictions[format_]
+            ]
+            for idx, preds in zip(indices, text_preds):
+                all_preds[format_][idx] = preds
+            valid_preds = [_pick_valid(preds, format_) for preds in text_preds]
+            for idx, preds in zip(indices, valid_preds):
+                final_preds[format_][idx] = preds
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
@@ -294,7 +300,7 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
                    data_time=data_time,
                    sum_data_time=asMinutes(data_time.sum),
                    remain=timeSince(start, float(step+1)/len(valid_loader))))
-    return all_preds
+    return all_preds, final_preds
 
 
 def train_loop(args, train_df, valid_df, tokenizer, save_path):
@@ -429,18 +435,29 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         encoder, decoder = get_model(args, tokenizer, device, save_path, ddp=True)
     
     local_preds = valid_fn(dataloader, encoder, decoder, tokenizer, device, args)
-    all_preds = [None for i in range(dist.get_world_size())]
-    dist.all_gather_object(all_preds, local_preds)
+    gathered_preds = [None for i in range(dist.get_world_size())]
+    dist.all_gather_object(gathered_preds, local_preds)
     
     if args.local_rank != 0:
         return
     
     predictions = {format_:[None for i in range(len(dataset))] for format_ in args.formats}
-    for preds in all_preds:
+    all_predictions = {format_:[None for i in range(len(dataset))] for format_ in args.formats}
+    for preds in gathered_preds:
+        beam_preds, final_preds = preds
         for format_ in args.formats:
-            for idx, text in preds[format_].items():
-                predictions[format_][idx] = text
+            for idx, pred in final_preds[format_].items():
+                predictions[format_][idx] = pred
+            for idx, pred in beam_preds[format_].items():
+                all_predictions[format_][idx] = pred
 
+    if split == 'valid':
+        for format_ in args.formats:
+            with open(os.path.join(save_path, f'{split}_{format_}_beam.txt'), 'w') as f:
+                for idx, pred in enumerate(all_predictions[format_]):
+                    f.write(f'ID {idx}\n')
+                    f.write('\n'.join(pred) + '\n')
+                
     pred_df = data_df[['image_id']].copy()
     scores = {}
     
@@ -542,12 +559,9 @@ def main():
         test_df['file_path'] = test_df['image_id'].apply(get_test_file_path)
         print_rank_0(f'test.shape: {test_df.shape}')
     
-#     test_df = test_df.truncate(after=2000)
-#     print_rank_0(f'test.shape: {test_df.shape}')
-    
     if args.debug:
         args.epochs = 2
-        args.save_path = 'output/debug'
+#         args.save_path = 'output/debug'
         CFG.print_freq = 50
         if args.do_train:
             train_df = train_df.sample(n=10000, random_state=42).reset_index(drop=True)
