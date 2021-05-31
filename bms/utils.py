@@ -40,18 +40,16 @@ FORMAT_INFO = {
 }
 
 
-def is_valid(str_, format_='smiles'):
-    try:
-        if format_ == 'smiles':
-            mol = Chem.MolFromSmiles(str_)
-            return True
-        elif format_ == 'inchi':
-            mol = Chem.MolFromInChI(str_)
-            return True
-        else:
-            return False
-    except:
-        return False
+def is_valid(str_, format_='atomtok'):
+    if format_ == 'atomtok':
+        mol = Chem.MolFromSmiles(str_)
+    elif format_ == 'inchi':
+        if not str_.startswith('InChI=1S'):
+            str_ = f"InChI=1S/{str_}"
+        mol = Chem.MolFromInchi(str_)
+    else:
+        raise NotImplemented
+    return mol is not None
     
 
 def convert_smiles_to_inchi(smiles):

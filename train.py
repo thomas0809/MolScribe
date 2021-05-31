@@ -3,6 +3,7 @@ import sys
 import re
 import time
 import json
+import math
 import random
 import argparse
 import collections
@@ -17,9 +18,11 @@ import torch.distributed as dist
 from torch.optim import Adam, AdamW, SGD
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, LambdaLR
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+
+from transformers import get_scheduler
 
 from bms.dataset import TrainDataset, TestDataset, bms_collate
 from bms.model import Encoder, DecoderWithAttention, MultiTaskDecoder
@@ -32,13 +35,9 @@ warnings.filterwarnings('ignore')
 
 
 class CFG:
-    max_len=120
     print_freq=200
     num_workers=4
     scheduler='CosineAnnealingLR' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
-    encoder_lr=1e-4
-    decoder_lr=4e-4
-    min_lr=1e-6
     weight_decay=1e-6
     max_grad_norm=5
     attention_dim=256
@@ -59,9 +58,16 @@ def get_args():
     parser.add_argument('--format', type=str, choices=['inchi','atomtok','spe'], default='atomtok')
     parser.add_argument('--formats', type=str, default=None)
     parser.add_argument('--input_size', type=int, default=224)
+    parser.add_argument('--augment', action='store_true')
+    parser.add_argument('--resize_pad', action='store_true')
+    parser.add_argument('--no_crop_white', action='store_true')
     # Training
     parser.add_argument('--epochs', type=int, default=8)
     parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--encoder_lr', type=float, default=1e-4)
+    parser.add_argument('--decoder_lr', type=float, default=4e-4)
+    parser.add_argument('--scheduler', type=str, choices=['cosine','constant'], default='cosine')
+    parser.add_argument('--warmup_ratio', type=float, default=0)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parser.add_argument('--load_path', type=str, default=None)
     parser.add_argument('--save_path', type=str, default='output/')
@@ -75,10 +81,12 @@ def get_args():
     parser.add_argument('--fp16', action='store_true')
     parser.add_argument('--init_scheduler', action='store_true')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--trunc_train', action='store_true')
     parser.add_argument('--debug', action='store_true')
     # Inference
     parser.add_argument('--beam_size', type=int, default=1)
     parser.add_argument('--n_best', type=int, default=1)
+    parser.add_argument('--check_validity', action='store_true')
     args = parser.parse_args()
     return args
 
@@ -100,7 +108,6 @@ def get_model(args, tokenizer, device, load_path=None, ddp=True):
         embed_dim=CFG.embed_dim * args.decoder_scale,
         encoder_dim=encoder.n_features,
         decoder_dim=CFG.decoder_dim * args.decoder_scale,
-        max_len=CFG.max_len,
         dropout=CFG.dropout,
         n_layer=args.decoder_layer,
         tokenizer=tokenizer)
@@ -126,20 +133,18 @@ def get_model(args, tokenizer, device, load_path=None, ddp=True):
 
 def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
     
-    def get_scheduler(optimizer):
-        if CFG.scheduler=='ReduceLROnPlateau':
-            scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=CFG.factor, patience=CFG.patience, verbose=True, eps=CFG.eps)
-        elif CFG.scheduler=='CosineAnnealingLR':
-            scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=CFG.min_lr, last_epoch=-1)
-        elif CFG.scheduler=='CosineAnnealingWarmRestarts':
-            scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=CFG.T_0, T_mult=1, eta_min=CFG.min_lr, last_epoch=-1)
-        return scheduler
+#     def get_scheduler(optimizer):
+#         if CFG.scheduler=='CosineAnnealingLR':
+#             scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.min_lr, last_epoch=-1)
+#         return scheduler
     
-    encoder_optimizer = AdamW(encoder.parameters(), lr=CFG.encoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
-    encoder_scheduler = get_scheduler(encoder_optimizer)
+    encoder_optimizer = AdamW(encoder.parameters(), lr=args.encoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
+#     encoder_scheduler = get_scheduler(encoder_optimizer)
+    encoder_scheduler= get_scheduler(args.scheduler, encoder_optimizer, args.num_warmup_steps, args.num_training_steps)
 
-    decoder_optimizer = AdamW(decoder.parameters(), lr=CFG.decoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
-    decoder_scheduler = get_scheduler(decoder_optimizer)
+    decoder_optimizer = AdamW(decoder.parameters(), lr=args.decoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
+#     decoder_scheduler = get_scheduler(decoder_optimizer)
+    decoder_scheduler= get_scheduler(args.scheduler, decoder_optimizer, args.num_warmup_steps, args.num_training_steps)
     
     if load_path and args.resume:
         states = load_states(args, load_path)
@@ -147,9 +152,9 @@ def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
         decoder_optimizer.load_state_dict(states['decoder_optimizer'])
         if args.init_scheduler:
             for group in encoder_optimizer.param_groups:
-                group['lr'] = CFG.encoder_lr
+                group['lr'] = args.encoder_lr
             for group in decoder_optimizer.param_groups:
-                group['lr'] = CFG.decoder_lr
+                group['lr'] = args.decoder_lr
         else:
             encoder_scheduler.load_state_dict(states['encoder_scheduler'])
             decoder_scheduler.load_state_dict(states['decoder_scheduler'])
@@ -203,6 +208,8 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
             scaler.update()
             encoder_optimizer.zero_grad()
             decoder_optimizer.zero_grad()
+            encoder_scheduler.step()
+            decoder_scheduler.step()
             global_step += 1
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -226,16 +233,6 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
                    decoder_lr=decoder_scheduler.get_lr()[0],
                    ))
             losses.reset()
-            
-    if isinstance(encoder_scheduler, CosineAnnealingLR):
-        encoder_scheduler.step()
-    elif isinstance(encoder_scheduler, CosineAnnealingWarmRestarts):
-        encoder_scheduler.step()
-
-    if isinstance(decoder_scheduler, CosineAnnealingLR):
-        decoder_scheduler.step()
-    elif isinstance(decoder_scheduler, CosineAnnealingWarmRestarts):
-        decoder_scheduler.step()
         
     return epoch_losses.avg, global_step
 
@@ -246,10 +243,11 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
         """Pick the top valid prediction from n_best outputs
         """
         best = preds[0] # default
-        for i, p in enumerate(preds):
-            if is_valid(p, format_):
-                best = p
-                break
+        if args.check_validity:
+            for i, p in enumerate(preds):
+                if is_valid(p, format_):
+                    best = p
+                    break
         return best
     
     batch_time = AverageMeter()
@@ -308,13 +306,13 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     SUMMARY = None
     
     if args.local_rank == 0 and not args.debug:
+        os.makedirs(save_path, exist_ok=True)
         # LOGGER = init_logger()
         SUMMARY = init_summary_writer(save_path)
         
     print_rank_0("========== training ==========")
         
     device = args.device
-    os.makedirs(save_path, exist_ok=True)
 
     # ====================================================
     # loader
@@ -332,6 +330,9 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
                               pin_memory=True,
                               drop_last=True, 
                               collate_fn=bms_collate)
+    
+    args.num_training_steps = args.epochs * (len(train_loader) // args.gradient_accumulation_steps)
+    args.num_warmup_steps = int(args.num_training_steps * args.warmup_ratio)
 
     # ====================================================
     # model & optimizer
@@ -408,6 +409,8 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
             best_score = score
             print_rank_0(f'Epoch {epoch+1} - Save Best Score: {best_score:.4f} Model')
             torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_best.pth'))
+            with open(os.path.join(save_path, 'best_valid.json'), 'w') as f:
+                json.dump(scores, f)
     
     if args.local_rank != -1:
         dist.barrier()
@@ -558,10 +561,14 @@ def main():
         test_df = pd.read_csv('data/sample_submission.csv')
         test_df['file_path'] = test_df['image_id'].apply(get_test_file_path)
         print_rank_0(f'test.shape: {test_df.shape}')
+        
+    if args.trunc_train:
+        train_df = train_df.sample(n=50000, random_state=42).reset_index(drop=True)
+        valid_df = valid_df.sample(n=50000, random_state=42).reset_index(drop=True)
     
     if args.debug:
         args.epochs = 2
-#         args.save_path = 'output/debug'
+        args.save_path = 'output/debug'
         CFG.print_freq = 50
         if args.do_train:
             train_df = train_df.sample(n=10000, random_state=42).reset_index(drop=True)

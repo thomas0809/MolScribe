@@ -285,7 +285,7 @@ class DecoderWithAttention(nn.Module):
 
 class MultiTaskDecoder(nn.Module):
     
-    def __init__(self, formats, attention_dim, embed_dim, decoder_dim, max_len, tokenizer, n_layer=1, encoder_dim=512, dropout=0.5):
+    def __init__(self, formats, attention_dim, embed_dim, decoder_dim, tokenizer, n_layer=1, encoder_dim=512, dropout=0.5):
         super(MultiTaskDecoder, self).__init__()
         self.formats = formats
         decoder = {}

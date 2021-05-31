@@ -8,3 +8,5 @@ ensemble.csv
 tmp.ipynb
 tmp/
 guo/
+i2i_output/
+grid_search_output/

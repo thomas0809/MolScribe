@@ -6,20 +6,30 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+from bms.augment import ExpandSafeRotate, CropWhite, ResizePad
 from bms.utils import PAD_ID, FORMAT_INFO
 
 cv2.setNumThreads(2)
 
 
-def get_transforms(args):
-    return A.Compose([
-        A.Resize(args.input_size, args.input_size),
+def get_transforms(args, labelled=True):
+    trans_list = []
+    if labelled and args.augment:
+        trans_list.append(ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, interpolation=cv2.INTER_NEAREST, value=(255,255,255)))
+    if not args.no_crop_white:
+        trans_list.append(CropWhite(pad=3))
+    if args.resize_pad:
+        trans_list.append(ResizePad(args.input_size, args.input_size, interpolation=cv2.INTER_NEAREST))
+    else:
+        trans_list.append(A.Resize(args.input_size, args.input_size))
+    trans_list += [
         A.Normalize(
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225],
         ),
         ToTensorV2(),
-    ])
+    ]
+    return A.Compose(trans_list)
 
 
 class TrainDataset(Dataset):
@@ -28,15 +38,14 @@ class TrainDataset(Dataset):
         self.df = df
         self.tokenizer = tokenizer
         self.file_paths = df['file_path'].values
+        self.labelled = labelled
         if labelled:
             self.formats = args.formats
             self.labels = {}
             for format_ in self.formats:
                 field = FORMAT_INFO[format_]['name']
                 self.labels[format_] = df[field].values
-        else:
-            self.labels = None
-        self.transform = get_transforms(args)
+        self.transform = get_transforms(args, labelled)
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
 
     def __len__(self):
@@ -52,7 +61,7 @@ class TrainDataset(Dataset):
         if self.transform:
             augmented = self.transform(image=image)
             image = augmented['image']
-        if self.labels is not None:
+        if self.labelled:
             ref = {}
             for format_ in self.formats:
                 label = self.labels[format_][idx]
