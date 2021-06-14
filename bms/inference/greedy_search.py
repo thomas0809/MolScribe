@@ -95,7 +95,7 @@ class GreedySearch(DecodeStrategy):
             b_orig = self.original_batch_idx[b]
             # scores/predictions/attention are lists,
             # (to be compatible with beam-search)
-            self.scores[b_orig].append(self.topk_scores[b, 0])
+            self.scores[b_orig].append(self.topk_scores[b, 0].item())
             self.predictions[b_orig].append(self.alive_seq[b, 1:])
             self.attention[b_orig].append(
                 self.alive_attn[:, b, :self.memory_length]

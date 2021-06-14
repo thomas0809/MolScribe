@@ -36,9 +36,10 @@ warnings.filterwarnings('ignore')
 
 class CFG:
     print_freq=100
-    num_workers=4
+    num_workers=8
     scheduler='CosineAnnealingLR' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
     weight_decay=1e-6
+    momentum=0.9
     max_grad_norm=5
     attention_dim=256
     embed_dim=256
@@ -48,6 +49,14 @@ class CFG:
 
 def get_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--local_rank', type=int, default=-1, metavar='N', help='Local process rank.')
+    parser.add_argument('--do_train', action='store_true')
+    parser.add_argument('--do_valid', action='store_true')
+    parser.add_argument('--do_test', action='store_true')
+    parser.add_argument('--fp16', action='store_true')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--print_freq', type=int, default=200)
+    parser.add_argument('--debug', action='store_true')
     # Model
     parser.add_argument('--encoder', type=str, default='resnet34')
     parser.add_argument('--use_checkpoint', action='store_true')
@@ -62,23 +71,18 @@ def get_args():
     parser.add_argument('--epochs', type=int, default=8)
     parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--temperature', type=float, default=1.)
+    parser.add_argument('--optimizer', type=str, choices=['adam','sgd'], default='adam')
     parser.add_argument('--scheduler', type=str, choices=['cosine','constant'], default='cosine')
     parser.add_argument('--warmup_ratio', type=float, default=0)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parser.add_argument('--load_path', type=str, default=None)
     parser.add_argument('--save_path', type=str, default='i2i_output/')
     parser.add_argument('--load_ckpt', type=str, default='best')
-    parser.add_argument('--do_train', action='store_true')
-    parser.add_argument('--do_valid', action='store_true')
-    parser.add_argument('--do_test', action='store_true')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--all_data', action='store_true', help='Use both train and valid data for training.')
-    parser.add_argument('--local_rank', type=int, default=-1, metavar='N', help='Local process rank.')
-    parser.add_argument('--fp16', action='store_true')
     parser.add_argument('--init_scheduler', action='store_true')
-    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--trunc_train', action='store_true')
-    parser.add_argument('--debug', action='store_true')
     # Inference
     parser.add_argument('--train_beam_size', type=int, default=4)
     parser.add_argument('--beam_size', type=int, default=10)
@@ -101,7 +105,7 @@ def load_states(args, load_path):
 def get_model(args, device, load_path=None, ddp=True):
     encoder1 = Encoder(args.encoder, pretrained=True, use_checkpoint=args.use_checkpoint)
     encoder2 = Encoder(args.encoder, pretrained=True, use_checkpoint=args.use_checkpoint)
-    model = Image2ImageModel(encoder1, encoder2)
+    model = Image2ImageModel(encoder1, encoder2, args.temperature)
     
     if load_path:
         states = load_states(args, load_path)
@@ -121,7 +125,10 @@ def get_model(args, device, load_path=None, ddp=True):
 
 def get_optimizer_and_scheduler(args, model, load_path=None):
     
-    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=CFG.weight_decay, amsgrad=False)
+    if args.optimizer == 'adam':
+        optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=CFG.weight_decay)
+    elif args.optimizer == 'sgd':
+        optimizer = SGD(model.parameters(), lr=args.lr, weight_decay=CFG.weight_decay, momentum=CFG.momentum)
     scheduler= get_scheduler(args.scheduler, optimizer, args.num_warmup_steps, args.num_training_steps)
     start_epoch = 0
     global_step = 0
@@ -148,6 +155,8 @@ def train_fn(train_loader, model, criterion, optimizer, epoch,
     data_time = AverageMeter()
     losses = AverageMeter()
     epoch_losses = AverageMeter()
+    global_accuracies = AverageMeter()
+    local_accuracies = AverageMeter()
     # switch to train mode
     model.train()
     
@@ -161,12 +170,14 @@ def train_fn(train_loader, model, criterion, optimizer, epoch,
         beam_images = beam_images.to(device)
         batch_size = images.size(0)
         with torch.cuda.amp.autocast(enabled=args.fp16):
-            logits = model(images, beam_images)
-            labels = torch.zeros((batch_size,), dtype=torch.long, device=device)
-            loss = criterion(logits, labels)
+            loss, global_acc, local_acc = model(images, beam_images, criterion)
+#             labels = torch.zeros((batch_size,), dtype=torch.long, device=device)
+#             loss = criterion(logits, labels)
         # record loss
         losses.update(loss.item(), batch_size)
         epoch_losses.update(loss.item(), batch_size)
+        global_accuracies.update(global_acc, batch_size)
+        local_accuracies.update(local_acc, batch_size)
         if args.gradient_accumulation_steps > 1:
             loss = loss / args.gradient_accumulation_steps
         scaler.scale(loss).backward()
@@ -181,22 +192,27 @@ def train_fn(train_loader, model, criterion, optimizer, epoch,
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-        if step % CFG.print_freq == 0 or step == (len(train_loader)-1):
+        if step % args.print_freq == 0 or step == (len(train_loader)-1):
             print_rank_0('Epoch: [{0}][{1}/{2}] '
                   'Data {data_time.avg:.3f}s ({sum_data_time}) '
                   'Elapsed {remain:s} '
                   'Loss: {loss.val:.4f}({loss.avg:.4f}) '
+                  'Global_acc: {global_acc.avg:.4f} '
+                  'Local_acc: {local_acc.avg:.4f} '
                   'Grad: {grad_norm:.4f}  '
                   'LR: {lr:.6f}'
                   .format(
                    epoch+1, step, len(train_loader), batch_time=batch_time,
                    data_time=data_time, loss=losses,
+                   global_acc=global_accuracies, local_acc=local_accuracies,
                    sum_data_time=asMinutes(data_time.sum),
                    remain=timeSince(start, float(step+1)/len(train_loader)),
                    grad_norm=grad_norm,
                    lr=scheduler.get_lr()[0],
                    ))
             losses.reset()
+            global_accuracies.reset()
+            local_accuracies.reset()
         
     return epoch_losses.avg, global_step
 
@@ -219,14 +235,15 @@ def valid_fn(valid_loader, model, device, args):
         beam_images = beam_images.to(device)
         with torch.cuda.amp.autocast(enabled=args.fp16):
             with torch.no_grad():
-                logits = model(images, beam_images)
-        predictions = logits.argmax(-1).tolist()
+                global_logits, local_logits = model(images, beam_images)
+                logits = local_logits
+        predictions = logits.tolist()
         for idx, pred in zip(indices, predictions):
             all_preds[idx] = pred
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-        if step % CFG.print_freq == 0 or step == (len(valid_loader)-1):
+        if step % args.print_freq == 0 or step == (len(valid_loader)-1):
             print_rank_0('EVAL: [{0}/{1}] '
                   'Data {data_time.avg:.3f}s ({sum_data_time}) '
                   'Elapsed {remain:s} '
@@ -378,18 +395,21 @@ def inference(args, data_df, beam_file, tokenizer, model=None, save_path=None, s
     dist.all_gather_object(gathered_preds, local_preds)
     
     if args.local_rank != 0:
-        return
+        return    
     
     predictions = [None for i in range(len(dataset))]
     for preds in gathered_preds:
         for idx, pred in preds.items():
             predictions[idx] = pred
-                        
+              
+    with open(os.path.join(save_path, f'{split}.jsonl'), 'w') as f:
+        for pred in predictions:
+            f.write(json.dumps(pred) + '\n')
+
     scores = {}
     
     # Compute scores
-    if split == 'valid':
-        scores['acc'] = sum([pred == 0 for pred in predictions]) / len(predictions)
+    scores['acc'] = sum([np.argmax(pred) == 0 for pred in predictions]) / len(predictions)
     
     return scores
             
@@ -436,7 +456,7 @@ def main():
         args.epochs = 5
         args.save_path = 'i2i_output/debug'
         args.augment = False
-        CFG.print_freq = 50
+        args.print_freq = 50
         if args.do_train:
             train_df = train_df.truncate(after=5000)
         if args.do_train or args.do_valid:
@@ -464,7 +484,8 @@ def main():
 
     if args.do_test:
         assert args.test_beam_file
-        inference(args, test_df, args.test_beam_file, tokenizer, save_path=args.save_path, split='test')
+        scores = inference(args, test_df, args.test_beam_file, tokenizer, save_path=args.save_path, split='test')
+        print_rank_0(json.dumps(scores, indent=4))
 
 
 if __name__ == "__main__":

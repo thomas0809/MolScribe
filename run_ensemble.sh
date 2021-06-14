@@ -11,18 +11,21 @@ python -m torch.distributed.launch \
     --nproc_per_node=$NUM_GPUS_PER_NODE --nnodes=$NUM_NODES --node_rank $NODE_RANK --master_addr localhost --master_port $MASTER_PORT \
     train.py \
     --formats atomtok \
-    --input_size 528 \
-    --encoder tf_efficientnet_b6 \
+    --input_size 384 \
+    --encoder swin_base_patch4_window12_384 \
     --decoder_scale 2 \
-    --save_path output/atomtok_efficientnet_b6 \
-    --load_ckpt ep15 \
-    --epochs 16 \
+    --save_path output/ensemble5 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
-    --gradient_accumulation_steps $ACCUM_STEP \
+    --use_checkpoint \
     --do_valid \
     --do_test \
-    --beam_size 15 --n_best 10 \
+    --print_freq 50 \
+    --ensemble_cfg config/ensemble5.json \
+    --beam_size 24 --n_best 10 \
     --fp16
-    
+
+# --valid_all_data \
 #     --do_train \
 #     --do_test \
+
+

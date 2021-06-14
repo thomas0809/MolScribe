@@ -1,11 +1,15 @@
+#!/bin/bash
+
 NUM_NODES=1
 NUM_GPUS_PER_NODE=8
 NODE_RANK=0
 
-BATCH_SIZE=256
+BATCH_SIZE=512
 ACCUM_STEP=1
 
 MASTER_PORT=$(shuf -n 1 -i 10000-65535)
+
+set -x
 
 python -m torch.distributed.launch \
     --nproc_per_node=$NUM_GPUS_PER_NODE --nnodes=$NUM_NODES --node_rank $NODE_RANK --master_addr localhost --master_port $MASTER_PORT \
@@ -14,23 +18,19 @@ python -m torch.distributed.launch \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
     --decoder_scale 2 \
-    --encoder_lr 5e-5 \
-    --decoder_lr 5e-5 \
-    --warmup_ratio 0.1 \
-    --load_path output/swin_base_384_epoch_24 \
-    --save_path output/swin_base_384_epoch_24_all \
-    --all_data \
+    --encoder_lr 4e-4 \
+    --decoder_lr 4e-4 \
+    --save_path output/swin_base_384_epoch_24_selftrain_aug \
+    --label_smoothing 0.1 \
     --augment \
-    --epochs 12 \
+    --selftrain output/ensemble4/test_atomtok_beam.jsonl \
+    --epochs 24 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
     --do_train \
     --do_test \
     --fp16
-
-#     --do_train \
-#     --do_test \
 
 
 # swin_base

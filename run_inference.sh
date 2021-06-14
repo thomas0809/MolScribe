@@ -14,38 +14,15 @@ python -m torch.distributed.launch \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
     --decoder_scale 2 \
-    --save_path output/swin_base_384_epoch_24_all \
+    --save_path output/swin_base_384_epoch_24 \
     --epochs 20 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
     --do_valid \
-    --do_test \
-    --beam_size 15 --n_best 1 \
+    --beam_size 1 --n_best 1 \
     --fp16
 
-#     --do_train \
-#     --do_test \
+#     --do_test \    --no_crop_white \
 
 
-# swin_base
-#     --encoder swin_base_patch4_window12_384 \
-#     --decoder_scale 2 \
-#     --save_path output/swin_base_384_epoch_16 \
-
-#     --encoder swin_base_patch4_window12_384 \
-#     --decoder_scale 2 \
-#     --save_path output/swin_base_384_epoch_16_cont \
-#     --load_path output/swin_base_384_epoch_16 \
-#     --init_scheduler \
-
-# swin_large
-#     --encoder swin_large_patch4_window12_384 \
-#     --decoder_scale 2 \
-#     --load_path output/swin_large_384_epoch_16 \
-#     --save_path output/swin_large_384_epoch_16 \
-
-# resnet101
-#     --encoder resnet101d \
-#     --decoder_scale 2 \
-#     --save_path output/resnet101_epoch_16 \

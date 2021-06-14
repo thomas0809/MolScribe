@@ -30,7 +30,7 @@ class BeamSearch(DecodeStrategy):
         """Repeat src objects `beam_size` times.
         """
         def fn_map_state(state, dim):
-            return repeat_interleave(state, self.beam_size, dim=dim)
+            return torch.repeat_interleave(state, self.beam_size, dim=dim)
 
         memory_bank = torch.repeat_interleave(memory_bank, self.beam_size, dim=0)
         if device is None:
@@ -166,7 +166,7 @@ class BeamSearch(DecodeStrategy):
                 for n, (score, pred, attn) in enumerate(best_hyp):
                     if n >= self.n_best:
                         break
-                    self.scores[b].append(score)
+                    self.scores[b].append(score.item())
                     self.predictions[b].append(pred)
                     self.attention[b].append(
                         attn if attn is not None else [])

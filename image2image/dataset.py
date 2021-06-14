@@ -1,20 +1,40 @@
 import os
 import cv2
+import json
 import numpy as np
 import random
 import torch
 from torch.utils.data import DataLoader, Dataset
 import multiprocessing
+
 import albumentations as A
+from albumentations.pytorch import ToTensorV2
 import rdkit
 import rdkit.Chem as Chem
 from rdkit.Chem import Draw
 rdkit.RDLogger.DisableLog('rdApp.*')
 
-from bms.dataset import get_transforms
 from bms.utils import print_rank_0
+from bms.augment import ExpandSafeRotate, CropWhite
 
 cv2.setNumThreads(2)
+
+
+def get_transforms(args, labelled=True):
+    trans_list = []
+    if labelled and args.augment:
+        trans_list.append(ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, interpolation=cv2.INTER_NEAREST, value=(255,255,255)))
+    if not args.no_crop_white:
+        trans_list.append(CropWhite(pad=3))
+    trans_list.append(A.Resize(args.input_size, args.input_size))
+    trans_list += [
+        A.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+        ToTensorV2(),
+    ]
+    return A.Compose(trans_list)
 
 
 class Molecule:
@@ -51,11 +71,27 @@ class Molecule:
             self.image_failed = True
             return self.to_image(height, width)
 
-    
-def convert_molecule(beam):
-    for mol in beam:
-        mol.to_mol()
-    return beam
+
+def read_beam_file(beam_file):
+    beams = []
+    if beam_file.endswith('.txt'):
+        with open(beam_file) as f:
+            idx = -1
+            for line in f:
+                if line.startswith('ID'):
+                    idx += 1
+#                     if idx >= len(df):
+#                         break
+                    beams.append([])
+                    continue
+                mol = Molecule(line.strip())
+                beams[idx].append(mol)
+    else:
+        with open(beam_file) as f:
+            for line in f:
+                pred = json.loads(line)
+                beams.append([Molecule(s) for s in pred['text']])
+    return beams
 
 
 class TrainDataset(Dataset):
@@ -66,29 +102,18 @@ class TrainDataset(Dataset):
         self.file_paths = df['file_path'].values
         self.height = args.input_size
         self.width = args.input_size
-        if split in ['train', 'valid']:
+        if split == 'train':
             self.beam_size = args.train_beam_size
         else:
             self.beam_size = args.beam_size
         self.split = split
-        self.labelled = (split == 'train' or split == 'valid')
+        self.labelled = (split == 'train')
         if self.labelled:
             self.inchi = df['InChI'].values
             self.smiles = df['SMILES'].values
         # Read the beam search results
         print_rank_0("Read beam search results...")
-        with open(beam_file) as f:
-            beams = []
-            idx = -1
-            for line in f:
-                if line.startswith('ID'):
-                    idx += 1
-                    if idx >= len(df):
-                        break
-                    beams.append([])
-                    continue
-                mol = Molecule(line.strip())
-                beams[idx].append(mol)
+        beams = read_beam_file(beam_file)
         self.beams = beams
         self.beam_converted = [False] * len(beams)
         # Image transforms
@@ -96,7 +121,7 @@ class TrainDataset(Dataset):
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
 
     def __len__(self):
-        return len(self.df)
+        return len(self.beams)
     
     def process_image(self, image):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32)
@@ -111,7 +136,7 @@ class TrainDataset(Dataset):
     def get_beam(self, idx):
         # Test set: do not change
         if not self.labelled:
-            return self.beams[idx]
+            return self.beams[idx][:self.beam_size]
         
         if not self.beam_converted[idx]:
             self.beam_converted[idx] = True

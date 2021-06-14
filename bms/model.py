@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 
 import timm
 import math
@@ -12,9 +13,10 @@ from bms.inference import GreedySearch, BeamSearch
 
 
 class Encoder(nn.Module):
-    def __init__(self, model_name='resnet18', pretrained=False, use_checkpoint=False):
+    def __init__(self, model_name='resnet18', pretrained=False, use_checkpoint=False, ape=False, trunc_encoder=False):
         super().__init__()
         self.model_name = model_name
+        self.trunc_encoder = trunc_encoder
         if model_name.startswith('resnet'):
             self.model_type = 'resnet'
             self.cnn = timm.create_model(model_name, pretrained=pretrained)
@@ -23,9 +25,15 @@ class Encoder(nn.Module):
             self.cnn.fc = nn.Identity()
         elif model_name.startswith('swin'):
             self.model_type = 'swin'
-            self.transformer = timm.create_model(model_name, pretrained=pretrained, use_checkpoint=use_checkpoint)
+            self.transformer = timm.create_model(model_name, pretrained=pretrained, pretrained_strict=False, use_checkpoint=use_checkpoint, ape=ape)
             self.n_features = self.transformer.num_features
             self.transformer.head = nn.Identity()
+            if trunc_encoder:
+                self.n_features = self.n_features // 2
+                self.transformer.layers = self.transformer.layers[:3]
+                self.transformer.layers[2].downsample = None
+                self.transformer.norm = nn.Identity() 
+                self.transformer.normt = nn.LayerNorm(self.n_features)
         elif 'efficientnet' in model_name:
             self.model_type = 'efficientnet'
             self.cnn = timm.create_model(model_name, pretrained=pretrained)
@@ -36,22 +44,40 @@ class Encoder(nn.Module):
             raise NotImplemented
 
     def forward(self, x):
+        hiddens = None
         if self.model_type in ['resnet', 'efficientnet']:
             features = self.cnn(x)
             features = features.permute(0, 2, 3, 1)
         elif self.model_type == 'swin':
-            def swin_features(transformer, x):
+            # return the features before downsample
+#             def forward_layer(layer, x):
+#                 for blk in layer.blocks:
+#                     if not torch.jit.is_scripting() and layer.use_checkpoint:
+#                         x = checkpoint.checkpoint(blk, x)
+#                     else:
+#                         x = blk(x)
+#                 raw_x = x
+#                 if layer.downsample is not None:
+#                     x = layer.downsample(x)
+#                 return x, raw_x
+            # return the hidden states
+            def forward_transformer(transformer, x):
                 x = transformer.patch_embed(x)
                 if transformer.absolute_pos_embed is not None:
                     x = x + transformer.absolute_pos_embed
                 x = transformer.pos_drop(x)
                 x = transformer.layers(x)
-                x = transformer.norm(x)  # B L C
+                if not self.trunc_encoder:
+                    x = transformer.norm(x)  # B L C
+                else:
+                    x = transformer.normt(x)
                 return x
-            features = swin_features(self.transformer, x)
+            features = forward_transformer(self.transformer, x)
         else:
             raise NotImplemented
+            
         return features
+#             return features, hiddens
 
 
 class Attention(nn.Module):
@@ -280,7 +306,7 @@ class DecoderWithAttention(nn.Module):
                 hh = [x.index_select(0, select_indices) for x in hh]
                 cc = [x.index_select(0, select_indices) for x in cc]
 
-        return decode_strategy.predictions
+        return (decode_strategy.predictions, decode_strategy.scores)
 
 
 class MultiTaskDecoder(nn.Module):

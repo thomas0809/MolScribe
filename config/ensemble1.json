@@ -1,0 +1,50 @@
+[
+  {
+    "ckpt": "output/smiles_atomtok/swin_base_384_epoch_20_multi_all/swin_base_patch4_window12_384_lstm_ep19.pth",
+    "encoder": "swin_base_patch4_window12_384",
+    "formats": ["atomtok", "inchi"],
+    "decoder_layer": 2
+  },
+  {
+    "ckpt": "output/smiles_atomtok/swin_base_384_epoch_20_multi_all/swin_base_patch4_window12_384_lstm_ep18.pth",
+    "encoder": "swin_base_patch4_window12_384",
+    "formats": ["atomtok", "inchi"],
+    "decoder_layer": 2
+  },
+  {
+    "ckpt": "output/smiles_atomtok/swin_base_384_epoch_20_multi_all/swin_base_patch4_window12_384_lstm_ep17.pth",
+    "encoder": "swin_base_patch4_window12_384",
+    "formats": ["atomtok", "inchi"],
+    "decoder_layer": 2
+  },
+  {
+    "ckpt": "output/smiles_atomtok/swin_base_384_epoch_20_multi_all/swin_base_patch4_window12_384_lstm_ep16.pth",
+    "encoder": "swin_base_patch4_window12_384",
+    "formats": ["atomtok", "inchi"],
+    "decoder_layer": 2
+  },
+  {
+    "ckpt": "output/swin_base_384_epoch_20_multi_all_lsr/swin_base_patch4_window12_384_lstm_ep19.pth",
+    "encoder": "swin_base_patch4_window12_384",
+    "formats": ["atomtok", "inchi"],
+    "decoder_layer": 2
+  },
+  {
+    "ckpt": "output/swin_base_384_epoch_20_multi_all_lsr/swin_base_patch4_window12_384_lstm_ep18.pth",
+    "encoder": "swin_base_patch4_window12_384",
+    "formats": ["atomtok", "inchi"],
+    "decoder_layer": 2
+  },
+  {
+    "ckpt": "output/swin_base_384_epoch_20_multi_all_lsr/swin_base_patch4_window12_384_lstm_ep17.pth",
+    "encoder": "swin_base_patch4_window12_384",
+    "formats": ["atomtok", "inchi"],
+    "decoder_layer": 2
+  },
+  {
+    "ckpt": "output/swin_base_384_epoch_20_multi_all_lsr/swin_base_patch4_window12_384_lstm_ep16.pth",
+    "encoder": "swin_base_patch4_window12_384",
+    "formats": ["atomtok", "inchi"],
+    "decoder_layer": 2
+  }
+]
