@@ -29,7 +29,7 @@ from bms.dataset import TrainDataset, TestDataset, bms_collate
 from bms.model import Encoder, DecoderWithAttention, MultiTaskDecoder
 from bms.ensemble import EnsembleEncoder, EnsembleMultiTaskDecoder
 from bms.loss import LabelSmoothingLoss
-from bms.utils import init_logger, init_summary_writer, seed_torch, get_score, AverageMeter, asMinutes, timeSince, is_valid, \
+from bms.utils import init_summary_writer, seed_torch, get_score, AverageMeter, asMinutes, timeSince, is_valid, Tokenizer, \
                       batch_convert_smiles_to_inchi, batch_convert_selfies_to_inchi, merge_inchi, FORMAT_INFO, PAD_ID, print_rank_0
 
 
@@ -57,6 +57,7 @@ def get_args():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--print_freq', type=int, default=200)
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--dataset', type=str, default='bms', choices=['bms','chemdraw'])
     # Model
     parser.add_argument('--encoder', type=str, default='resnet34')
     parser.add_argument('--decoder', type=str, default='lstm')
@@ -66,6 +67,10 @@ def get_args():
     parser.add_argument('--encoder_ape', action='store_true')
     parser.add_argument('--use_checkpoint', action='store_true')
     # Data
+    parser.add_argument('--data_path', type=str, default=None)
+    parser.add_argument('--train_file', type=str, default=None)
+    parser.add_argument('--valid_file', type=str, default=None)
+    parser.add_argument('--test_file', type=str, default=None)
     parser.add_argument('--format', type=str, choices=['inchi','atomtok','spe'], default='atomtok')
     parser.add_argument('--formats', type=str, default=None)
     parser.add_argument('--input_size', type=int, default=224)
@@ -124,7 +129,7 @@ def safe_load(module, module_states):
 def get_model(args, tokenizer, device, load_path=None, ddp=True):
     encoder = Encoder(
         args.encoder, 
-        pretrained=True, 
+        pretrained=(True and load_path is None), 
         use_checkpoint=args.use_checkpoint, 
         ape=args.encoder_ape,
         trunc_encoder=args.trunc_encoder)
@@ -369,7 +374,6 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     
     if args.local_rank == 0 and not args.debug:
         os.makedirs(save_path, exist_ok=True)
-        # LOGGER = init_logger()
         SUMMARY = init_summary_writer(save_path)
         
     print_rank_0("========== training ==========")
@@ -421,8 +425,8 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     best_score = np.inf
     best_loss = np.inf
     
-    global_step = 0
-    start_epoch = encoder_scheduler.last_epoch
+    global_step = encoder_scheduler.last_epoch
+    start_epoch = global_step // (len(train_loader) // args.gradient_accumulation_steps)
 
     for epoch in range(start_epoch, args.epochs):
         
@@ -532,17 +536,13 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             for idx, pred in beam_preds[format_].items():
                 all_predictions[format_][idx] = pred
 
+    if args.beam_size > 1:
+        for format_ in args.formats:
+            with open(os.path.join(save_path, f'{split}_{format_}_beam.jsonl'), 'w') as f:
+                for idx, pred in enumerate(all_predictions[format_]):
+                    text, score = pred
+                    f.write(json.dumps({'id': idx, 'text': text, 'score': score}) + '\n')
 
-    for format_ in args.formats:
-        with open(os.path.join(save_path, f'{split}_{format_}_beam.jsonl'), 'w') as f:
-            for idx, pred in enumerate(all_predictions[format_]):
-                text, score = pred
-                f.write(json.dumps({'id': idx, 'text': text, 'score': score}) + '\n')
-#             with open(os.path.join(save_path, f'{split}_{format_}_beam.txt'), 'w') as f:
-#                 for idx, pred in enumerate(all_predictions[format_]):
-#                     f.write(f'ID {idx}\n')
-#                     f.write('\n'.join(pred) + '\n')
-                
     pred_df = data_df[['image_id']].copy()
     scores = {}
     
@@ -607,11 +607,45 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     return scores
 
 
-def get_train_file_path(image_id):
-    return "data/train/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
+def get_bms_data(args):
+    def get_train_file_path(image_id):
+        return "data/train/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
+    def get_test_file_path(image_id):
+        return "data/test/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
+    train_df, valid_df, test_df = None, None, None
+    if args.do_train:
+        train_df = pd.read_csv('data/train_folds.csv')
+        train_df['file_path'] = train_df['image_id'].apply(get_train_file_path)
+        print_rank_0(f'train.shape: {train_df.shape}')
+    if args.do_train or args.do_valid:
+        valid_df = pd.read_csv('data/valid_folds.csv')
+        valid_df['file_path'] = valid_df['image_id'].apply(get_train_file_path)
+        print_rank_0(f'valid.shape: {valid_df.shape}')
+    if args.do_test:
+        test_df = pd.read_csv('data/sample_submission.csv')
+        test_df['file_path'] = test_df['image_id'].apply(get_test_file_path)
+        print_rank_0(f'test.shape: {test_df.shape}')
+    tokenizer = {}
+    for format_ in args.formats:
+        tokenizer[format_] = Tokenizer('data/' + FORMAT_INFO[format_]['tokenizer'])
+    return train_df, valid_df, test_df, tokenizer
 
-def get_test_file_path(image_id):
-    return "data/test/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
+
+def get_chemdraw_data(args):
+    train_df, valid_df, test_df = None, None, None
+    if args.do_train:
+        train_df = pd.read_csv(os.path.join(args.data_path, args.train_file))
+        print_rank_0(f'train.shape: {train_df.shape}')
+    if args.do_train or args.do_valid:
+        valid_df = pd.read_csv(os.path.join(args.data_path, args.valid_file))
+        print_rank_0(f'valid.shape: {valid_df.shape}')
+    if args.do_test:
+        test_df = pd.read_csv(os.path.join(args.data_path, args.test_file))
+        print_rank_0(f'test.shape: {test_df.shape}')
+    tokenizer = {}
+    for format_ in args.formats:
+        tokenizer[format_] = Tokenizer(os.path.join(args.data_path, 'chemdraw-data/tokenizer_smiles_atomtok.json'))
+    return train_df, valid_df, test_df, tokenizer
 
 
 def main():
@@ -625,24 +659,21 @@ def main():
         dist.init_process_group(backend='gloo', init_method='env://', timeout=datetime.timedelta(0, 7200))
         torch.cuda.set_device(args.local_rank)
         torch.backends.cudnn.benchmark = True
+        
+    if args.formats is None: 
+        args.formats = [args.format]
+    else:
+        args.formats = args.formats.split(',')
+    print_rank_0('Output formats: ' + ' '.join(args.formats))
 
-    if args.do_train:
-        train_df = pd.read_csv('data/train_folds.csv')
-        train_df['file_path'] = train_df['image_id'].apply(get_train_file_path)
+    if args.dataset == 'bms':
+        train_df, valid_df, test_df, tokenizer = get_bms_data(args)
+    elif args.dataset == 'chemdraw':
+        train_df, valid_df, test_df, tokenizer = get_chemdraw_data(args)
+        
+    if args.do_train and args.all_data:
+        train_df = pd.concat([train_df, valid_df])
         print_rank_0(f'train.shape: {train_df.shape}')
-    
-    if args.do_train or args.do_valid:
-        valid_df = pd.read_csv('data/valid_folds.csv')
-        valid_df['file_path'] = valid_df['image_id'].apply(get_train_file_path)
-        print_rank_0(f'valid.shape: {valid_df.shape}')
-        if args.all_data:
-            train_df = pd.concat([train_df, valid_df])
-            print_rank_0(f'train.shape: {train_df.shape}')
-    
-    if args.do_test:
-        test_df = pd.read_csv('data/sample_submission.csv')
-        test_df['file_path'] = test_df['image_id'].apply(get_test_file_path)
-        print_rank_0(f'test.shape: {test_df.shape}')
         
     if args.trunc_train:
         if args.do_train:
@@ -660,15 +691,6 @@ def main():
             valid_df = valid_df.sample(n=1000, random_state=42).reset_index(drop=True)
         if args.do_test:
             test_df = test_df.sample(n=1000, random_state=42).reset_index(drop=True)
-    
-    if args.formats is None:
-        args.formats = [args.format]
-    else:
-        args.formats = args.formats.split(',')
-    print_rank_0('Output formats: ' + ' '.join(args.formats))
-    tokenizer = {}
-    for format_ in args.formats:
-        tokenizer[format_] = torch.load('data/' + FORMAT_INFO[format_]['tokenizer'])
     
     if args.selftrain:
         from bms.selftrain import get_self_training_data

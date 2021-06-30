@@ -273,17 +273,6 @@ def train_loop(args, train_df, train_beam_file, valid_df, valid_beam_file, token
 
     train_dataset = TrainDataset(args, train_df, train_beam_file, tokenizer, split='train')
     
-#     n = len(train_df) // 8
-# #     for idx in range(n*args.local_rank+65000, n*(args.local_rank+1)):
-# #     for start in [888999,1979999,70999,1161999,343999,1434999,616999,1707999]:
-#     for start in [617210]:
-#         print(start)
-#         for idx in range(start, start+1000):
-#             _, image, beam_image = train_dataset[idx]
-#             if (idx + 1) % 1000 == 0:
-#                 print('Rank', args.local_rank, idx)
-#     return
-
     if args.debug and args.local_rank == 0:
         train_dataset.save_images(os.path.join(save_path, 'images'), 5)
     if args.local_rank != -1:

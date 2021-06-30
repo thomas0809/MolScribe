@@ -20,21 +20,17 @@ from tensorboardX import SummaryWriter
 FORMAT_INFO = {
     "inchi": {
         "name": "InChI_text",
-        "tokenizer": "tokenizer_inchi.pth",
+        "tokenizer": "tokenizer_inchi.json",
         "max_len": 300
     },
     "atomtok": {
         "name": "SMILES_atomtok",
-        "tokenizer": "tokenizer_smiles_atomtok.pth",
-        "max_len": 120
-    },
-    "spe": {
-        "name": "SMILES_spe",
-        "tokenizer": "tokenizer_smiles_spe.pth"
+        "tokenizer": "tokenizer_smiles_atomtok.json",
+        "max_len": 256
     },
     "selfies": {
         "name": "SELFIES_tok",
-        "tokenizer": "tokenizer_selfies.pth",
+        "tokenizer": "tokenizer_selfies.json",
         "max_len": 120
     }
 }
@@ -174,9 +170,11 @@ EOS_ID = 2
 
 class Tokenizer(object):
 
-    def __init__(self):
+    def __init__(self, path=None):
         self.stoi = {}
         self.itos = {}
+        if path:
+            self.load(path)
 
     def __len__(self):
         return len(self.stoi)
