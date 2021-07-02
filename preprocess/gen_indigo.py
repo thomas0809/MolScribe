@@ -12,6 +12,8 @@ from indigo.renderer import IndigoRenderer
 indigo = Indigo()
 renderer = IndigoRenderer(indigo)
 indigo.setOption('render-background-color', '1,1,1')
+indigo.setOption('render-stereo-style', 'none')
+indigo.setOption('render-label-mode', 'hetero')
 
 def generate_image(obj):
     i, row = obj
@@ -25,7 +27,7 @@ def generate_image(obj):
         renderer.renderToFile(mol, path)
     except:
         print(split, path, row['SMILES'])
-        img = np.array([[255,255,255] * 10] * 10)
+        img = np.array([[[255,255,255]] * 10] * 10)
         cv2.imwrite(path, img)
     return
 

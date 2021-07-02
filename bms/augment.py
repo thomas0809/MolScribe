@@ -81,27 +81,27 @@ class CropWhite(A.DualTransform):
     def apply(self, img, **params):
         height, width, _ = img.shape
         x = (img != self.value).sum(axis=2)
-        if x.sum() == 0 or height < 10 or width < 10:
+        if x.sum() == 0:
             return img
         row_sum = x.sum(axis=1)
-        u = 0
-        while row_sum[u] == 0 and u+1 < height//2:
-            u += 1
-        u = max(0, u - self.pad)
-        d = height
-        while row_sum[d-1] == 0 and d-1 > height//2:
-            d -= 1
-        d = min(height, d + self.pad)
+        top = 0
+        while row_sum[top] == 0 and top+1 < height:
+            top += 1
+        top = max(0, top - self.pad)
+        bottom = height
+        while row_sum[bottom-1] == 0 and bottom-1 > top:
+            bottom -= 1
+        bottom = min(height, bottom + self.pad)
         col_sum = x.sum(axis=0)
-        l = 0
-        while col_sum[l] == 0 and l+1 < width//2:
-            l += 1
-        l = max(0, l - self.pad)
-        r = width
-        while col_sum[r-1] == 0 and r-1 > width//2:
-            r -= 1
-        r = min(width, r + self.pad)
-        img = img[u:d, l:r]
+        left = 0
+        while col_sum[left] == 0 and left+1 < width:
+            left += 1
+        left = max(0, left - self.pad)
+        right = width
+        while col_sum[right-1] == 0 and right-1 > left:
+            right -= 1
+        right = min(width, right + self.pad)
+        img = img[top:bottom, left:right]
         return img
 
     

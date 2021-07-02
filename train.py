@@ -71,6 +71,7 @@ def get_args():
     parser.add_argument('--train_file', type=str, default=None)
     parser.add_argument('--valid_file', type=str, default=None)
     parser.add_argument('--test_file', type=str, default=None)
+    parser.add_argument('--dynamic_indigo', action='store_true')
     parser.add_argument('--format', type=str, choices=['inchi','atomtok','spe'], default='atomtok')
     parser.add_argument('--formats', type=str, default=None)
     parser.add_argument('--input_size', type=int, default=224)
@@ -88,6 +89,7 @@ def get_args():
     parser.add_argument('--load_path', type=str, default=None)
     parser.add_argument('--load_encoder_only', action='store_true')
     parser.add_argument('--save_path', type=str, default='output/')
+    parser.add_argument('--save_mode', type=str, default='best', choices=['best','all'])
     parser.add_argument('--load_ckpt', type=str, default='best')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--all_data', action='store_true', help='Use both train and valid data for training.')
@@ -384,7 +386,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     # loader
     # ====================================================
 
-    train_dataset = TrainDataset(args, train_df, tokenizer, labelled=True)
+    train_dataset = TrainDataset(args, train_df, tokenizer, split='train')
     if args.local_rank != -1:
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
     else:
@@ -469,7 +471,8 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
                     'decoder_scheduler': decoder_scheduler.state_dict(),
                     'global_step': global_step
                    }
-        torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
+        if args.save_mode == 'all':
+            torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
 
         if 'selfies' in args.formats:
             score = scores['selfies']
@@ -498,7 +501,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     
     device = args.device
 
-    dataset = TrainDataset(args, data_df, tokenizer, labelled=False)
+    dataset = TrainDataset(args, data_df, tokenizer, split=split)
     if args.local_rank != -1:
         sampler = DistributedSampler(dataset, shuffle=False)
     else:

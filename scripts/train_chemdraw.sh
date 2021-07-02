@@ -17,7 +17,7 @@ python -m torch.distributed.launch \
     --dataset chemdraw \
     --data_path data/molbank \
     --train_file indigo-data/train.csv \
-    --valid_file indigo-data/valid.csv \
+    --valid_file chemdraw-data/valid.csv \
     --test_file indigo-data/test.csv \
     --formats atomtok \
     --input_size 384 \
@@ -25,9 +25,9 @@ python -m torch.distributed.launch \
     --decoder_scale 2 \
     --encoder_lr 4e-4 \
     --decoder_lr 4e-4 \
-    --load_path output/indigo/swin_base_20 \
-    --resume \
-    --save_path output/indigo/swin_base_20 \
+    --dynamic_indigo \
+    --augment \
+    --save_path output/indigo/swin_base_20_dynamic_aug \
     --label_smoothing 0.1 \
     --epochs 24 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \

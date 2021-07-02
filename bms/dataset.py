@@ -1,10 +1,14 @@
 import cv2
+import random
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+
+from indigo import Indigo
+from indigo.renderer import IndigoRenderer
 
 from bms.augment import ExpandSafeRotate, CropWhite, ResizePad
 from bms.utils import PAD_ID, FORMAT_INFO
@@ -16,6 +20,11 @@ def get_transforms(args, labelled=True):
     trans_list = []
     if labelled and args.augment:
         trans_list.append(ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, interpolation=cv2.INTER_NEAREST, value=(255,255,255)))
+        trans_list += [
+            A.Downscale(scale_min=0.25, scale_max=0.5),
+            A.Blur(),
+            A.GaussNoise()
+        ]
     if not args.no_crop_white:
         trans_list.append(CropWhite(pad=3))
     if args.resize_pad:
@@ -32,28 +41,60 @@ def get_transforms(args, labelled=True):
     return A.Compose(trans_list)
 
 
+def generate_indigo_image(smiles):
+    indigo = Indigo()
+    renderer = IndigoRenderer(indigo)
+    indigo.setOption('render-output-format', 'png')
+    indigo.setOption('render-background-color', '1,1,1')
+    indigo.setOption('render-stereo-style', 'none')
+    indigo.setOption('render-relative-thickness', random.uniform(1, 2))
+    indigo.setOption('render-bond-line-width', random.uniform(1, 3))
+    indigo.setOption('render-label-mode', random.choice(['hetero', 'terminal-hetero']))
+    indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
+    try:
+        mol = indigo.loadMolecule(smiles)
+        buf = renderer.renderToBuffer(mol)
+        # decode buffer to image
+        img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 0)
+        # expand to RGB
+        img = np.repeat(np.expand_dims(img, 2), 3, axis=2)
+        success = True
+    except:
+        img = np.array([[[255,255,255]] * 10] * 10)
+        success = False
+    return img, success
+
+
 class TrainDataset(Dataset):
-    def __init__(self, args, df, tokenizer, labelled=True):
+    def __init__(self, args, df, tokenizer, split='train'):
         super().__init__()
         self.df = df
         self.tokenizer = tokenizer
         self.file_paths = df['file_path'].values
-        self.labelled = labelled
-        if labelled:
+        self.split = split
+        self.labelled = (split == 'train')
+        if self.labelled:
             self.formats = args.formats
+            self.smiles = df['SMILES'].values
             self.labels = {}
             for format_ in self.formats:
                 field = FORMAT_INFO[format_]['name']
                 self.labels[format_] = df[field].values
-        self.transform = get_transforms(args, labelled)
+        self.transform = get_transforms(args, self.labelled)
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
-
+        self.dynamic_indigo = (args.dynamic_indigo and split == 'train')
+        
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
-        file_path = self.file_paths[idx]
-        image = cv2.imread(file_path)
+        if self.dynamic_indigo:
+            image, success = generate_indigo_image(self.smiles[idx])
+            if not success and idx != 0:
+                return self.__getitem__(0)
+        else:
+            file_path = self.file_paths[idx]
+            image = cv2.imread(file_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32)
         h, w, _ = image.shape
         if h > w:
