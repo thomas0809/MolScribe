@@ -31,11 +31,13 @@ def get_transforms(args, labelled=True):
         trans_list.append(ResizePad(args.input_size, args.input_size, interpolation=cv2.INTER_NEAREST))
     else:
         trans_list.append(A.Resize(args.input_size, args.input_size))
+    if args.cycada:
+        mean = std = [0.5, 0.5, 0.5]
+    else:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
     trans_list += [
-        A.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225],
-        ),
+        A.Normalize(mean=mean, std=std),
         ToTensorV2(),
     ]
     return A.Compose(trans_list)

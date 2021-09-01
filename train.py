@@ -38,7 +38,7 @@ warnings.filterwarnings('ignore')
 
 
 class CFG:
-    num_workers=4
+    num_workers=8
     weight_decay=1e-6
     max_grad_norm=5
     attention_dim=256
@@ -65,6 +65,7 @@ def get_args():
     parser.add_argument('--decoder_layer', type=int, default=1)
     parser.add_argument('--trunc_encoder', action='store_true')  # use the hidden states before downsample
     parser.add_argument('--encoder_ape', action='store_true')
+    parser.add_argument('--no_pretrained', action='store_true')
     parser.add_argument('--use_checkpoint', action='store_true')
     # Data
     parser.add_argument('--data_path', type=str, default=None)
@@ -97,6 +98,7 @@ def get_args():
     parser.add_argument('--trunc_train', action='store_true')
     parser.add_argument('--label_smoothing', type=float, default=0.0)
     parser.add_argument('--selftrain', type=str, default=None)
+    parser.add_argument('--cycada', action='store_true')
     # Inference
     parser.add_argument('--beam_size', type=int, default=1)
     parser.add_argument('--n_best', type=int, default=1)
@@ -131,7 +133,7 @@ def safe_load(module, module_states):
 def get_model(args, tokenizer, device, load_path=None, ddp=True):
     encoder = Encoder(
         args.encoder, 
-        pretrained=(True and load_path is None), 
+        pretrained=(not args.no_pretrained and load_path is None), 
         use_checkpoint=args.use_checkpoint, 
         ape=args.encoder_ape,
         trunc_encoder=args.trunc_encoder)
@@ -505,7 +507,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     if args.local_rank != -1:
         sampler = DistributedSampler(dataset, shuffle=False)
     else:
-        sampler = RandomSampler(dataset)
+        sampler = SequentialSampler(dataset)
     dataloader = DataLoader(dataset, 
                             batch_size=args.batch_size * 2, 
                             sampler=sampler, 

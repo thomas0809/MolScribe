@@ -17,7 +17,7 @@ python -m torch.distributed.launch \
     --dataset chemdraw \
     --data_path data/molbank \
     --train_file indigo-data/train.csv \
-    --valid_file chemdraw-data/valid.csv \
+    --valid_file indigo-data/valid.csv \
     --test_file indigo-data/test.csv \
     --formats atomtok \
     --input_size 384 \
@@ -27,34 +27,15 @@ python -m torch.distributed.launch \
     --decoder_lr 4e-4 \
     --dynamic_indigo \
     --augment \
-    --save_path output/indigo/swin_base_20_dynamic_aug \
+    --save_path output/indigo/swin_base_30_cold_dynamic_aug \
     --label_smoothing 0.1 \
-    --epochs 24 \
+    --epochs 30 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
+    --no_pretrained \
+    --do_train \
     --do_valid \
     --fp16
 
-
-# swin_base
-#     --encoder swin_base_patch4_window12_384 \
-#     --decoder_scale 2 \
-#     --save_path output/swin_base_384_epoch_16 \
-
-#     --encoder swin_base_patch4_window12_384 \
-#     --decoder_scale 2 \
-#     --save_path output/swin_base_384_epoch_16_cont \
-#     --load_path output/swin_base_384_epoch_16 \
-#     --init_scheduler \
-
-# swin_large
-#     --encoder swin_large_patch4_window12_384 \
-#     --decoder_scale 2 \
-#     --load_path output/swin_large_384_epoch_16 \
-#     --save_path output/swin_large_384_epoch_16 \
-
-# resnet101
-#     --encoder resnet101d \
-#     --decoder_scale 2 \
-#     --save_path output/resnet101_epoch_16 \
+#     --save_path output/indigo/swin_base_20_dynamic_aug \
