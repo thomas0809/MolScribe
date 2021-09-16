@@ -38,7 +38,7 @@ warnings.filterwarnings('ignore')
 
 
 class CFG:
-    num_workers=8
+    num_workers=16
     weight_decay=1e-6
     max_grad_norm=5
     attention_dim=256
@@ -211,10 +211,10 @@ def get_ensemble_model(args, tokenizer, device, ckpts, ddp=True):
 def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
     
     encoder_optimizer = AdamW(encoder.parameters(), lr=args.encoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
-    encoder_scheduler= get_scheduler(args.scheduler, encoder_optimizer, args.num_warmup_steps, args.num_training_steps)
+    encoder_scheduler = get_scheduler(args.scheduler, encoder_optimizer, args.num_warmup_steps, args.num_training_steps)
 
     decoder_optimizer = AdamW(decoder.parameters(), lr=args.decoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
-    decoder_scheduler= get_scheduler(args.scheduler, decoder_optimizer, args.num_warmup_steps, args.num_training_steps)
+    decoder_scheduler = get_scheduler(args.scheduler, decoder_optimizer, args.num_warmup_steps, args.num_training_steps)
     
     if load_path and args.resume:
         states = load_states(args, load_path)
@@ -246,6 +246,9 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
     start = end = time.time()
     encoder_grad_norm = decoder_grad_norm = 0
 
+    # images, refs = next(iter(train_loader))
+    # images = images.to(device)
+    # for step in range(len(train_loader)):
     for step, (images, refs) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
@@ -289,8 +292,8 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
                   'Data {data_time.avg:.3f}s ({sum_data_time}) '
                   'Elapsed {remain:s} '
                   'Loss: {loss.val:.4f}({loss.avg:.4f}) '
-                  'Enc Grad: {encoder_grad_norm:.4f}  '
-                  'Dec Grad: {decoder_grad_norm:.4f}  '
+                  'EncGrad: {encoder_grad_norm:.4f}  '
+                  'DecGrad: {decoder_grad_norm:.4f}  '
                   'LR: {encoder_lr:.6f} {decoder_lr:.6f}  '
                   .format(
                    epoch+1, step, len(train_loader), batch_time=batch_time,
@@ -396,7 +399,8 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     train_loader = DataLoader(train_dataset, 
                               batch_size=args.batch_size, 
                               sampler=train_sampler,
-                              num_workers=CFG.num_workers, 
+                              num_workers=CFG.num_workers,
+                              prefetch_factor=4,
                               pin_memory=True,
                               drop_last=True, 
                               collate_fn=bms_collate)
@@ -479,7 +483,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
         if 'selfies' in args.formats:
             score = scores['selfies']
         elif 'atomtok' in args.formats:
-            score = scores['smiles']
+            score = scores['smiles_em']
         else:
             score = scores['inchi']
 

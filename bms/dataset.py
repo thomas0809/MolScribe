@@ -13,12 +13,13 @@ from indigo.renderer import IndigoRenderer
 from bms.augment import ExpandSafeRotate, CropWhite, ResizePad
 from bms.utils import PAD_ID, FORMAT_INFO
 
-cv2.setNumThreads(2)
+cv2.setNumThreads(1)
 
 
 def get_transforms(args, labelled=True):
     trans_list = []
     if labelled and args.augment:
+    # if args.augment:
         trans_list.append(ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, interpolation=cv2.INTER_NEAREST, value=(255,255,255)))
         trans_list += [
             A.Downscale(scale_min=0.25, scale_max=0.5),
@@ -37,24 +38,37 @@ def get_transforms(args, labelled=True):
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
     trans_list += [
+        A.ToGray(p=1),
         A.Normalize(mean=mean, std=std),
         ToTensorV2(),
     ]
     return A.Compose(trans_list)
 
 
-def generate_indigo_image(smiles):
+def add_sgroup(indigo, mol, substitutions):
+    matcher = indigo.substructureMatcher(mol)
+    for abbrv, smarts, p in substitutions:
+        query = indigo.loadSmarts(smarts)
+        for match in matcher.iterateMatches(query):
+            if random.random() < p:
+                mol.createSGroup("SUP", match, abbrv)
+    return mol
+
+
+def generate_indigo_image(smiles, substitutions):
     indigo = Indigo()
     renderer = IndigoRenderer(indigo)
     indigo.setOption('render-output-format', 'png')
     indigo.setOption('render-background-color', '1,1,1')
     indigo.setOption('render-stereo-style', 'none')
+    indigo.setOption('render-superatom-mode', 'collapse')
     indigo.setOption('render-relative-thickness', random.uniform(1, 2))
     indigo.setOption('render-bond-line-width', random.uniform(1, 3))
     indigo.setOption('render-label-mode', random.choice(['hetero', 'terminal-hetero']))
     indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
     try:
         mol = indigo.loadMolecule(smiles)
+        mol = add_sgroup(indigo, mol, substitutions)
         buf = renderer.renderToBuffer(mol)
         # decode buffer to image
         img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 0)
@@ -62,7 +76,7 @@ def generate_indigo_image(smiles):
         img = np.repeat(np.expand_dims(img, 2), 3, axis=2)
         success = True
     except:
-        img = np.array([[[255,255,255]] * 10] * 10)
+        img = np.array([[[255, 255, 255]] * 10] * 10)
         success = False
     return img, success
 
@@ -85,13 +99,16 @@ class TrainDataset(Dataset):
         self.transform = get_transforms(args, self.labelled)
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
         self.dynamic_indigo = (args.dynamic_indigo and split == 'train')
+        if self.dynamic_indigo:
+            from bms.substitutions import get_indigo_substitutions
+            self.substitutions = get_indigo_substitutions()
         
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
         if self.dynamic_indigo:
-            image, success = generate_indigo_image(self.smiles[idx])
+            image, success = generate_indigo_image(self.smiles[idx], self.substitutions)
             if not success and idx != 0:
                 return self.__getitem__(0)
         else:

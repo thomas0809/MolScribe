@@ -1,7 +1,7 @@
 #!/bin/bash
 
 NUM_NODES=1
-NUM_GPUS_PER_NODE=8
+NUM_GPUS_PER_NODE=4
 NODE_RANK=0
 
 BATCH_SIZE=256
@@ -14,6 +14,7 @@ set -x
 python -m torch.distributed.launch \
     --nproc_per_node=$NUM_GPUS_PER_NODE --nnodes=$NUM_NODES --node_rank $NODE_RANK --master_addr localhost --master_port $MASTER_PORT \
     train.py \
+    --debug \
     --dataset chemdraw \
     --data_path data/molbank \
     --train_file indigo-data/train.csv \
@@ -39,6 +40,7 @@ python -m torch.distributed.launch \
     --fp16
 
 
+#    --load_path output/indigo/swin_base_50_dynamic_aug_sgroup --resume \
 #    --valid_file indigo-data/valid.csv \
 #    --valid_file real-acs-evaluation/test.csv \
 #    --save_path output/indigo/swin_base_20_dynamic_aug \
