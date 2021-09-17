@@ -6,6 +6,12 @@ Each tuple records the
     string_tO_substitute, smarts_to_match, probability
 '''
 substitutions = [
+    # added by ztu 210917
+    ('[NO2]', '[N+](=O)[O-]', 0.5),
+    ('[CHO]', 'C(=O)', 0.5),
+    ('[CO]', 'C(=O)', 0.5),
+    ('[CO2Et]', 'C(=O)[OH0;D2][CH2;D2][CH3]', 0.5),
+
     ('[OAc]', '[OH0;X2]C(=O)[CH3]', 0.8),
     ('[Ac]', 'C(=O)[CH3]', 0.1),
     
