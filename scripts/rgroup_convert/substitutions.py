@@ -8,11 +8,14 @@ Each tuple records the
 substitutions = [
     # added by ztu 210917
     ('[NO2]', '[N+](=O)[O-]', 0.5),
-    ('[CHO]', 'C(=O)', 0.5),
+    ('[NO]', '[NH0;D2](=O)', 0.5),
+    ('[CHO]', '[CH1](=O)', 0.5),
     ('[CO]', 'C(=O)', 0.5),
     ('[CO2Et]', 'C(=O)[OH0;D2][CH2;D2][CH3]', 0.5),
+    ('[COOEt]', 'C(=O)[OH0;D2][CH2;D2][CH3]', 0.5),
 
     ('[OAc]', '[OH0;X2]C(=O)[CH3]', 0.8),
+    ('[NHAc]', '[NH1;D2]C(=O)[CH3]', 0.8),
     ('[Ac]', 'C(=O)[CH3]', 0.1),
     
     ('[OBz]', '[OH0;D2]C(=O)[cH0]1[cH][cH][cH][cH][cH]1', 0.7), # Benzoyl
@@ -45,22 +48,29 @@ substitutions = [
     
     # Alkyl chains
     ('[OMe]', '[OH0;D2][CH3;D1]', 0.3),
+    ('[SMe]', '[SH0;D2][CH3;D1]', 0.3),
+    ('[NMe]', '[N;X3][CH3;D1]', 0.3),
     ('[Me]', '[CH3;D1]', 0.1),
     ('[OEt]', '[OH0;D2][CH2;D2][CH3]', 0.5),
     ('[Et]', '[CH2;D2][CH3]', 0.2),
     ('[Pr]', '[CH2;D2][CH2;D2][CH3]', 0.1),
+    ('[nPr]', '[CH2;D2][CH2;D2][CH3]', 0.1),
     ('[Bu]', '[CH2;D2][CH2;D2][CH2;D2][CH3]', 0.1),
-    
+    ('[nBu]', '[CH2;D2][CH2;D2][CH2;D2][CH3]', 0.1),
+
     # Branched
     ('[iPr]', '[CH1;D3]([CH3])[CH3]', 0.1),
     ('[iBu]', '[CH2;D2][CH1;D3]([CH3])[CH3]', 0.1),
+    ('[OiBu]', '[OH0;D2][CH2;D2][CH1;D3]([CH3])[CH3]', 0.1),
     ('[OtBu]', '[OH0;D2][CH0]([CH3])([CH3])[CH3]', 0.7),
     ('[tBu]', '[CH0]([CH3])([CH3])[CH3]', 0.3),
     
     # Other shorthands (MIGHT NOT WANT ALL OF THESE)
     ('[CF3]', '[CH0;D4](F)(F)F', 0.5),
-    ('[CO2H]', 'C(=O)[OH]', 0.2), # COOH
-    ('[COOH]', 'C(=O)[OH]', 0.2), # COOH
+    ('[NCF3]', '[N;X3][CH0;D4](F)(F)F', 0.5),
+    ('[CCl3]', '[CH0;D4](Cl)(Cl)Cl', 0.5),
+    ('[CO2H]', 'C(=O)[OH]', 0.2),
+    ('[COOH]', 'C(=O)[OH]', 0.2),
     ('[CN]', 'C#[ND1]', 0.1),
     ('[OCH3]', '[OH0;D2][CH3]', 0.2),
     ('[SO3H]', 'S(=O)(=O)[OH]', 0.4),
