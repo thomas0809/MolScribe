@@ -1,6 +1,5 @@
 import os
 import sys
-import re
 import time
 import json
 import math
@@ -14,37 +13,23 @@ from tqdm.auto import tqdm
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.distributed as dist
 from torch.optim import Adam, AdamW, SGD
-from torch.utils.data import DataLoader, Dataset, RandomSampler
-from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, LambdaLR
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 
 from transformers import get_scheduler
 
-from bms.dataset import TrainDataset, TestDataset, bms_collate
-from bms.model import Encoder, DecoderWithAttention, MultiTaskDecoder
-from bms.ensemble import EnsembleEncoder, EnsembleMultiTaskDecoder
-from bms.loss import LabelSmoothingLoss
-from bms.utils import init_summary_writer, seed_torch, get_score, AverageMeter, asMinutes, timeSince, is_valid, Tokenizer, \
-                      batch_convert_smiles_to_inchi, batch_convert_selfies_to_inchi, merge_inchi, FORMAT_INFO, PAD_ID, print_rank_0
-
+from bms.dataset import TrainDataset, bms_collate
+from bms.model import Encoder, Decoder
+from bms.loss import SequenceLoss
+from bms.utils import init_summary_writer, seed_torch,  AverageMeter, asMinutes, timeSince, print_rank_0, FORMAT_INFO, \
+                      is_valid, get_score, get_canon_smiles_score, merge_inchi, batch_convert_smiles_to_inchi
+from bms.tokenizer import Tokenizer, NodeTokenizer, PAD_ID
 
 import warnings 
 warnings.filterwarnings('ignore')
-
-
-class CFG:
-    num_workers=16
-    weight_decay=1e-6
-    max_grad_norm=5
-    attention_dim=256
-    embed_dim=256
-    decoder_dim=512
-    dropout=0.5
 
 
 def get_args():
@@ -57,24 +42,38 @@ def get_args():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--print_freq', type=int, default=200)
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--dataset', type=str, default='bms', choices=['bms','chemdraw'])
+    parser.add_argument('--backend', type=str, default='gloo', choices=['gloo', 'nccl'])
+    parser.add_argument('--nodes', action='store_true')
     # Model
     parser.add_argument('--encoder', type=str, default='resnet34')
     parser.add_argument('--decoder', type=str, default='lstm')
-    parser.add_argument('--decoder_scale', type=int, default=1)
-    parser.add_argument('--decoder_layer', type=int, default=1)
     parser.add_argument('--trunc_encoder', action='store_true')  # use the hidden states before downsample
-    parser.add_argument('--encoder_ape', action='store_true')
     parser.add_argument('--no_pretrained', action='store_true')
     parser.add_argument('--use_checkpoint', action='store_true')
+    parser.add_argument('--dropout', type=float, default=0.5)
+    parser.add_argument('--embed_dim', type=int, default=256)
+    group = parser.add_argument_group("lstm_options")
+    group.add_argument('--decoder_dim', type=int, default=512)
+    group.add_argument('--decoder_scale', type=int, default=1)
+    group.add_argument('--decoder_layer', type=int, default=1)
+    group.add_argument('--attention_dim', type=int, default=256)
+    group = parser.add_argument_group("transformer_options")
+    group.add_argument("--dec_num_layers", help="No. of layers in transformer decoder", type=int, default=6)
+    group.add_argument("--dec_hidden_size", help="Decoder hidden size", type=int, default=256)
+    group.add_argument("--dec_attn_heads", help="Decoder no. of attention heads", type=int, default=4)
+    group.add_argument("--hidden_dropout", help="Hidden dropout", type=float, default=0.1)
+    group.add_argument("--attn_dropout", help="Attention dropout", type=float, default=0.1)
+    group.add_argument("--max_relative_positions", help="Max relative positions", type=int, default=0)
     # Data
+    parser.add_argument('--dataset', type=str, default='bms', choices=['bms', 'chemdraw'])
     parser.add_argument('--data_path', type=str, default=None)
     parser.add_argument('--train_file', type=str, default=None)
     parser.add_argument('--valid_file', type=str, default=None)
     parser.add_argument('--test_file', type=str, default=None)
     parser.add_argument('--dynamic_indigo', action='store_true')
-    parser.add_argument('--format', type=str, choices=['inchi','atomtok','spe'], default='atomtok')
+    parser.add_argument('--format', type=str, choices=['inchi', 'atomtok', 'spe'], default='atomtok')
     parser.add_argument('--formats', type=str, default=None)
+    parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--input_size', type=int, default=224)
     parser.add_argument('--augment', action='store_true')
     parser.add_argument('--resize_pad', action='store_true')
@@ -84,18 +83,21 @@ def get_args():
     parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--encoder_lr', type=float, default=1e-4)
     parser.add_argument('--decoder_lr', type=float, default=4e-4)
+    parser.add_argument('--weight_decay', type=float, default=1e-6)
+    parser.add_argument('--max_grad_norm', type=float, default=5.)
     parser.add_argument('--scheduler', type=str, choices=['cosine','constant'], default='cosine')
     parser.add_argument('--warmup_ratio', type=float, default=0)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parser.add_argument('--load_path', type=str, default=None)
     parser.add_argument('--load_encoder_only', action='store_true')
+    parser.add_argument('--train_steps_per_epoch', type=int, default=-1)
     parser.add_argument('--save_path', type=str, default='output/')
-    parser.add_argument('--save_mode', type=str, default='best', choices=['best','all'])
+    parser.add_argument('--save_mode', type=str, default='best', choices=['best', 'all', 'last'])
     parser.add_argument('--load_ckpt', type=str, default='best')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--all_data', action='store_true', help='Use both train and valid data for training.')
     parser.add_argument('--init_scheduler', action='store_true')
-    parser.add_argument('--trunc_train', action='store_true')
+    parser.add_argument('--trunc_train', type=int, default=None)
     parser.add_argument('--label_smoothing', type=float, default=0.0)
     parser.add_argument('--selftrain', type=str, default=None)
     parser.add_argument('--cycada', action='store_true')
@@ -103,7 +105,6 @@ def get_args():
     parser.add_argument('--beam_size', type=int, default=1)
     parser.add_argument('--n_best', type=int, default=1)
     parser.add_argument('--check_validity', action='store_true')
-    parser.add_argument('--ensemble_cfg', type=str, default=None)
     args = parser.parse_args()
     return args
 
@@ -130,24 +131,12 @@ def safe_load(module, module_states):
     return
 
 
-def get_model(args, tokenizer, device, load_path=None, ddp=True):
-    encoder = Encoder(
-        args.encoder, 
-        pretrained=(not args.no_pretrained and load_path is None), 
-        use_checkpoint=args.use_checkpoint, 
-        ape=args.encoder_ape,
-        trunc_encoder=args.trunc_encoder)
-    encoder_dim = encoder.n_features
-    print_rank_0(f'encoder_dim: {encoder_dim}')
-    decoder = MultiTaskDecoder(
-        formats=args.formats,
-        attention_dim=CFG.attention_dim * args.decoder_scale,
-        embed_dim=CFG.embed_dim * args.decoder_scale,
-        encoder_dim=encoder_dim,
-        decoder_dim=CFG.decoder_dim * args.decoder_scale,
-        dropout=CFG.dropout,
-        n_layer=args.decoder_layer,
-        tokenizer=tokenizer)
+def get_model(args, tokenizer, device, load_path=None):
+    encoder = Encoder(args, pretrained=(not args.no_pretrained and load_path is None))
+    args.encoder_dim = encoder.n_features
+    print_rank_0(f'encoder_dim: {args.encoder_dim}')
+
+    decoder = Decoder(args, tokenizer)
     
     if load_path:
         states = load_states(args, load_path)
@@ -169,51 +158,12 @@ def get_model(args, tokenizer, device, load_path=None, ddp=True):
     return encoder, decoder
 
 
-def get_ensemble_model(args, tokenizer, device, ckpts, ddp=True):
-    encoders = []
-    decoders = []
-    
-    for ckpt in ckpts:
-        encoder = Encoder(
-            ckpt['encoder'],
-            pretrained=True,
-            use_checkpoint=args.use_checkpoint)
-        decoder = MultiTaskDecoder(
-            formats=ckpt['formats'],
-            attention_dim=CFG.attention_dim * args.decoder_scale,
-            embed_dim=CFG.embed_dim * args.decoder_scale,
-            encoder_dim=encoder.n_features,
-            decoder_dim=CFG.decoder_dim * args.decoder_scale,
-            dropout=CFG.dropout,
-            n_layer=ckpt['decoder_layer'],
-            tokenizer=tokenizer)
-        states = load_states(args, ckpt['ckpt'])
-        safe_load(encoder, states['encoder'])
-        safe_load(decoder, states['decoder'])
-        print_rank_0(f"Model loaded from {ckpt['ckpt']}")
-
-        encoders.append(encoder)
-        decoders.append(decoder)
-
-    ensemble_encoder = EnsembleEncoder(encoders)
-    ensemble_decoder = EnsembleMultiTaskDecoder(decoders, args.formats)
-    ensemble_encoder.to(device)
-    ensemble_decoder.to(device)
-
-    if args.local_rank != -1:
-        ensemble_encoder = DDP(ensemble_encoder, device_ids=[args.local_rank], output_device=args.local_rank)
-        ensemble_decoder = DDP(ensemble_decoder, device_ids=[args.local_rank], output_device=args.local_rank)
-        print_rank_0("DDP setup finished")
-
-    return ensemble_encoder, ensemble_decoder
-
-
 def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
     
-    encoder_optimizer = AdamW(encoder.parameters(), lr=args.encoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
+    encoder_optimizer = AdamW(encoder.parameters(), lr=args.encoder_lr, weight_decay=args.weight_decay, amsgrad=False)
     encoder_scheduler = get_scheduler(args.scheduler, encoder_optimizer, args.num_warmup_steps, args.num_training_steps)
 
-    decoder_optimizer = AdamW(decoder.parameters(), lr=args.decoder_lr, weight_decay=CFG.weight_decay, amsgrad=False)
+    decoder_optimizer = AdamW(decoder.parameters(), lr=args.decoder_lr, weight_decay=args.weight_decay, amsgrad=False)
     decoder_scheduler = get_scheduler(args.scheduler, decoder_optimizer, args.num_warmup_steps, args.num_training_steps)
     
     if load_path and args.resume:
@@ -246,10 +196,7 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
     start = end = time.time()
     encoder_grad_norm = decoder_grad_norm = 0
 
-    # images, refs = next(iter(train_loader))
-    # images = images.to(device)
-    # for step in range(len(train_loader)):
-    for step, (images, refs) in enumerate(train_loader):
+    for step, (indices, images, refs) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
         images = images.to(device)
@@ -259,10 +206,7 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
             features = encoder(images)
             results = decoder(features, refs)
             for format_ in args.formats:
-                predictions, caps_sorted, decode_lengths = results[format_]
-                targets = caps_sorted[:, 1:]
-                predictions = pack_padded_sequence(predictions, decode_lengths, batch_first=True).data
-                targets = pack_padded_sequence(targets, decode_lengths, batch_first=True).data
+                predictions, targets = results[format_]
                 format_loss = criterion[format_](predictions, targets)
                 loss = loss + format_loss
         # record loss
@@ -274,8 +218,8 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         if (step + 1) % args.gradient_accumulation_steps == 0:
             scaler.unscale_(encoder_optimizer)
             scaler.unscale_(decoder_optimizer)
-            encoder_grad_norm = torch.nn.utils.clip_grad_norm_(encoder.parameters(), CFG.max_grad_norm)
-            decoder_grad_norm = torch.nn.utils.clip_grad_norm_(decoder.parameters(), CFG.max_grad_norm)
+            encoder_grad_norm = torch.nn.utils.clip_grad_norm_(encoder.parameters(), args.max_grad_norm)
+            decoder_grad_norm = torch.nn.utils.clip_grad_norm_(decoder.parameters(), args.max_grad_norm)
             scaler.step(encoder_optimizer)
             scaler.step(decoder_optimizer)
             scaler.update()
@@ -306,6 +250,9 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
                    decoder_lr=decoder_scheduler.get_lr()[0],
                    ))
             losses.reset()
+        if args.train_steps_per_epoch != -1 and \
+                (step + 1) // args.gradient_accumulation_steps == args.train_steps_per_epoch:
+            break
         
     return epoch_losses.avg, global_step
 
@@ -399,13 +346,16 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     train_loader = DataLoader(train_dataset, 
                               batch_size=args.batch_size, 
                               sampler=train_sampler,
-                              num_workers=CFG.num_workers,
+                              num_workers=args.num_workers,
                               prefetch_factor=4,
+                              persistent_workers=True,
                               pin_memory=True,
                               drop_last=True, 
                               collate_fn=bms_collate)
-    
-    args.num_training_steps = args.epochs * (len(train_loader) // args.gradient_accumulation_steps)
+
+    if args.train_steps_per_epoch == -1:
+        args.train_steps_per_epoch = len(train_loader) // args.gradient_accumulation_steps
+    args.num_training_steps = args.epochs * args.train_steps_per_epoch
     args.num_warmup_steps = int(args.num_training_steps * args.warmup_ratio)
 
     # ====================================================
@@ -423,76 +373,80 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     # ====================================================
     criterion = {}
     for format_ in args.formats:
-        if args.label_smoothing > 0:
-            criterion[format_] = LabelSmoothingLoss(
-                args.label_smoothing, len(tokenizer[format_]), ignore_index=PAD_ID)
-        else:
-            criterion[format_] = nn.CrossEntropyLoss(ignore_index=PAD_ID)
+        criterion[format_] = SequenceLoss(args.label_smoothing, len(tokenizer[format_]), ignore_index=PAD_ID)
         criterion[format_].to(device)
 
     best_score = np.inf
     best_loss = np.inf
     
     global_step = encoder_scheduler.last_epoch
-    start_epoch = global_step // (len(train_loader) // args.gradient_accumulation_steps)
+    start_epoch = global_step // args.train_steps_per_epoch
 
     for epoch in range(start_epoch, args.epochs):
-        
+
         if args.local_rank != -1:
-            dist.barrier()
             train_sampler.set_epoch(epoch)
-        
-        start_time = time.time()
-        encoder_lr = encoder_scheduler.get_lr()[0]
-        decoder_lr = decoder_scheduler.get_lr()[0]
-        
-        # train
-        avg_loss, global_step = train_fn(
-            train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch, 
-            encoder_scheduler, decoder_scheduler, scaler, device, global_step, SUMMARY, args)
-        
-        # eval
-        scores = inference(args, valid_df, tokenizer, encoder, decoder, save_path, split='valid')
-        
-        if args.local_rank != 0:
-            continue
-    
-        elapsed = time.time() - start_time
 
-        print_rank_0(f'Epoch {epoch+1} - Time: {elapsed:.0f}s')
-        print_rank_0(f'Epoch {epoch+1} - Score: ' + json.dumps(scores))
-        
-        if SUMMARY:
-            SUMMARY.add_scalar('train/loss', avg_loss, epoch)
-            SUMMARY.add_scalar('train/encoder_lr', encoder_lr, epoch)
-            SUMMARY.add_scalar('train/decoder_lr', decoder_lr, epoch)
-            for key in scores:
-                SUMMARY.add_scalar(f'valid/{key}', scores[key], epoch)
+        # if args.eval_steps != -1:
+        #     eval_times = len(train_loader) // args.eval_steps + 1
+        #     train_iter = iter(train_loader)
+        # else:
+        eval_times = 1
+        train_iter = train_loader
 
-        save_obj = {'encoder': encoder.state_dict(), 
-                    'encoder_optimizer': encoder_optimizer.state_dict(), 
-                    'encoder_scheduler': encoder_scheduler.state_dict(), 
-                    'decoder': decoder.state_dict(),
-                    'decoder_optimizer': decoder_optimizer.state_dict(), 
-                    'decoder_scheduler': decoder_scheduler.state_dict(),
-                    'global_step': global_step
-                   }
-        if args.save_mode == 'all':
-            torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
+        for eval_i in range(eval_times):
 
-        if 'selfies' in args.formats:
-            score = scores['selfies']
-        elif 'atomtok' in args.formats:
-            score = scores['smiles_em']
-        else:
-            score = scores['inchi']
+            if args.local_rank != -1:
+                dist.barrier()
+            start_time = time.time()
 
-        if score < best_score:
-            best_score = score
-            print_rank_0(f'Epoch {epoch+1} - Save Best Score: {best_score:.4f} Model')
-            torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_best.pth'))
-            with open(os.path.join(save_path, 'best_valid.json'), 'w') as f:
-                json.dump(scores, f)
+            # train
+            avg_loss, global_step = train_fn(
+                train_iter, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch,
+                encoder_scheduler, decoder_scheduler, scaler, device, global_step, SUMMARY, args)
+
+            # eval
+            scores = inference(args, valid_df, tokenizer, encoder, decoder, save_path, split='valid')
+
+            if args.local_rank != 0:
+                continue
+
+            elapsed = time.time() - start_time
+
+            print_rank_0(f'Epoch {epoch+1} - Time: {elapsed:.0f}s')
+            print_rank_0(f'Epoch {epoch+1} - Score: ' + json.dumps(scores))
+
+            save_obj = {'encoder': encoder.state_dict(),
+                        'encoder_optimizer': encoder_optimizer.state_dict(),
+                        'encoder_scheduler': encoder_scheduler.state_dict(),
+                        'decoder': decoder.state_dict(),
+                        'decoder_optimizer': decoder_optimizer.state_dict(),
+                        'decoder_scheduler': decoder_scheduler.state_dict(),
+                        'global_step': global_step
+                       }
+
+            score = scores['smiles_inchi'] if 'atomtok' in args.formats else scores['inchi']
+
+            if SUMMARY:
+                SUMMARY.add_scalar('train/loss', avg_loss, global_step)
+                encoder_lr = encoder_scheduler.get_lr()[0]
+                decoder_lr = decoder_scheduler.get_lr()[0]
+                SUMMARY.add_scalar('train/encoder_lr', encoder_lr, global_step)
+                SUMMARY.add_scalar('train/decoder_lr', decoder_lr, global_step)
+                for key in scores:
+                    SUMMARY.add_scalar(f'valid/{key}', scores[key], global_step)
+
+            if score < best_score:
+                best_score = score
+                print_rank_0(f'Epoch {epoch+1} - Save Best Score: {best_score:.4f} Model')
+                torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_best.pth'))
+                with open(os.path.join(save_path, 'best_valid.json'), 'w') as f:
+                    json.dump(scores, f)
+
+            if args.save_mode == 'all':
+                torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
+            if args.save_mode == 'last':
+                torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_last.pth'))
     
     if args.local_rank != -1:
         dist.barrier()
@@ -515,18 +469,13 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     dataloader = DataLoader(dataset, 
                             batch_size=args.batch_size * 2, 
                             sampler=sampler, 
-                            num_workers=CFG.num_workers, 
+                            num_workers=args.num_workers,
                             pin_memory=True, 
                             drop_last=False)
     
     if encoder is None or decoder is None:
         # valid/test mode
-        if args.ensemble_cfg is not None:
-            with open(args.ensemble_cfg, "r") as f:
-                ensemble_ckpts = json.load(f)
-            encoder, decoder = get_ensemble_model(args, tokenizer, device, ensemble_ckpts, ddp=True)
-        else:
-            encoder, decoder = get_model(args, tokenizer, device, save_path, ddp=True)
+        encoder, decoder = get_model(args, tokenizer, device, save_path)
     
     local_preds = valid_fn(dataloader, encoder, decoder, tokenizer, device, args)
     gathered_preds = [None for i in range(dist.get_world_size())]
@@ -535,8 +484,8 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     if args.local_rank != 0:
         return
     
-    predictions = {format_:[None for i in range(len(dataset))] for format_ in args.formats}
-    all_predictions = {format_:[None for i in range(len(dataset))] for format_ in args.formats}
+    predictions = {format_: [None for i in range(len(dataset))] for format_ in args.formats}
+    all_predictions = {format_: [None for i in range(len(dataset))] for format_ in args.formats}
     for preds in gathered_preds:
         beam_preds, final_preds = preds
         for format_ in args.formats:
@@ -568,14 +517,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             pred_df['SMILES_InChI'] = inchi_list
             print(f'{split} SMILES to InChI success ratio: {r_success:.4f}')
             scores['smiles_inchi_success'] = r_success
-        elif format_ == 'selfies':
-            # SELFIES
-            pred_df['SELFIES'] = text_preds
-            print('Converting SELFIES to InChI ...')
-            inchi_list, r_success = batch_convert_selfies_to_inchi(text_preds)
-            pred_df['SELFIES_InChI'] = inchi_list
-            print(f'{split} SELFIES to InChI success ratio: {r_success:.4f}')
-            # scores['selfies_inchi_success'] = r_success
     
     if 'atomtok' in args.formats and 'inchi' in args.formats:
         pred_df['merge_InChI'], _ = merge_inchi(pred_df['SMILES_InChI'].values, pred_df['InChI'].values)
@@ -587,19 +528,13 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         if 'atomtok' in args.formats:
             scores['smiles'], scores['smiles_em'] = get_score(data_df['SMILES'].values, pred_df['SMILES'].values)
             scores['smiles_inchi'], scores['smiles_inchi_em'] = get_score(data_df['InChI'].values, pred_df['SMILES_InChI'].values)
+            scores['canon_smiles_em'] = get_canon_smiles_score(data_df['SMILES'].values, pred_df['SMILES'].values)
             print('label:')
             print(data_df['SMILES'].values[:4])
             print('pred:')
             print(pred_df['SMILES'].values[:4])
         if 'atomtok' in args.formats and 'inchi' in args.formats:
             scores['merge_inchi'], scores['merge_inchi_em'] = get_score(data_df['InChI'].values, pred_df['merge_InChI'].values)
-        if 'selfies' in args.formats:
-            scores['selfies'], scores['selfies_em'] = get_score(data_df['SELFIES'].values, pred_df['SELFIES'].values)
-            scores['selfies_inchi'], scores['selfies_inchi_em'] = get_score(data_df['InChI'].values, pred_df['SELFIES_InChI'].values)
-            print('label:')
-            print(data_df['SELFIES'].values[:4])
-            print('pred:')
-            print(pred_df['SELFIES'].values[:4])
             
     pred_df.to_csv(os.path.join(save_path, f'prediction_{split}.csv'), index=False)
     
@@ -609,8 +544,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             pred_df['InChI'] = pred_df['merge_InChI']
         elif 'atomtok' in args.formats:
             pred_df['InChI'] = pred_df['SMILES_InChI']
-        elif 'selfies' in args.formats:
-            pred_df['InChI'] = pred_df['SELFIES_InChI']
         pred_df[['image_id', 'InChI']].to_csv(os.path.join(save_path, 'submission.csv'), index=False)
     
     return scores
@@ -653,7 +586,8 @@ def get_chemdraw_data(args):
         print_rank_0(f'test.shape: {test_df.shape}')
     tokenizer = {}
     for format_ in args.formats:
-        tokenizer[format_] = Tokenizer(os.path.join(args.data_path, 'chemdraw-data/tokenizer_smiles_atomtok.json'))
+        tokenizer[format_] = Tokenizer('bms/vocab.json')
+    tokenizer['nodes'] = NodeTokenizer(args.input_size)
     return train_df, valid_df, test_df, tokenizer
 
 
@@ -665,7 +599,8 @@ def main():
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     if args.local_rank != -1:
-        dist.init_process_group(backend='gloo', init_method='env://', timeout=datetime.timedelta(0, 7200))
+
+        dist.init_process_group(backend=args.backend, init_method='env://', timeout=datetime.timedelta(0, 7200))
         torch.cuda.set_device(args.local_rank)
         torch.backends.cudnn.benchmark = True
         
@@ -686,12 +621,12 @@ def main():
         
     if args.trunc_train:
         if args.do_train:
-            train_df = train_df.sample(n=50000, random_state=42).reset_index(drop=True)
-        if args.do_valid:
-            valid_df = valid_df.sample(n=10000, random_state=42).reset_index(drop=True)
+            train_df = train_df.sample(n=args.trunc_train, random_state=42).reset_index(drop=True)
+        # if args.do_valid:
+        #     valid_df = valid_df.sample(n=10000, random_state=42).reset_index(drop=True)
     
     if args.debug:
-        args.epochs = 2
+        args.epochs = 1
         args.save_path = 'output/debug'
         args.print_freq = 50
         if args.do_train:

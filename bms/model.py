@@ -3,19 +3,21 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint as checkpoint
 
 import timm
-import math
 
 from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID
 from bms.inference import GreedySearch, BeamSearch
 
+from onmt.decoders import TransformerDecoder
+from onmt.modules.embeddings import Embeddings
+
 
 class Encoder(nn.Module):
-    def __init__(self, model_name='resnet18', pretrained=False, use_checkpoint=False, ape=False, trunc_encoder=False):
+    def __init__(self, args, pretrained=False):
         super().__init__()
-        self.model_name = model_name
+        model_name = args.encoder
+        trunc_encoder = args.trunc_encoder
         self.trunc_encoder = trunc_encoder
         if model_name.startswith('resnet'):
             self.model_type = 'resnet'
@@ -25,7 +27,8 @@ class Encoder(nn.Module):
             self.cnn.fc = nn.Identity()
         elif model_name.startswith('swin'):
             self.model_type = 'swin'
-            self.transformer = timm.create_model(model_name, pretrained=pretrained, pretrained_strict=False, use_checkpoint=use_checkpoint, ape=ape)
+            self.transformer = timm.create_model(model_name, pretrained=pretrained, pretrained_strict=False,
+                                                 use_checkpoint=args.use_checkpoint)
             self.n_features = self.transformer.num_features
             self.transformer.head = nn.Identity()
             if trunc_encoder:
@@ -44,22 +47,21 @@ class Encoder(nn.Module):
             raise NotImplemented
 
     def forward(self, x):
-        hiddens = None
         if self.model_type in ['resnet', 'efficientnet']:
             features = self.cnn(x)
             features = features.permute(0, 2, 3, 1)
         elif self.model_type == 'swin':
             # return the features before downsample
-#             def forward_layer(layer, x):
-#                 for blk in layer.blocks:
-#                     if not torch.jit.is_scripting() and layer.use_checkpoint:
-#                         x = checkpoint.checkpoint(blk, x)
-#                     else:
-#                         x = blk(x)
-#                 raw_x = x
-#                 if layer.downsample is not None:
-#                     x = layer.downsample(x)
-#                 return x, raw_x
+            # def forward_layer(layer, x):
+            #     for blk in layer.blocks:
+            #         if not torch.jit.is_scripting() and layer.use_checkpoint:
+            #             x = checkpoint.checkpoint(blk, x)
+            #         else:
+            #             x = blk(x)
+            #     raw_x = x
+            #     if layer.downsample is not None:
+            #         x = layer.downsample(x)
+            #     return x, raw_x
             # return the hidden states
             def forward_transformer(transformer, x):
                 x = transformer.patch_embed(x)
@@ -77,7 +79,6 @@ class Encoder(nn.Module):
             raise NotImplemented
             
         return features
-#             return features, hiddens
 
 
 class Attention(nn.Module):
@@ -106,7 +107,7 @@ class Attention(nn.Module):
         return attention_weighted_encoding, alpha
 
 
-class DecoderWithAttention(nn.Module):
+class LstmDecoder(nn.Module):
     """
     Decoder network with attention network used for training
     """
@@ -120,7 +121,7 @@ class DecoderWithAttention(nn.Module):
         :param encoder_dim: input size of encoder network
         :param dropout: dropout rate
         """
-        super(DecoderWithAttention, self).__init__()
+        super(LstmDecoder, self).__init__()
         self.encoder_dim = encoder_dim
         self.attention_dim = attention_dim
         self.embed_dim = embed_dim
@@ -196,8 +197,9 @@ class DecoderWithAttention(nn.Module):
         h, c, hh, cc = self.init_hidden_state(encoder_out)  # (batch_size, decoder_dim)
         # set decode length by caption length - 1 because of omitting start token
         decode_lengths = (caption_lengths - 1).tolist()
-        predictions = torch.zeros(batch_size, self.max_len, vocab_size, device=device)
-        alphas = torch.zeros(batch_size, self.max_len, num_pixels, device=device)
+        max_len = max(decode_lengths)
+        predictions = torch.zeros(batch_size, max_len, vocab_size, device=device)
+        alphas = torch.zeros(batch_size, max_len, num_pixels, device=device)
         # predict sequence
         for t in range(max(decode_lengths)):
             batch_size_t = sum([l > t for l in decode_lengths])
@@ -208,8 +210,7 @@ class DecoderWithAttention(nn.Module):
             preds, h, c, hh, cc = self.lstm_step(x, h, c, hh, cc, batch_size_t)
             predictions[:batch_size_t, t, :] = preds
             alphas[:batch_size_t, t, :] = alpha
-#         decode_lengths = torch.Tensor(decode_lengths).to(device)
-        return predictions, encoded_captions, decode_lengths
+        return predictions, encoded_captions[:, 1:]
 
     def predict(self, encoder_out):
         device = encoder_out.device
@@ -307,26 +308,188 @@ class DecoderWithAttention(nn.Module):
                 cc = [x.index_select(0, select_indices) for x in cc]
 
         return (decode_strategy.predictions, decode_strategy.scores)
-
-
-class MultiTaskDecoder(nn.Module):
     
-    def __init__(self, formats, attention_dim, embed_dim, decoder_dim, tokenizer, n_layer=1, encoder_dim=512, dropout=0.5):
-        super(MultiTaskDecoder, self).__init__()
-        self.formats = formats
+
+class TransformerDecoderONMT(nn.Module):
+    def __init__(self, args, tokenizer):
+        super().__init__()
+        self.args = args
+        self.tokenizer = tokenizer
+        self.vocab_size = len(self.tokenizer)
+
+        self.enc_trans_layer = nn.Linear(args.encoder_dim, args.dec_hidden_size)
+
+        self.decoder_embeddings = Embeddings(
+            word_vec_size=args.dec_hidden_size,
+            word_vocab_size=self.vocab_size,
+            word_padding_idx=PAD_ID,
+            position_encoding=True,
+            dropout=args.hidden_dropout
+        )
+
+        self.decoder = TransformerDecoder(
+            num_layers=args.dec_num_layers,
+            d_model=args.dec_hidden_size,
+            heads=args.dec_attn_heads,
+            d_ff=args.dec_hidden_size * 4,
+            copy_attn=False,
+            self_attn_type="scaled-dot",
+            dropout=args.hidden_dropout,
+            attention_dropout=args.attn_dropout,
+            embeddings=self.decoder_embeddings,
+            max_relative_positions=args.max_relative_positions,
+            aan_useffn=False,
+            full_context_alignment=False,
+            alignment_layer=-3,
+            alignment_heads=0
+        )
+
+        self.output_layer = nn.Linear(args.dec_hidden_size, self.vocab_size, bias=True)
+
+    def transform(self, encoder_out):
+        batch_size = encoder_out.size(0)
+        encoder_dim = encoder_out.size(-1)
+        encoder_out = encoder_out.view(batch_size, -1, encoder_dim)  # (batch_size, num_pixels, encoder_dim)
+        encoder_out = self.enc_trans_layer(encoder_out)
+        return encoder_out.transpose(0, 1).contiguous()
+
+    def forward(self, encoder_out, labels, label_lengths):
+        batch_size, max_len, _ = encoder_out.size()
+        memory_bank = self.transform(encoder_out)
+        memory_lengths = torch.ones(batch_size, device=encoder_out.device) * max_len
+
+        self.decoder.state["src"] = np.zeros(max_len)    # this is hardcoded to make transformer decoder work
+
+        dec_in = labels.transpose(0, 1).unsqueeze(-1)           # (b, t) -> (t, b, 1)
+        dec_out, _ = self.decoder(tgt=dec_in, memory_bank=memory_bank, memory_lengths=memory_lengths)
+
+        dec_out = self.output_layer(dec_out)                  # (t, b, h) -> (t, b, v)
+        dec_out = dec_out.permute(1, 0, 2)                    # (t, b, v) -> (b, t, v)
+
+        return dec_out[:, :-1], labels[:, 1:]
+
+    def decode(self, encoder_out, beam_size: int, n_best: int, min_length: int = 1, max_length: int = 256):
+        batch_size, max_len, _ = encoder_out.size()
+        memory_bank = self.transform(encoder_out)
+        memory_lengths = torch.ones(batch_size, device=encoder_out.device) * max_len
+
+        self.decoder.state["src"] = np.zeros(max_len)  # this is hardcoded to make transformer decoder work
+
+        if beam_size == 1:
+            decode_strategy = GreedySearch(
+                pad=PAD_ID,
+                bos=SOS_ID,
+                eos=EOS_ID,
+                batch_size=batch_size,
+                min_length=min_length,
+                max_length=max_length,
+                return_attention=False,
+                sampling_temp=0.0,
+                keep_topk=1)
+        else:
+            decode_strategy = BeamSearch(
+                beam_size=beam_size,
+                batch_size=batch_size,
+                pad=PAD_ID,
+                bos=SOS_ID,
+                eos=EOS_ID,
+                n_best=n_best,
+                min_length=min_length,
+                max_length=max_length,
+                return_attention=False)
+
+        # adapted from onmt.translate.translator
+        results = {
+            "predictions": None,
+            "scores": None,
+            "attention": None
+        }
+
+        # (2) prep decode_strategy. Possibly repeat src objects.
+        src_map = None
+        _, memory_bank = decode_strategy.initialize(memory_bank=memory_bank)
+
+        # (3) Begin decoding step by step:
+        for step in range(decode_strategy.max_length):
+            decoder_input = decode_strategy.current_predictions.view(1, -1, 1)
+
+            dec_out, dec_attn = self.decoder(tgt=decoder_input,
+                                             memory_bank=memory_bank,
+                                             memory_lengths=memory_lengths,
+                                             step=step)
+
+            attn = dec_attn.get("std", None)
+
+            dec_out = self.output_layer(dec_out)            # [t, b, h] => [t, b, v]
+            dec_out = dec_out.squeeze(0)                    # [t, b, v] => [b, v]
+            log_probs = F.log_softmax(dec_out, dim=-1)
+
+            decode_strategy.advance(log_probs, attn)
+            any_finished = decode_strategy.is_finished.any()
+            if any_finished:
+                decode_strategy.update_finished()
+                if decode_strategy.done:
+                    break
+
+            select_indices = decode_strategy.select_indices
+            if any_finished:
+                # Reorder states.
+                if isinstance(memory_bank, tuple):
+                    memory_bank = tuple(x.index_select(1, select_indices) for x in memory_bank)
+                else:
+                    memory_bank = memory_bank.index_select(1, select_indices)
+                memory_lengths = memory_lengths.index_select(0, select_indices)
+                if src_map is not None:
+                    src_map = src_map.index_select(1, select_indices)
+
+                self.map_state(lambda state, dim: state.index_select(dim, select_indices))
+
+        results["scores"] = decode_strategy.scores
+        results["predictions"] = decode_strategy.predictions
+        results["attention"] = decode_strategy.attention
+
+        return results["predictions"], results['scores']
+
+    # adapted from onmt.decoders.transformer
+    def map_state(self, fn):
+
+        def _recursive_map(struct, batch_dim=0):
+            for k, v in struct.items():
+                if v is not None:
+                    if isinstance(v, dict):
+                        _recursive_map(v)
+                    else:
+                        struct[k] = fn(v, batch_dim)
+
+        # self.decoder.state["src"] = fn(self.decoder.state["src"], 1)
+        # => self.state["src"] = self.state["src"].index_select(1, select_indices)
+
+        if self.decoder.state["cache"] is not None:
+            _recursive_map(self.decoder.state["cache"])
+
+
+class Decoder(nn.Module):
+
+    def __init__(self, args, tokenizer):
+        super(Decoder, self).__init__()
+        self.args = args
+        self.formats = args.formats
         decoder = {}
         for format_ in self.formats:
-            decoder[format_] = DecoderWithAttention(
-                attention_dim=attention_dim,
-                embed_dim=embed_dim,
-                encoder_dim=encoder_dim,
-                decoder_dim=decoder_dim,
-                max_len=FORMAT_INFO[format_]['max_len'],
-                dropout=dropout,
-                n_layer=n_layer,
-                tokenizer=tokenizer[format_])
+            if args.decoder == 'lstm':
+                decoder[format_] = LstmDecoder(
+                    attention_dim=args.attention_dim * args.decoder_scale,
+                    embed_dim=args.embed_dim * args.decoder_scale,
+                    encoder_dim=args.encoder_dim,
+                    decoder_dim=args.decoder_dim * args.decoder_scale,
+                    max_len=FORMAT_INFO[format_]['max_len'],
+                    dropout=args.dropout,
+                    n_layer=args.decoder_layer,
+                    tokenizer=tokenizer[format_])
+            else:
+                decoder[format_] = TransformerDecoderONMT(args, tokenizer[format_])
         self.decoder = nn.ModuleDict(decoder)
-        
+
     def forward(self, encoder_out, refs):
         results = {}
         device = encoder_out.device
@@ -335,115 +498,15 @@ class MultiTaskDecoder(nn.Module):
             label_lengths = refs[format_][1].to(device)
             results[format_] = self.decoder[format_](encoder_out, labels, label_lengths)
         return results
-    
+
     def predict(self, encoder_out):
         results = {}
         for format_ in self.formats:
             results[format_] = self.decoder[format_].predict(encoder_out)
         return results
-    
+
     def decode(self, encoder_out, beam_size=1, n_best=1):
         results = {}
         for format_ in self.formats:
             results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
         return results
-    
-    
-class PositionalEncoding(nn.Module):
-    """
-    Position encoding used with Transformer
-    """
-    def __init__(self, d_model, max_len, dropout=0.1):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() *
-                             -(math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
-        return self.dropout(x)
-
-
-class DecoderWithTransformer(nn.Module):
-    """
-    Decoder network with Transformer.
-    """
-    def __init__(self, d_model, n_head, num_layers, max_len, vocab_size, device, dropout):
-        super(DecoderWithTransformer, self).__init__()
-
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, max_len)
-        self.decoder_layer = nn.TransformerDecoderLayer(d_model=d_model, nhead=n_head)
-        self.transformer_decoder = nn.TransformerDecoder(self.decoder_layer, num_layers=num_layers)
-        self.fc = nn.Linear(d_model, vocab_size)
-
-        self.init_weights()  # initialize some layers with the uniform distribution
-
-        self.vocab_size = vocab_size
-        self.d_model = d_model
-        self.max_len = max_len
-        self.device = device
-
-    def init_weights(self):
-        init_range = 0.1
-        self.embedding.weight.data.uniform_(-init_range, init_range)
-        self.fc.bias.data.fill_(0)
-        self.fc.weight.data.uniform_(-init_range, init_range)
-
-    def generate_square_subsequent_mask(self, sz):
-        """
-        Generate a square mask for the sequence.
-        The masked positions are filled with float('-inf').
-        Unmasked positions are filled with float(0.0).
-        """
-        mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-        return mask
-
-    def forward(self, memory, tgt, tgt_mask=None):
-        """
-        :param memory: output of encoder network (batch_size, H, W, C)
-        :param tgt: target sequence of token indexes (batch_size, T)
-        :param tgt_mask: attention mask, generate on-the-fly if None
-        """
-        batch_size = memory.shape[0]
-        assert memory.shape[-1] == self.d_model
-        memory = memory.view(batch_size, -1, memory.shape[-1]).permute(1, 0, 2)
-
-        tgt = tgt.transpose(0, 1)
-        tgt = self.embedding(tgt)
-        tgt = self.pos_encoder(tgt) # / torch.sqrt(self.d_model)
-
-        if tgt_mask is None:
-            tgt_mask = self.generate_square_subsequent_mask(tgt.shape[0]).to(self.device)
-
-        output = self.transformer_decoder(tgt, memory, tgt_mask=tgt_mask)
-        output = self.fc(output) # seq_len, batch_size, vocab_size
-
-        return output.permute(1, 0, 2)
-
-    def predict(self, memory, tokenizer):
-        batch_size = memory.shape[0]
-        memory = memory.view(batch_size, -1, memory.shape[-1]).permute(1, 0, 2)
-
-        predictions = torch.zeros((batch_size, self.max_len), dtype=torch.long).to(self.device)
-        predictions[:, 0] = torch.tensor([tokenizer.stoi["<sos>"]] * batch_size).to(self.device)
-        for i in range(1, self.max_len):
-            # there should be a smarter way of doing this
-            # we should definitely cache the encodings of the past tokens
-            pred = self.embedding(predictions[:,:i].transpose(0, 1))
-            pred = self.pos_encoder(pred)
-            output = self.transformer_decoder(pred, memory)
-            output = self.fc(output)
-
-            predictions[:, i] = output[-1].argmax(1).reshape(-1)
-
-        return predictions
-

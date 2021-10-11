@@ -123,3 +123,41 @@ class EnsembleMultiTaskDecoder(nn.Module):
 
         return results
 
+
+def get_ensemble_model(args, tokenizer, device, ckpts):
+    encoders = []
+    decoders = []
+
+    for ckpt in ckpts:
+        encoder = Encoder(
+            ckpt['encoder'],
+            pretrained=True,
+            use_checkpoint=args.use_checkpoint)
+        decoder = MultiTaskDecoder(
+            formats=ckpt['formats'],
+            attention_dim=args.attention_dim * args.decoder_scale,
+            embed_dim=args.embed_dim * args.decoder_scale,
+            encoder_dim=encoder.n_features,
+            decoder_dim=args.decoder_dim * args.decoder_scale,
+            dropout=args.dropout,
+            n_layer=ckpt['decoder_layer'],
+            tokenizer=tokenizer)
+        states = load_states(args, ckpt['ckpt'])
+        safe_load(encoder, states['encoder'])
+        safe_load(decoder, states['decoder'])
+        print_rank_0(f"Model loaded from {ckpt['ckpt']}")
+
+        encoders.append(encoder)
+        decoders.append(decoder)
+
+    ensemble_encoder = EnsembleEncoder(encoders)
+    ensemble_decoder = EnsembleMultiTaskDecoder(decoders, args.formats)
+    ensemble_encoder.to(device)
+    ensemble_decoder.to(device)
+
+    if args.local_rank != -1:
+        ensemble_encoder = DDP(ensemble_encoder, device_ids=[args.local_rank], output_device=args.local_rank)
+        ensemble_decoder = DDP(ensemble_decoder, device_ids=[args.local_rank], output_device=args.local_rank)
+        print_rank_0("DDP setup finished")
+
+    return ensemble_encoder, ensemble_decoder

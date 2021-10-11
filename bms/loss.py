@@ -38,3 +38,23 @@ class LabelSmoothingLoss(nn.Module):
         return F.kl_div(log_probs, model_prob, reduction='batchmean')
 
 
+class SequenceLoss(nn.Module):
+
+    def __init__(self, label_smoothing, vocab_size, ignore_index=-100):
+        super(SequenceLoss, self).__init__()
+        if label_smoothing > 0:
+            self.criterion = LabelSmoothingLoss(label_smoothing, vocab_size, ignore_index)
+        else:
+            self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
+
+    def forward(self, output, target):
+        """
+        :param output: [batch, len, vocab]
+        :param target: [batch, len]
+        :return:
+        """
+        batch_size, max_len, vocab_size = output.size()
+        output = output.reshape(-1, vocab_size)
+        target = target.reshape(-1)
+        loss = self.criterion(output, target)
+        return loss

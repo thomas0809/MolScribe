@@ -15,6 +15,7 @@ import selfies as sf
 rdkit.RDLogger.DisableLog('rdApp.*')
 
 from tensorboardX import SummaryWriter
+from bms.tokenizer import *
 
 
 FORMAT_INFO = {
@@ -72,6 +73,26 @@ def batch_convert_selfies_to_inchi(selfies_list, num_workers=16):
     return batch_convert_smiles_to_inchi(smiles_list)
 
 
+def canonicalize_smiles(smiles):
+    rlist = ['R', 'R1', 'R2', 'R3', 'R4', 'R5', 'X', 'Ar']
+    rdict = {}
+    for i, symbol in enumerate(rlist):
+        rdict[f'[{symbol}]'] = f'[*:{i}]'
+    for a, b in rdict.items():
+        smiles = smiles.replace(a, b)
+    try:
+        canon_smiles = Chem.CanonSmiles(smiles)
+    except:
+        canon_smiles = smiles
+    return canon_smiles
+
+
+def get_canon_smiles_score(gold_smiles, pred_smiles):
+    gold_canon_smiles = np.array([canonicalize_smiles(smiles) for smiles in gold_smiles])
+    pred_canon_smiles = np.array([canonicalize_smiles(smiles) for smiles in pred_smiles])
+    return (gold_canon_smiles == pred_canon_smiles).mean()
+
+
 def merge_inchi(inchi1, inchi2):
     replaced = 0
     inchi1 = copy.deepcopy(inchi1)
@@ -106,10 +127,12 @@ def init_logger(log_file='train.log'):
     logger.addHandler(handler2)
     return logger
 
+
 def init_summary_writer(save_path):
     # summary = SummaryWriter(os.path.join(save_path, datetime.now().strftime("%Y%m%d-%H%M%S")))
     summary = SummaryWriter(save_path)
     return summary
+
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -159,84 +182,4 @@ def print_rank_0(message):
     else:
         print(message, flush=True)
 
-
-PAD = '<pad>'
-SOS = '<sos>'
-EOS = '<eos>'
-PAD_ID = 0
-SOS_ID = 1
-EOS_ID = 2
-
-
-class Tokenizer(object):
-
-    def __init__(self, path=None):
-        self.stoi = {}
-        self.itos = {}
-        if path:
-            self.load(path)
-
-    def __len__(self):
-        return len(self.stoi)
-    
-    def save(self, path):
-        with open(path, 'w') as f:
-            json.dump(self.stoi, f)
-    
-    def load(self, path):
-        with open(path) as f:
-            self.stoi = json.load(f)
-        self.itos = {item[1]: item[0] for item in self.stoi.items()}
-            
-    def fit_on_texts(self, texts):
-        vocab = set()
-        for text in texts:
-            vocab.update(text.split(' '))
-        vocab = [PAD, SOS, EOS] + sorted(vocab)
-        for i, s in enumerate(vocab):
-            self.stoi[s] = i
-        self.itos = {item[1]: item[0] for item in self.stoi.items()}
-        assert self.stoi[PAD] == PAD_ID
-        assert self.stoi[SOS] == SOS_ID
-        assert self.stoi[EOS] == EOS_ID
-
-    def text_to_sequence(self, text):
-        sequence = []
-        sequence.append(self.stoi['<sos>'])
-        for s in text.split(' '):
-            sequence.append(self.stoi[s])
-        sequence.append(self.stoi['<eos>'])
-        return sequence
-
-    def texts_to_sequences(self, texts):
-        sequences = []
-        for text in texts:
-            sequence = self.text_to_sequence(text)
-            sequences.append(sequence)
-        return sequences
-
-    def sequence_to_text(self, sequence):
-        return ''.join(list(map(lambda i: self.itos[i], sequence)))
-
-    def sequences_to_texts(self, sequences):
-        texts = []
-        for sequence in sequences:
-            text = self.sequence_to_text(sequence)
-            texts.append(text)
-        return texts
-
-    def predict_caption(self, sequence):
-        caption = ''
-        for i in sequence:
-            if i == self.stoi['<eos>'] or i == self.stoi['<pad>']:
-                break
-            caption += self.itos[i]
-        return caption
-
-    def predict_captions(self, sequences):
-        captions = []
-        for sequence in sequences:
-            caption = self.predict_caption(sequence)
-            captions.append(caption)
-        return captions
 

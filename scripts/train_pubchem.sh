@@ -16,9 +16,9 @@ python -m torch.distributed.launch \
     train.py \
     --dataset chemdraw \
     --data_path data/molbank \
-    --train_file indigo-data/train.csv \
+    --train_file pubchem/train.csv \
     --valid_file indigo-data/valid.csv \
-    --test_file real-acs/test.csv \
+    --test_file indigo-data/test.csv \
     --formats atomtok \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
@@ -27,20 +27,23 @@ python -m torch.distributed.launch \
     --decoder_lr 4e-4 \
     --dynamic_indigo \
     --augment \
-    --save_path output/indigo/swin_base_50_lstm \
+    --save_mode last \
+    --save_path output/pubchem/swin_base_50_200k \
+    --trunc_train 200000 \
     --label_smoothing 0.1 \
     --epochs 50 \
+    --train_steps_per_epoch 3000 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
     --warmup 0.05 \
-    --print_freq 200 \
+    --print_freq 100 \
     --do_train --do_valid \
-    --fp16
+    --fp16 --backend nccl
 
 
 #    --valid_file indigo-data/valid.csv \
 #    --valid_file real-acs-evaluation/test.csv \
 #    --save_path output/indigo/swin_base_20_dynamic_aug \
 #    --no_pretrained --scheduler cosine --warmup 0.05 \
-#    --load_path output/indigo/swin_base_50_dynamic_aug_sgroup1 --resume \
+#    --load_path output/pubchem/swin_base_10 --resume \

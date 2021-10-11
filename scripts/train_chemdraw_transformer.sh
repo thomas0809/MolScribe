@@ -17,17 +17,17 @@ python -m torch.distributed.launch \
     --dataset chemdraw \
     --data_path data/molbank \
     --train_file indigo-data/train.csv \
-    --valid_file indigo-data/valid.csv \
+    --valid_file indigo-data/test.csv \
     --test_file real-acs/test.csv \
     --formats atomtok \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
-    --decoder_scale 2 \
-    --encoder_lr 4e-4 \
-    --decoder_lr 4e-4 \
+    --decoder transformer \
+    --encoder_lr 1e-3 \
+    --decoder_lr 1e-3 \
     --dynamic_indigo \
     --augment \
-    --save_path output/indigo/swin_base_50_lstm \
+    --save_path output/indigo/swin_base_50_transformer \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -36,7 +36,7 @@ python -m torch.distributed.launch \
     --warmup 0.05 \
     --print_freq 200 \
     --do_train --do_valid \
-    --fp16
+    --fp16 --backend nccl
 
 
 #    --valid_file indigo-data/valid.csv \
