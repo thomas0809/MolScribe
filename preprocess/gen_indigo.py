@@ -36,15 +36,32 @@ def generate_image(obj):
     return success
 
 
-for split in ['train', 'valid', 'test']:
+# Generate ChemDraw molecules
+
+# for split in ['train', 'valid', 'test']:
+#     print(split)
+#     df = pd.read_csv(f'data/molbank/chemdraw-data/{split}.csv')
+#     print('chemdraw:', len(df))
+#     def convert_path(path):
+#         return path.replace('chemdraw-data', 'indigo-data')
+#     df['file_path'] = df['file_path'].apply(convert_path)
+#     with multiprocessing.Pool(16) as pool:
+#         success = pool.map(generate_image, list(df.iterrows()))
+#     df = df[success]
+#     print('indigo', len(df))
+#     df.to_csv(f'data/molbank/indigo-data/{split}.csv')
+
+
+# Generate PubChem molecules
+
+for split in ['valid', 'test']:
     print(split)
-    df = pd.read_csv(f'data/molbank/chemdraw-data/{split}.csv')
-    print('chemdraw:', len(df))
-    def convert_path(path):
-        return path.replace('chemdraw-data', 'indigo-data')
-    df['file_path'] = df['file_path'].apply(convert_path)
+    df = pd.read_csv(f'data/molbank/pubchem/{split}_raw.csv')
+    print('pubchem', len(df))
+    df.rename(columns={'pubchem_cid': 'image_id'}, inplace=True)
+    df['file_path'] = [f'data/molbank/pubchem/images/{id}.png' for id in df['image_id'].values]
     with multiprocessing.Pool(16) as pool:
         success = pool.map(generate_image, list(df.iterrows()))
     df = df[success]
     print('indigo', len(df))
-    df.to_csv(f'data/molbank/indigo-data/{split}.csv')
+    df.to_csv(f'data/molbank/pubchem/{split}.csv', index=False)

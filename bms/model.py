@@ -340,8 +340,9 @@ class TransformerDecoderONMT(nn.Module):
             max_relative_positions=args.max_relative_positions,
             aan_useffn=False,
             full_context_alignment=False,
-            alignment_layer=-3,
-            alignment_heads=0
+            alignment_layer=0,
+            alignment_heads=0,
+            pos_ffn_activation_fn='gelu'
         )
 
         self.output_layer = nn.Linear(args.dec_hidden_size, self.vocab_size, bias=True)
@@ -362,11 +363,10 @@ class TransformerDecoderONMT(nn.Module):
 
         dec_in = labels.transpose(0, 1).unsqueeze(-1)           # (b, t) -> (t, b, 1)
         dec_out, _ = self.decoder(tgt=dec_in, memory_bank=memory_bank, memory_lengths=memory_lengths)
+        dec_out = dec_out.permute(1, 0, 2)                      # (t, b, h) -> (b, t, h)
 
-        dec_out = self.output_layer(dec_out)                  # (t, b, h) -> (t, b, v)
-        dec_out = dec_out.permute(1, 0, 2)                    # (t, b, v) -> (b, t, v)
-
-        return dec_out[:, :-1], labels[:, 1:]
+        logits = self.output_layer(dec_out)                     # (b, t, h) -> (b, t, v)
+        return logits[:, :-1], labels[:, 1:], dec_out
 
     def decode(self, encoder_out, beam_size: int, n_best: int, min_length: int = 1, max_length: int = 256):
         batch_size, max_len, _ = encoder_out.size()
@@ -384,6 +384,7 @@ class TransformerDecoderONMT(nn.Module):
                 min_length=min_length,
                 max_length=max_length,
                 return_attention=False,
+                return_hidden=True,
                 sampling_temp=0.0,
                 keep_topk=1)
         else:
@@ -420,11 +421,11 @@ class TransformerDecoderONMT(nn.Module):
 
             attn = dec_attn.get("std", None)
 
-            dec_out = self.output_layer(dec_out)            # [t, b, h] => [t, b, v]
-            dec_out = dec_out.squeeze(0)                    # [t, b, v] => [b, v]
-            log_probs = F.log_softmax(dec_out, dim=-1)
+            dec_logits = self.output_layer(dec_out)            # [t, b, h] => [t, b, v]
+            dec_logits = dec_logits.squeeze(0)                    # [t, b, v] => [b, v]
+            log_probs = F.log_softmax(dec_logits, dim=-1)
 
-            decode_strategy.advance(log_probs, attn)
+            decode_strategy.advance(log_probs, attn, dec_out)
             any_finished = decode_strategy.is_finished.any()
             if any_finished:
                 decode_strategy.update_finished()
@@ -447,8 +448,9 @@ class TransformerDecoderONMT(nn.Module):
         results["scores"] = decode_strategy.scores
         results["predictions"] = decode_strategy.predictions
         results["attention"] = decode_strategy.attention
+        results["hidden"] = decode_strategy.hidden
 
-        return results["predictions"], results['scores']
+        return results["predictions"], results['scores'], results["hidden"]
 
     # adapted from onmt.decoders.transformer
     def map_state(self, fn):
@@ -468,45 +470,74 @@ class TransformerDecoderONMT(nn.Module):
             _recursive_map(self.decoder.state["cache"])
 
 
+class EdgePredictor(nn.Module):
+
+    def __init__(self, decoder_dim):
+        super(EdgePredictor, self).__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(decoder_dim * 2, decoder_dim),
+            nn.GELU(),
+            nn.Linear(decoder_dim, 7))
+
+    def forward(self, hidden):
+        b, l, h = hidden.size()
+        index = [i for i in range(3, l, 3)]
+        hidden = hidden[:, index]
+        b, l, h = hidden.size()
+        hidden = torch.cat([hidden.unsqueeze(2).expand(b, l, l, h), hidden.unsqueeze(1).expand(b, l, l, h)], dim=3)
+        logits = self.mlp(hidden)
+        return logits
+
+
 class Decoder(nn.Module):
 
     def __init__(self, args, tokenizer):
         super(Decoder, self).__init__()
         self.args = args
-        self.formats = args.formats
         decoder = {}
-        for format_ in self.formats:
+        for format_ in args.formats:
+            if format_ == 'edges':
+                continue
             if args.decoder == 'lstm':
                 decoder[format_] = LstmDecoder(
-                    attention_dim=args.attention_dim * args.decoder_scale,
-                    embed_dim=args.embed_dim * args.decoder_scale,
+                    attention_dim=args.attention_dim,
+                    embed_dim=args.embed_dim,
                     encoder_dim=args.encoder_dim,
-                    decoder_dim=args.decoder_dim * args.decoder_scale,
+                    decoder_dim=args.decoder_dim,
                     max_len=FORMAT_INFO[format_]['max_len'],
                     dropout=args.dropout,
                     n_layer=args.decoder_layer,
                     tokenizer=tokenizer[format_])
             else:
                 decoder[format_] = TransformerDecoderONMT(args, tokenizer[format_])
+                args.decoder_dim = args.dec_hidden_size
         self.decoder = nn.ModuleDict(decoder)
+        if args.edges:
+            self.edge_mlp = EdgePredictor(args.decoder_dim)
 
     def forward(self, encoder_out, refs):
         results = {}
         device = encoder_out.device
-        for format_ in self.formats:
+        for format_ in self.decoder:
             labels = refs[format_][0].to(device)
             label_lengths = refs[format_][1].to(device)
             results[format_] = self.decoder[format_](encoder_out, labels, label_lengths)
-        return results
-
-    def predict(self, encoder_out):
-        results = {}
-        for format_ in self.formats:
-            results[format_] = self.decoder[format_].predict(encoder_out)
+        if self.args.edges:
+            dec_out = results['nodes'][2]
+            predictions = self.edge_mlp(dec_out).permute(0, 3, 1, 2)   # b 7 l l
+            targets = refs['edges'].to(device)
+            max_len = predictions.size(-1)
+            targets = targets[:, :max_len, :max_len]
+            results['edges'] = (predictions, targets)
         return results
 
     def decode(self, encoder_out, beam_size=1, n_best=1):
         results = {}
-        for format_ in self.formats:
+        for format_ in self.decoder:
             results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
+        if self.args.edges:
+            dec_out = results['nodes'][2]
+            predictions = [[self.edge_mlp(h.unsqueeze(0)).argmax(-1) for h in hs] for hs in dec_out]
+            scores = [[0 for h in hs] for hs in predictions]
+            results['edges'] = (predictions, scores)
         return results

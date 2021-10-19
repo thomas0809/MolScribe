@@ -3,8 +3,8 @@ from copy import deepcopy
 
 
 class DecodeStrategy(object):
-    def __init__(self, pad, bos, eos, batch_size, parallel_paths,
-                 min_length, return_attention, max_length):
+    def __init__(self, pad, bos, eos, batch_size, parallel_paths, min_length, max_length,
+                 return_attention=False, return_hidden=False):
         self.pad = pad
         self.bos = bos
         self.eos = eos
@@ -15,14 +15,17 @@ class DecodeStrategy(object):
         self.predictions = [[] for _ in range(batch_size)]
         self.scores = [[] for _ in range(batch_size)]
         self.attention = [[] for _ in range(batch_size)]
+        self.hidden = [[] for _ in range(batch_size)]
 
         self.alive_attn = None
+        self.alive_hidden = None
 
         self.min_length = min_length
         self.max_length = max_length
 
         n_paths = batch_size * parallel_paths
         self.return_attention = return_attention
+        self.return_hidden = return_hidden
 
         self.done = False
 

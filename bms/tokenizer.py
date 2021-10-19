@@ -91,35 +91,58 @@ class Tokenizer(object):
         return captions
 
 
-class NodeTokenizer(object):
+class NodeTokenizer(Tokenizer):
 
-    def __init__(self, input_size):
+    def __init__(self, input_size=100, path=None):
+        super().__init__(path)
         self.width = input_size
         self.height = input_size
         self.special_tokens = [PAD, SOS, EOS, UNK]
-        self.offset = len(self.special_tokens)
+        self.offset = len(self.stoi)
 
     def __len__(self):
         return self.offset + max(self.width, self.height)
 
+    def fit_atom_symbols(self, atoms):
+        vocab = self.special_tokens + atoms
+        for i, s in enumerate(vocab):
+            self.stoi[s] = i
+        self.itos = {item[1]: item[0] for item in self.stoi.items()}
+        self.offset = len(self.stoi)
+
+    def is_coord(self, x):
+        return x >= self.offset
+
+    def is_symbol(self, x):
+        return len(self.special_tokens) <= x < self.offset
+
     def nodes_to_sequence(self, nodes):
+        coords, symbols = nodes['coords'], nodes['symbols']
         labels = [SOS_ID]
-        for x, y in nodes:
+        for (x, y), symbol in zip(coords, symbols):
             assert 0 <= x <= 1
             assert 0 <= y <= 1
-            labels.append(self.offset + round(x * (self.width - 1)))
-            labels.append(self.offset + round(y * (self.height - 1)))
+            labels.append(self.offset + int(x * (self.width - 1)))
+            labels.append(self.offset + int(y * (self.height - 1)))
+            if symbol not in self.stoi:
+                symbol = UNK
+            labels.append(self.stoi[symbol])
         labels.append(EOS_ID)
         return labels
 
     def sequence_to_nodes(self, sequence):
-        nodes = []
-        i = 1
-        while i < len(sequence):
+        coords, symbols = [], []
+        i = 0
+        if sequence[0] == SOS_ID:
+            i += 1
+        while i + 2 < len(sequence):
             if sequence[i] == EOS_ID:
                 break
-            x = (sequence[i] - self.offset) / (self.width - 1)
-            y = (sequence[i+1] - self.offset) / (self.height - 1)
-            nodes.append([x, y])
-            i += 2
-        return nodes
+            if self.is_coord(sequence[i]) and self.is_coord(sequence[i+1]) and self.is_symbol(sequence[i+2]):
+                x = (sequence[i] - self.offset) / (self.width - 1)
+                y = (sequence[i+1] - self.offset) / (self.height - 1)
+                symbol = self.itos[sequence[i+2]]
+                coords.append([x, y])
+                symbols.append(symbol)
+            i += 3
+        return {'coords': coords, 'symbols': symbols}

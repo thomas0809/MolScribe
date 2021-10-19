@@ -35,7 +35,7 @@ python -m torch.distributed.launch \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid \
+    --do_valid \
     --fp16
 
 

@@ -34,10 +34,10 @@ class GreedySearch(DecodeStrategy):
     """Select next tokens randomly from the top k possible next tokens.
     """
 
-    def __init__(self, pad, bos, eos, batch_size, min_length,
-                 return_attention, max_length, sampling_temp=1, keep_topk=1):
+    def __init__(self, pad, bos, eos, batch_size, min_length, max_length,
+                 return_attention=False, return_hidden=False, sampling_temp=1, keep_topk=1):
         super().__init__(
-            pad, bos, eos, batch_size, 1, min_length, return_attention, max_length)
+            pad, bos, eos, batch_size, 1, min_length, max_length, return_attention, return_hidden)
         self.sampling_temp = sampling_temp
         self.keep_topk = keep_topk
         self.topk_scores = None
@@ -73,7 +73,7 @@ class GreedySearch(DecodeStrategy):
             log_probs, self.sampling_temp, self.keep_topk)
         return topk_ids, topk_scores
 
-    def advance(self, log_probs, attn):
+    def advance(self, log_probs, attn=None, hidden=None):
         """Select next tokens randomly from the top k possible next tokens.
         """
         self.ensure_min_length(log_probs)
@@ -86,6 +86,11 @@ class GreedySearch(DecodeStrategy):
                 self.alive_attn = attn
             else:
                 self.alive_attn = torch.cat([self.alive_attn, attn], 0)
+        if self.return_hidden:
+            if self.alive_hidden is None:
+                self.alive_hidden = hidden
+            else:
+                self.alive_hidden = torch.cat([self.alive_hidden, hidden], 0)
         self.ensure_max_length()
 
     def update_finished(self):
@@ -100,6 +105,8 @@ class GreedySearch(DecodeStrategy):
             self.attention[b_orig].append(
                 self.alive_attn[:, b, :self.memory_length]
                 if self.alive_attn is not None else [])
+            self.hidden[b_orig].append(
+                self.alive_hidden[:, b] if self.alive_hidden is not None else [])
         self.done = self.is_finished.all()
         if self.done:
             return
@@ -107,6 +114,8 @@ class GreedySearch(DecodeStrategy):
         self.alive_seq = self.alive_seq[is_alive]
         if self.alive_attn is not None:
             self.alive_attn = self.alive_attn[:, is_alive]
+        if self.alive_hidden is not None:
+            self.alive_hidden = self.alive_hidden[:, is_alive]
         self.select_indices = is_alive.nonzero().view(-1)
         self.original_batch_idx = self.original_batch_idx[is_alive]
         # select_indices is equal to original_batch_idx for greedy search?

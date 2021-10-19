@@ -1,9 +1,9 @@
-import os
 import cv2
 import random
 import string
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 import albumentations as A
@@ -14,7 +14,7 @@ from indigo.renderer import IndigoRenderer
 
 from bms.augment import ExpandSafeRotate, CropWhite, ResizePad
 from bms.utils import PAD_ID, FORMAT_INFO
-from bms.substitutions import get_indigo_substitutions
+from bms.chemistry import get_substitutions, RGROUP_SYMBOLS
 
 cv2.setNumThreads(1)
 
@@ -27,21 +27,18 @@ INDIGO_DEARMOTIZE_PROB = 0.5
 def get_transforms(args, labelled=True):
     trans_list = []
     if labelled and args.augment:
-        trans_list.append(
-            ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, interpolation=cv2.INTER_NEAREST,
-                             value=(255, 255, 255))
-        )
+        if not args.nodes:
+            trans_list.append(
+                ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, interpolation=cv2.INTER_NEAREST,
+                                 value=(255, 255, 255))
+            )
         trans_list += [
             A.Downscale(scale_min=0.25, scale_max=0.5),
             A.Blur(),
             A.GaussNoise()
         ]
-    if not args.no_crop_white:
-        trans_list.append(CropWhite(pad=3))
-    if args.resize_pad:
-        trans_list.append(ResizePad(args.input_size, args.input_size, interpolation=cv2.INTER_NEAREST))
-    else:
-        trans_list.append(A.Resize(args.input_size, args.input_size))
+    trans_list.append(CropWhite(pad=3))
+    trans_list.append(A.Resize(args.input_size, args.input_size))
     if args.cycada:
         mean = std = [0.5, 0.5, 0.5]
     else:
@@ -55,8 +52,9 @@ def get_transforms(args, labelled=True):
     return A.Compose(trans_list)
 
 
+# Deprecaetd
 def add_functional_group_as_sgroup(indigo, mol, debug=False):
-    substitutions = get_indigo_substitutions()
+    substitutions = get_substitutions()
     random.shuffle(substitutions)
     matcher = indigo.substructureMatcher(mol)
     matched_atoms = set()
@@ -80,7 +78,7 @@ def add_functional_group_as_sgroup(indigo, mol, debug=False):
 
 def add_functional_group(indigo, mol, debug=False):
     # Delete functional group and add a pseudo atom with its abbrv
-    substitutions = get_indigo_substitutions()
+    substitutions = get_substitutions()
     random.shuffle(substitutions)
     for abbrvs, smarts, p in substitutions:
         query = indigo.loadSmarts(smarts)
@@ -140,16 +138,65 @@ def add_rgroup(indigo, mol, smiles):
             continue
     if len(atoms) > 0 and '*' not in smiles and random.random() < INDIGO_RGROUP_PROB:
         atom = random.choice(atoms)
-        # 'Ar' has to be 'Ar ', otherwise indigo will fail
-        symbol = random.choice(['R', 'R1', 'R2', 'R3', 'R4', 'R5', 'X', 'Ar '])
-        r = mol.addAtom(symbol)
+        symbol = random.choice(RGROUP_SYMBOLS)
+        if symbol == 'Ar':
+            # 'Ar' has to be 'Ar ', otherwise indigo will fail later
+            r = mol.addAtom('Ar ')
+        else:
+            r = mol.addAtom(symbol)
         r.addBond(atom, 1)
-        # print(atom.symbol())
         new_smiles = mol.canonicalSmiles()
         assert '*' in new_smiles
-        new_smiles = new_smiles.split(' ')[0].replace('*', f'[{symbol.strip()}]')
+        new_smiles = new_smiles.split(' ')[0].replace('*', f'[{symbol}]')
         smiles = new_smiles
     return mol, smiles
+
+
+def add_comment(indigo):
+    if random.random() < INDIGO_COMMENT_PROB:
+        indigo.setOption('render-comment', str(random.randint(1, 20)) + random.choice(string.ascii_letters))
+        indigo.setOption('render-comment-font-size', random.randint(40, 60))
+        indigo.setOption('render-comment-alignment', random.choice([0, 0.5, 1]))
+        indigo.setOption('render-comment-position', random.choice(['top', 'bottom']))
+        indigo.setOption('render-comment-offset', random.randint(2, 30))
+
+
+def get_graph(mol):
+
+    def normalize_nodes(nodes):
+        x, y = nodes[:, 0], nodes[:, 1]
+        minx, maxx = min(x), max(x)
+        miny, maxy = min(y), max(y)
+        x = (x - minx) / max(maxx - minx, 1e-6)
+        y = (maxy - y) / max(maxy - miny, 1e-6)
+        return np.stack([x, y], axis=1)
+
+    mol.layout()
+    coords, symbols = [], []
+    index_map = {}
+    for i, atom in enumerate(mol.iterateAtoms()):
+        x, y, z = atom.xyz()
+        coords.append([x, y])
+        symbols.append(atom.symbol())
+        index_map[atom.index()] = i
+    coords = normalize_nodes(np.array(coords))
+    n = len(symbols)
+    edges = np.zeros((n, n), dtype=int)
+    for bond in mol.iterateBonds():
+        s = index_map[bond.source().index()]
+        t = index_map[bond.destination().index()]
+        # 1/2/3/4 : single/double/triple/aromatic
+        edges[s, t] = bond.bondOrder()
+        edges[t, s] = bond.bondOrder()
+        if bond.bondStereo() in [5, 6]:
+            edges[s, t] = bond.bondStereo()
+            edges[t, s] = 11 - bond.bondStereo()
+    graph = {
+        'coords': coords,
+        'symbols': symbols,
+        'edges': edges
+    }
+    return graph
 
 
 def generate_indigo_image(smiles, mol_augment=True, debug=False):
@@ -165,63 +212,30 @@ def generate_indigo_image(smiles, mol_augment=True, debug=False):
     indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
     if debug:
         indigo.setOption('render-atom-ids-visible', True)
-    if random.random() < INDIGO_COMMENT_PROB:
-        indigo.setOption('render-comment', str(random.randint(1, 20)) + random.choice(string.ascii_letters))
-        indigo.setOption('render-comment-font-size', random.randint(40, 60))
-        indigo.setOption('render-comment-alignment', random.choice([0, 0.5, 1]))
-        indigo.setOption('render-comment-position', random.choice(['top', 'bottom']))
-        indigo.setOption('render-comment-offset', random.randint(2, 30))
-
-    def normalize_nodes(nodes):
-        x, y = nodes[:, 0], nodes[:, 1]
-        minx, maxx = min(x), max(x)
-        miny, maxy = min(y), max(y)
-        x = (x - minx) / max(maxx - minx, 1e-6)
-        y = (maxy - y) / max(maxy - miny, 1e-6)
-        return np.stack([x, y], axis=1)
 
     try:
         mol = indigo.loadMolecule(smiles)
         orig_smiles = smiles
-        debug_log = f'/scratch/yujieq/bms/segfault_debug_{os.getpid()}.txt'
-        # with open(debug_log, 'w') as f:
-        #     f.write(smiles)
         if mol_augment:
             if random.random() < INDIGO_DEARMOTIZE_PROB:
                 mol.dearomatize()
             smiles = mol.canonicalSmiles()
+            add_comment(indigo)
             mol, smiles = add_explicit_hydrogen(indigo, mol, smiles)
             mol, smiles = add_rgroup(indigo, mol, smiles)
             mol = add_functional_group(indigo, mol, debug)
-        # with open(debug_log, 'w') as f:
-        #     f.write(orig_smiles + '\n' + smiles + '\nrendering...\n')
-        #     f.write(str(indigo.getOption("render-relative-thickness")) + '\n')
-        #     f.write(str(indigo.getOption("render-bond-line-width")) + '\n')
-        #     f.write(str(indigo.getOption("render-label-mode")) + '\n')
-        #     f.write(str(indigo.getOption("render-implicit-hydrogens-visible")) + '\n')
         buf = renderer.renderToBuffer(mol)
-        with open(debug_log, 'a') as f:
-            f.write('cv2.imdecode\n')
-        # decode buffer to image
-        img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 0)
-        # expand to RGB
-        img = np.repeat(np.expand_dims(img, 2), 3, axis=2)
-        # os.remove(debug_log)
-        # node information
-        nodes = []
-        mol.layout()
-        for atom in mol.iterateAtoms():
-            x, y, z = atom.xyz()
-            nodes.append([x, y])
-        nodes = normalize_nodes(np.array(nodes))
+        img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 0)  # decode buffer to image
+        img = np.repeat(np.expand_dims(img, 2), 3, axis=2)  # expand to RGB
+        graph = get_graph(mol)
         success = True
     except Exception:
         if debug:
             raise Exception
         img = np.array([[[255., 255., 255.]] * 10] * 10).astype(np.float32)
-        nodes = np.array([])
+        graph = {}
         success = False
-    return img, smiles, nodes, success
+    return img, smiles, graph, success
 
 
 class TrainDataset(Dataset):
@@ -239,6 +253,8 @@ class TrainDataset(Dataset):
             self.smiles = df['SMILES'].values
             self.labels = {}
             for format_ in self.formats:
+                if format_ in ['nodes', 'edges']:
+                    continue
                 field = FORMAT_INFO[format_]['name']
                 if field in df.columns:
                     self.labels[format_] = df[field].values
@@ -256,7 +272,7 @@ class TrainDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.dynamic_indigo:
-            image, smiles, nodes, success = generate_indigo_image(self.smiles[idx])
+            image, smiles, graph, success = generate_indigo_image(self.smiles[idx])
             self.total += 1
             if not success and idx != 0:
                 self.failed += 1
@@ -274,14 +290,16 @@ class TrainDataset(Dataset):
         if self.labelled:
             ref = {}
             if self.dynamic_indigo:
-                format_ = 'atomtok'
-                max_len = FORMAT_INFO[format_]['max_len']
-                label = torch.LongTensor(self.tokenizer[format_].text_to_sequence(smiles, tokenized=False)[:max_len])
-                label_length = torch.LongTensor([len(label)])
-                ref[format_] = (label, label_length)
-                label = torch.LongTensor(self.tokenizer['nodes'].nodes_to_sequence(nodes)[:max_len])
+                if 'atomtok' in self.formats:
+                    max_len = FORMAT_INFO['atomtok']['max_len']
+                    label = torch.LongTensor(self.tokenizer['atomtok'].text_to_sequence(smiles, tokenized=False)[:max_len])
+                    label_length = torch.LongTensor([len(label)])
+                    ref['atomtok'] = (label, label_length)
+                max_len = FORMAT_INFO['nodes']['max_len']
+                label = torch.LongTensor(self.tokenizer['nodes'].nodes_to_sequence(graph)[:max_len])
                 label_length = torch.LongTensor([len(label)])
                 ref['nodes'] = (label, label_length)
+                ref['edges'] = torch.LongTensor(graph['edges'])
             else:
                 for format_ in self.formats:
                     label = self.labels[format_][idx]
@@ -323,8 +341,9 @@ class TestDataset(Dataset):
 def bms_collate(batch):
     ids = []
     imgs = []
-    formats = batch[0][2].keys()
+    formats = [k for k in batch[0][2].keys() if k != 'edges']
     refs = {key: [[], []] for key in formats}
+    refs['edges'] = []
     for data_point in batch:
         ids.append(data_point[0])
         imgs.append(data_point[1])
@@ -332,9 +351,13 @@ def bms_collate(batch):
         for key in formats:
             refs[key][0].append(ref[key][0])
             refs[key][1].append(ref[key][1])
-    for key in refs:
+        refs['edges'].append(ref['edges'])
+    for key in formats:
         refs[key][0] = pad_sequence(refs[key][0], batch_first=True, padding_value=PAD_ID)
         refs[key][1] = torch.stack(refs[key][1]).reshape(-1, 1)
+    max_len = max([len(edges) for edges in refs['edges']])
+    refs['edges'] = torch.stack(
+        [F.pad(edges, (0, max_len-len(edges), 0, max_len-len(edges)), value=-100) for edges in refs['edges']],
+        dim=0)
     return torch.LongTensor(ids), torch.stack(imgs), refs
-
 

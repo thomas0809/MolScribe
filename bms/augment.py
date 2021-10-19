@@ -107,7 +107,7 @@ class CropWhite(A.DualTransform):
     
 class ResizePad(A.DualTransform):
 
-    def __init__(self, height, width, interpolation=cv2.INTER_LINEAR, value=(255,255,255)):
+    def __init__(self, height, width, interpolation=cv2.INTER_LINEAR, value=(255, 255, 255)):
         super(ResizePad, self).__init__(always_apply=True)
         self.height = height
         self.width = width
