@@ -22,7 +22,7 @@ python -m torch.distributed.launch \
     --formats atomtok \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
-    --decoder_scale 2 \
+    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
     --encoder_lr 4e-4 \
     --decoder_lr 4e-4 \
     --dynamic_indigo \

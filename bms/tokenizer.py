@@ -1,4 +1,5 @@
 import json
+import numpy as np
 from SmilesPE.pretokenizer import atomwise_tokenizer
 
 PAD = '<pad>'
@@ -93,15 +94,22 @@ class Tokenizer(object):
 
 class NodeTokenizer(Tokenizer):
 
-    def __init__(self, input_size=100, path=None):
+    def __init__(self, input_size=100, path=None, sep_xy=False):
         super().__init__(path)
-        self.width = input_size
-        self.height = input_size
+        self.maxx = input_size  # height
+        self.maxy = input_size  # width
+        self.sep_xy = sep_xy
         self.special_tokens = [PAD, SOS, EOS, UNK]
         self.offset = len(self.stoi)
 
     def __len__(self):
-        return self.offset + max(self.width, self.height)
+        if self.sep_xy:
+            return self.offset + self.maxx + self.maxy
+        else:
+            return self.offset + max(self.maxx, self.maxy)
+
+    def len_symbols(self):
+        return len(self.stoi)
 
     def fit_atom_symbols(self, atoms):
         vocab = self.special_tokens + atoms
@@ -110,11 +118,70 @@ class NodeTokenizer(Tokenizer):
         self.itos = {item[1]: item[0] for item in self.stoi.items()}
         self.offset = len(self.stoi)
 
-    def is_coord(self, x):
-        return x >= self.offset
+    def is_x(self, x):
+        return self.offset <= x < self.offset + self.maxx
 
-    def is_symbol(self, x):
-        return len(self.special_tokens) <= x < self.offset
+    def is_y(self, y):
+        if self.sep_xy:
+            return self.offset + self.maxx <= y
+        return self.offset <= y
+
+    def is_symbol(self, s):
+        return len(self.special_tokens) <= s < self.offset or s == UNK_ID
+
+    def x_to_id(self, x):
+        return self.offset + int(x * (self.maxx - 1))
+
+    def y_to_id(self, y):
+        if self.sep_xy:
+            return self.offset + self.maxx + int(y * (self.maxy - 1))
+        return self.offset + int(y * (self.maxy - 1))
+
+    def id_to_x(self, id):
+        return (id - self.offset) / (self.maxx - 1)
+
+    def id_to_y(self, id):
+        if self.sep_xy:
+            return (id - self.offset - self.maxx) / self.maxy
+        return (id - self.offset) / (self.maxy - 1)
+
+    def symbol_to_id(self, symbol):
+        if symbol not in self.stoi:
+            return UNK_ID
+        return self.stoi[symbol]
+
+    def symbols_to_labels(self, symbols):
+        labels = []
+        for symbol in symbols:
+            labels.append(self.symbol_to_id(symbol))
+        return labels
+
+    def labels_to_symbols(self, labels):
+        symbols = []
+        for label in labels:
+            symbols.append(self.itos[label])
+        return symbols
+
+    def nodes_to_grid(self, nodes):
+        coords, symbols = nodes['coords'], nodes['symbols']
+        grid = np.zeros((self.maxx, self.maxy), dtype=int)
+        for [x, y], symbol in zip(coords, symbols):
+            x = int(x * (self.maxx - 1))
+            y = int(y * (self.maxy - 1))
+            grid[x][y] = self.symbol_to_id(symbol)
+        return grid
+
+    def grid_to_nodes(self, grid):
+        coords, symbols, indices = [], [], []
+        for i in range(self.maxx):
+            for j in range(self.maxy):
+                if grid[i][j] != 0:
+                    x = i / (self.maxx - 1)
+                    y = j / (self.maxy - 1)
+                    coords.append([x, y])
+                    symbols.append(self.itos[grid[i][j]])
+                    indices.append([i, j])
+        return {'coords': coords, 'symbols': symbols, 'indices': indices}
 
     def nodes_to_sequence(self, nodes):
         coords, symbols = nodes['coords'], nodes['symbols']
@@ -122,11 +189,9 @@ class NodeTokenizer(Tokenizer):
         for (x, y), symbol in zip(coords, symbols):
             assert 0 <= x <= 1
             assert 0 <= y <= 1
-            labels.append(self.offset + int(x * (self.width - 1)))
-            labels.append(self.offset + int(y * (self.height - 1)))
-            if symbol not in self.stoi:
-                symbol = UNK
-            labels.append(self.stoi[symbol])
+            labels.append(self.x_to_id(x))
+            labels.append(self.y_to_id(y))
+            labels.append(self.symbol_to_id(symbol))
         labels.append(EOS_ID)
         return labels
 
@@ -138,9 +203,9 @@ class NodeTokenizer(Tokenizer):
         while i + 2 < len(sequence):
             if sequence[i] == EOS_ID:
                 break
-            if self.is_coord(sequence[i]) and self.is_coord(sequence[i+1]) and self.is_symbol(sequence[i+2]):
-                x = (sequence[i] - self.offset) / (self.width - 1)
-                y = (sequence[i+1] - self.offset) / (self.height - 1)
+            if self.is_x(sequence[i]) and self.is_y(sequence[i+1]) and self.is_symbol(sequence[i+2]):
+                x = self.id_to_x(sequence[i])
+                y = self.id_to_x(sequence[i+1])
                 symbol = self.itos[sequence[i+2]]
                 coords.append([x, y])
                 symbols.append(symbol)

@@ -22,14 +22,13 @@ python -m torch.distributed.launch \
     --formats atomtok \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
-    --decoder_scale 2 \
+    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
     --encoder_lr 4e-4 \
     --decoder_lr 4e-4 \
     --dynamic_indigo \
     --augment \
     --save_mode last \
-    --save_path output/pubchem/swin_base_50 \
-    --trunc_train 200000 \
+    --save_path output/pubchem/swin_base_50_200k \
     --label_smoothing 0.1 \
     --epochs 50 \
     --train_steps_per_epoch 3000 \

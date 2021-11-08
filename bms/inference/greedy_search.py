@@ -85,12 +85,12 @@ class GreedySearch(DecodeStrategy):
             if self.alive_attn is None:
                 self.alive_attn = attn
             else:
-                self.alive_attn = torch.cat([self.alive_attn, attn], 0)
+                self.alive_attn = torch.cat([self.alive_attn, attn], 1)
         if self.return_hidden:
             if self.alive_hidden is None:
                 self.alive_hidden = hidden
             else:
-                self.alive_hidden = torch.cat([self.alive_hidden, hidden], 0)
+                self.alive_hidden = torch.cat([self.alive_hidden, hidden], 1)
         self.ensure_max_length()
 
     def update_finished(self):
@@ -103,19 +103,18 @@ class GreedySearch(DecodeStrategy):
             self.scores[b_orig].append(self.topk_scores[b, 0].item())
             self.predictions[b_orig].append(self.alive_seq[b, 1:])
             self.attention[b_orig].append(
-                self.alive_attn[:, b, :self.memory_length]
-                if self.alive_attn is not None else [])
+                self.alive_attn[b, :, :self.memory_length] if self.alive_attn is not None else [])
             self.hidden[b_orig].append(
-                self.alive_hidden[:, b] if self.alive_hidden is not None else [])
+                self.alive_hidden[b, :] if self.alive_hidden is not None else [])
         self.done = self.is_finished.all()
         if self.done:
             return
         is_alive = ~self.is_finished.view(-1)
         self.alive_seq = self.alive_seq[is_alive]
         if self.alive_attn is not None:
-            self.alive_attn = self.alive_attn[:, is_alive]
+            self.alive_attn = self.alive_attn[is_alive]
         if self.alive_hidden is not None:
-            self.alive_hidden = self.alive_hidden[:, is_alive]
+            self.alive_hidden = self.alive_hidden[is_alive]
         self.select_indices = is_alive.nonzero().view(-1)
         self.original_batch_idx = self.original_batch_idx[is_alive]
         # select_indices is equal to original_batch_idx for greedy search?

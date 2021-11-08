@@ -6,11 +6,10 @@ import torch.nn.functional as F
 
 import timm
 
-from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID
+from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID, to_device
 from bms.inference import GreedySearch, BeamSearch
-
-from onmt.decoders import TransformerDecoder
-from onmt.modules.embeddings import Embeddings
+from bms.transformer import TransformerDecoder, Embeddings
+from bms.chemistry import is_valid_mol
 
 
 class Encoder(nn.Module):
@@ -46,39 +45,42 @@ class Encoder(nn.Module):
         else:
             raise NotImplemented
 
+    def swin_forward(self, transformer, x):
+        x = transformer.patch_embed(x)
+        if transformer.absolute_pos_embed is not None:
+            x = x + transformer.absolute_pos_embed
+        x = transformer.pos_drop(x)
+
+        def layer_forward(layer, x, hiddens):
+            for blk in layer.blocks:
+                if not torch.jit.is_scripting() and layer.use_checkpoint:
+                    x = torch.utils.checkpoint.checkpoint(blk, x)
+                else:
+                    x = blk(x)
+            H, W = layer.input_resolution
+            B, L, C = x.shape
+            hiddens.append(x.view(B, H, W, C))
+            if layer.downsample is not None:
+                x = layer.downsample(x)
+            return x, hiddens
+
+        hiddens = []
+        for layer in transformer.layers:
+            x, hiddens = layer_forward(layer, x, hiddens)
+        x = transformer.norm(x)  # B L C
+        hiddens[-1] = x.view_as(hiddens[-1])
+        return x, hiddens
+
     def forward(self, x):
         if self.model_type in ['resnet', 'efficientnet']:
             features = self.cnn(x)
             features = features.permute(0, 2, 3, 1)
+            hiddens = []
         elif self.model_type == 'swin':
-            # return the features before downsample
-            # def forward_layer(layer, x):
-            #     for blk in layer.blocks:
-            #         if not torch.jit.is_scripting() and layer.use_checkpoint:
-            #             x = checkpoint.checkpoint(blk, x)
-            #         else:
-            #             x = blk(x)
-            #     raw_x = x
-            #     if layer.downsample is not None:
-            #         x = layer.downsample(x)
-            #     return x, raw_x
-            # return the hidden states
-            def forward_transformer(transformer, x):
-                x = transformer.patch_embed(x)
-                if transformer.absolute_pos_embed is not None:
-                    x = x + transformer.absolute_pos_embed
-                x = transformer.pos_drop(x)
-                x = transformer.layers(x)
-                if not self.trunc_encoder:
-                    x = transformer.norm(x)  # B L C
-                else:
-                    x = transformer.normt(x)
-                return x
-            features = forward_transformer(self.transformer, x)
+            features, hiddens = self.swin_forward(self.transformer, x)
         else:
             raise NotImplemented
-            
-        return features
+        return features, hiddens
 
 
 class Attention(nn.Module):
@@ -310,22 +312,17 @@ class LstmDecoder(nn.Module):
         return (decode_strategy.predictions, decode_strategy.scores)
     
 
-class TransformerDecoderONMT(nn.Module):
-    def __init__(self, args, tokenizer):
+class TransformerDecoderBase(nn.Module):
+
+    def __init__(self, args):
         super().__init__()
         self.args = args
-        self.tokenizer = tokenizer
-        self.vocab_size = len(self.tokenizer)
 
-        self.enc_trans_layer = nn.Linear(args.encoder_dim, args.dec_hidden_size)
-
-        self.decoder_embeddings = Embeddings(
-            word_vec_size=args.dec_hidden_size,
-            word_vocab_size=self.vocab_size,
-            word_padding_idx=PAD_ID,
-            position_encoding=True,
-            dropout=args.hidden_dropout
+        self.enc_trans_layer = nn.Sequential(
+            nn.Linear(args.encoder_dim, args.dec_hidden_size)
+            # nn.LayerNorm(args.dec_hidden_size, eps=1e-6)
         )
+        self.enc_pos_emb = nn.Embedding(144, args.encoder_dim) if args.enc_pos_emb else None
 
         self.decoder = TransformerDecoder(
             num_layers=args.dec_num_layers,
@@ -336,7 +333,6 @@ class TransformerDecoderONMT(nn.Module):
             self_attn_type="scaled-dot",
             dropout=args.hidden_dropout,
             attention_dropout=args.attn_dropout,
-            embeddings=self.decoder_embeddings,
             max_relative_positions=args.max_relative_positions,
             aan_useffn=False,
             full_context_alignment=False,
@@ -345,58 +341,64 @@ class TransformerDecoderONMT(nn.Module):
             pos_ffn_activation_fn='gelu'
         )
 
-        self.output_layer = nn.Linear(args.dec_hidden_size, self.vocab_size, bias=True)
-
-    def transform(self, encoder_out):
+    def enc_transform(self, encoder_out):
         batch_size = encoder_out.size(0)
         encoder_dim = encoder_out.size(-1)
         encoder_out = encoder_out.view(batch_size, -1, encoder_dim)  # (batch_size, num_pixels, encoder_dim)
+        max_len = encoder_out.size(1)
+        device = encoder_out.device
+        if self.enc_pos_emb:
+            pos_emb = self.enc_pos_emb(torch.arange(max_len, device=device)).unsqueeze(0)
+            encoder_out = encoder_out + pos_emb
         encoder_out = self.enc_trans_layer(encoder_out)
-        return encoder_out.transpose(0, 1).contiguous()
+        return encoder_out
+
+
+class TransformerDecoderAR(TransformerDecoderBase):
+
+    def __init__(self, args, tokenizer):
+        super().__init__(args)
+        self.tokenizer = tokenizer
+        self.vocab_size = len(self.tokenizer)
+        self.output_layer = nn.Linear(args.dec_hidden_size, self.vocab_size, bias=True)
+        self.embeddings = Embeddings(
+            word_vec_size=args.dec_hidden_size,
+            word_vocab_size=self.vocab_size,
+            word_padding_idx=PAD_ID,
+            position_encoding=True,
+            dropout=args.hidden_dropout)
+
+    def dec_embedding(self, tgt, step=None):
+        pad_idx = self.embeddings.word_padding_idx
+        tgt_pad_mask = tgt.data.eq(pad_idx).transpose(1, 2)  # [B, 1, T_tgt]
+        emb = self.embeddings(tgt, step=step)
+        assert emb.dim() == 3  # batch x len x embedding_dim
+        return emb, tgt_pad_mask
 
     def forward(self, encoder_out, labels, label_lengths):
         batch_size, max_len, _ = encoder_out.size()
-        memory_bank = self.transform(encoder_out)
-        memory_lengths = torch.ones(batch_size, device=encoder_out.device) * max_len
+        memory_bank = self.enc_transform(encoder_out)
 
-        self.decoder.state["src"] = np.zeros(max_len)    # this is hardcoded to make transformer decoder work
+        tgt = labels.unsqueeze(-1)  # (b, t, 1)
+        tgt_emb, tgt_pad_mask = self.dec_embedding(tgt)
+        dec_out, *_ = self.decoder(tgt_emb=tgt_emb, memory_bank=memory_bank, tgt_pad_mask=tgt_pad_mask)
 
-        dec_in = labels.transpose(0, 1).unsqueeze(-1)           # (b, t) -> (t, b, 1)
-        dec_out, _ = self.decoder(tgt=dec_in, memory_bank=memory_bank, memory_lengths=memory_lengths)
-        dec_out = dec_out.permute(1, 0, 2)                      # (t, b, h) -> (b, t, h)
-
-        logits = self.output_layer(dec_out)                     # (b, t, h) -> (b, t, v)
+        logits = self.output_layer(dec_out)    # (b, t, h) -> (b, t, v)
         return logits[:, :-1], labels[:, 1:], dec_out
 
     def decode(self, encoder_out, beam_size: int, n_best: int, min_length: int = 1, max_length: int = 256):
         batch_size, max_len, _ = encoder_out.size()
-        memory_bank = self.transform(encoder_out)
-        memory_lengths = torch.ones(batch_size, device=encoder_out.device) * max_len
-
-        self.decoder.state["src"] = np.zeros(max_len)  # this is hardcoded to make transformer decoder work
+        memory_bank = self.enc_transform(encoder_out)
 
         if beam_size == 1:
             decode_strategy = GreedySearch(
-                pad=PAD_ID,
-                bos=SOS_ID,
-                eos=EOS_ID,
-                batch_size=batch_size,
-                min_length=min_length,
-                max_length=max_length,
-                return_attention=False,
-                return_hidden=True,
-                sampling_temp=0.0,
-                keep_topk=1)
+                sampling_temp=0.0, keep_topk=1, batch_size=batch_size, min_length=min_length, max_length=max_length,
+                pad=PAD_ID, bos=SOS_ID, eos=EOS_ID,
+                return_attention=False, return_hidden=True)
         else:
             decode_strategy = BeamSearch(
-                beam_size=beam_size,
-                batch_size=batch_size,
-                pad=PAD_ID,
-                bos=SOS_ID,
-                eos=EOS_ID,
-                n_best=n_best,
-                min_length=min_length,
-                max_length=max_length,
+                beam_size=beam_size, n_best=n_best, batch_size=batch_size, min_length=min_length, max_length=max_length,
+                pad=PAD_ID, bos=SOS_ID, eos=EOS_ID,
                 return_attention=False)
 
         # adapted from onmt.translate.translator
@@ -407,22 +409,19 @@ class TransformerDecoderONMT(nn.Module):
         }
 
         # (2) prep decode_strategy. Possibly repeat src objects.
-        src_map = None
         _, memory_bank = decode_strategy.initialize(memory_bank=memory_bank)
 
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
-            decoder_input = decode_strategy.current_predictions.view(1, -1, 1)
-
-            dec_out, dec_attn = self.decoder(tgt=decoder_input,
-                                             memory_bank=memory_bank,
-                                             memory_lengths=memory_lengths,
-                                             step=step)
+            tgt = decode_strategy.current_predictions.view(-1, 1, 1)
+            tgt_emb, tgt_pad_mask = self.dec_embedding(tgt)
+            dec_out, dec_attn, *_ = self.decoder(tgt_emb=tgt_emb, memory_bank=memory_bank,
+                                                 tgt_pad_mask=tgt_pad_mask, step=step)
 
             attn = dec_attn.get("std", None)
 
-            dec_logits = self.output_layer(dec_out)            # [t, b, h] => [t, b, v]
-            dec_logits = dec_logits.squeeze(0)                    # [t, b, v] => [b, v]
+            dec_logits = self.output_layer(dec_out)            # [b, t, h] => [b, t, v]
+            dec_logits = dec_logits.squeeze(1)
             log_probs = F.log_softmax(dec_logits, dim=-1)
 
             decode_strategy.advance(log_probs, attn, dec_out)
@@ -435,14 +434,7 @@ class TransformerDecoderONMT(nn.Module):
             select_indices = decode_strategy.select_indices
             if any_finished:
                 # Reorder states.
-                if isinstance(memory_bank, tuple):
-                    memory_bank = tuple(x.index_select(1, select_indices) for x in memory_bank)
-                else:
-                    memory_bank = memory_bank.index_select(1, select_indices)
-                memory_lengths = memory_lengths.index_select(0, select_indices)
-                if src_map is not None:
-                    src_map = src_map.index_select(1, select_indices)
-
+                memory_bank = memory_bank.index_select(0, select_indices)
                 self.map_state(lambda state, dim: state.index_select(dim, select_indices))
 
         results["scores"] = decode_strategy.scores
@@ -454,7 +446,6 @@ class TransformerDecoderONMT(nn.Module):
 
     # adapted from onmt.decoders.transformer
     def map_state(self, fn):
-
         def _recursive_map(struct, batch_dim=0):
             for k, v in struct.items():
                 if v is not None:
@@ -462,12 +453,75 @@ class TransformerDecoderONMT(nn.Module):
                         _recursive_map(v)
                     else:
                         struct[k] = fn(v, batch_dim)
-
-        # self.decoder.state["src"] = fn(self.decoder.state["src"], 1)
-        # => self.state["src"] = self.state["src"].index_select(1, select_indices)
-
         if self.decoder.state["cache"] is not None:
             _recursive_map(self.decoder.state["cache"])
+
+
+class TransformerDecoderNAR(TransformerDecoderBase):
+
+    def __init__(self, args, tokenizer):
+        super(TransformerDecoderNAR, self).__init__(args)
+        self.dec_len = args.dec_num_queries
+        num_classes = len(tokenizer)
+        dec_dim = args.dec_hidden_size
+        self.query_embedding = nn.Embedding(self.dec_len, dec_dim)
+        self.coords_mlp = nn.Sequential(
+            nn.Linear(dec_dim, dec_dim), nn.GELU(),
+            nn.Linear(dec_dim, dec_dim), nn.GELU(),
+            nn.Linear(dec_dim, 2)
+        )
+        self.class_mlp = nn.Sequential(
+            nn.Linear(dec_dim, dec_dim), nn.GELU(),
+            nn.Linear(dec_dim, dec_dim), nn.GELU(),
+            nn.Linear(dec_dim, num_classes)
+        )
+        # self.edges_mlp = nn.Sequential(
+        #     nn.Linear(dec_dim * 2, dec_dim), nn.GELU(),
+        #     nn.Linear(dec_dim, dec_dim), nn.GELU(),
+        #     nn.Linear(dec_dim, 7)
+        # )
+
+    def forward(self, encoder_out):
+        batch_size, max_len, _ = encoder_out.size()
+        device = encoder_out.device
+        memory_bank = self.enc_transform(encoder_out)
+        tgt_emb = self.query_embedding(torch.arange(self.dec_len, device=device))
+        tgt_emb = tgt_emb.unsqueeze(0).expand(batch_size, -1, -1)
+
+        dec_out, _, dec_hiddens = self.decoder(tgt_emb=tgt_emb, memory_bank=memory_bank, future=True)
+        b, l, h = dec_out.size()
+
+        def _get_predictions(hidden):
+            coords_pred = self.coords_mlp(hidden)  # (b, t, h) -> (b, t, 2)
+            class_pred = self.class_mlp(hidden)    # (b, t, h) -> (b, t, c)
+            # x = torch.cat([hidden.unsqueeze(2).expand(b, l, l, h),
+            #                hidden.unsqueeze(1).expand(b, l, l, h)], dim=3)
+            # edges_pred = self.edges_mlp(x)
+            edges_pred = None
+            return {"coords": coords_pred, "logits": class_pred, "edges": edges_pred}
+
+        predictions = _get_predictions(dec_out)
+        predictions["aux"] = []
+        for hidden in dec_hiddens[:-1]:
+            predictions["aux"].append(_get_predictions(hidden))
+
+        return predictions
+
+    def decode(self, encoder_out):
+        preds = self.forward(encoder_out)
+        batch_size = encoder_out.size(0)
+        outputs = []
+        for i in range(batch_size):
+            output = {}
+            labels = preds["logits"][i].argmax(-1)
+            ids = labels.ne(PAD_ID).nonzero().view(-1)  # len
+            output["labels"] = labels[ids]
+            output["coords"] = preds["coords"][i, ids]
+            # edges = preds["edges"][i].argmax(-1)
+            # output["edges"] = edges[ids][:, ids]
+            output["edges"] = torch.zeros((len(ids), len(ids)), dtype=torch.int)
+            outputs.append(output)
+        return outputs
 
 
 class EdgePredictor(nn.Module):
@@ -475,9 +529,10 @@ class EdgePredictor(nn.Module):
     def __init__(self, decoder_dim):
         super(EdgePredictor, self).__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(decoder_dim * 2, decoder_dim),
-            nn.GELU(),
-            nn.Linear(decoder_dim, 7))
+            nn.Linear(decoder_dim * 2, decoder_dim), nn.GELU(),
+            # nn.Linear(decoder_dim, decoder_dim), nn.GELU(),
+            nn.Linear(decoder_dim, 7)
+        )
 
     def forward(self, hidden):
         b, l, h = hidden.size()
@@ -489,55 +544,164 @@ class EdgePredictor(nn.Module):
         return logits
 
 
+def conv3x3(in_planes, out_planes, stride=1, has_bias=False):
+    "3x3 convolution with padding"
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=has_bias)
+
+
+def conv3x3_bn_relu(in_planes, out_planes, stride=1):
+    return nn.Sequential(
+            conv3x3(in_planes, out_planes, stride),
+            nn.SyncBatchNorm(out_planes, eps=1e-6),  # replaced BN with LayerNorm
+            nn.ReLU())
+
+
+class FeaturePyramidNetwork(nn.Module):
+
+    def __init__(self, hidden_dims, num_classes):
+        super(FeaturePyramidNetwork, self).__init__()
+        fpn_dim = hidden_dims[0]
+        self.fpn_in = nn.ModuleList()
+        for i, h_dim in enumerate(hidden_dims):
+            self.fpn_in.append(nn.Sequential(
+                nn.Conv2d(h_dim, fpn_dim, kernel_size=1, bias=False),
+                nn.SyncBatchNorm(fpn_dim, eps=1e-6),
+                nn.ReLU()
+            ))
+        self.fpn_out = nn.ModuleList()
+        for i, h_dim in enumerate(hidden_dims[:-1]):
+            self.fpn_out.append(nn.Sequential(
+                conv3x3_bn_relu(fpn_dim, fpn_dim, 1)
+            ))
+        self.conv_fusion = conv3x3_bn_relu(len(hidden_dims) * fpn_dim, fpn_dim, 1)
+        self.class_mlp = nn.Sequential(
+            conv3x3_bn_relu(fpn_dim, fpn_dim, 1),
+            nn.Conv2d(fpn_dim, num_classes, kernel_size=1, bias=True)
+        )
+
+    def _upsample_add(self, x, y):
+        _, _, H, W = y.size()
+        return F.interpolate(x, size=(H, W), mode='bilinear', align_corners=False) + y
+
+    def forward(self, hiddens):
+        hiddens = [x.permute(0, 3, 1, 2).contiguous() for x in hiddens]
+        f = self.fpn_in[-1](hiddens[-1])
+        fpn_feature_list = [f]
+        for i in reversed(range(len(hiddens) - 1)):
+            conv_x = hiddens[i]
+            conv_x = self.fpn_in[i](conv_x)  # lateral branch
+            f = self._upsample_add(f, conv_x)
+            fpn_feature_list.append(self.fpn_out[i](f))
+        fpn_feature_list.reverse()  # [P2 - P5]
+
+        output_size = fpn_feature_list[0].size()[2:]
+        fusion_list = [fpn_feature_list[0]]
+        for i in range(1, len(fpn_feature_list)):
+            fusion_list.append(F.interpolate(
+                fpn_feature_list[i], output_size, mode='bilinear', align_corners=False))
+        fusion_out = torch.cat(fusion_list, 1)
+        x = self.conv_fusion(fusion_out)  # B H W C
+
+        class_pred = self.class_mlp(x)  # B C H W
+        return class_pred
+
+
 class Decoder(nn.Module):
 
     def __init__(self, args, tokenizer):
         super(Decoder, self).__init__()
         self.args = args
+        self.formats = args.formats
+        self.tokenizer = tokenizer
         decoder = {}
         for format_ in args.formats:
-            if format_ == 'edges':
-                continue
-            if args.decoder == 'lstm':
-                decoder[format_] = LstmDecoder(
-                    attention_dim=args.attention_dim,
-                    embed_dim=args.embed_dim,
-                    encoder_dim=args.encoder_dim,
-                    decoder_dim=args.decoder_dim,
-                    max_len=FORMAT_INFO[format_]['max_len'],
-                    dropout=args.dropout,
-                    n_layer=args.decoder_layer,
-                    tokenizer=tokenizer[format_])
+            if format_ == 'graph':
+                decoder[format_] = TransformerDecoderNAR(args, tokenizer[format_])
+            elif format_ == 'grid':
+                dim = args.encoder_dim
+                hidden_dims = [dim // 8, dim // 4, dim // 2, dim]
+                decoder[format_] = FeaturePyramidNetwork(hidden_dims, tokenizer[format_].len_symbols())
+            elif format_ == 'edges':
+                decoder['edges'] = EdgePredictor(args.dec_hidden_size)
             else:
-                decoder[format_] = TransformerDecoderONMT(args, tokenizer[format_])
-                args.decoder_dim = args.dec_hidden_size
+                if args.decoder == 'lstm':
+                    decoder[format_] = LstmDecoder(
+                        attention_dim=args.attention_dim, embed_dim=args.embed_dim, encoder_dim=args.encoder_dim,
+                        decoder_dim=args.decoder_dim, max_len=FORMAT_INFO[format_]['max_len'], dropout=args.dropout,
+                        n_layer=args.decoder_layer, tokenizer=tokenizer[format_])
+                    args.dec_hidden_size = args.decoder_dim
+                else:
+                    decoder[format_] = TransformerDecoderAR(args, tokenizer[format_])
         self.decoder = nn.ModuleDict(decoder)
-        if args.edges:
-            self.edge_mlp = EdgePredictor(args.decoder_dim)
 
-    def forward(self, encoder_out, refs):
+    def forward(self, encoder_out, hiddens, refs):
         results = {}
         device = encoder_out.device
-        for format_ in self.decoder:
-            labels = refs[format_][0].to(device)
-            label_lengths = refs[format_][1].to(device)
-            results[format_] = self.decoder[format_](encoder_out, labels, label_lengths)
-        if self.args.edges:
-            dec_out = results['nodes'][2]
-            predictions = self.edge_mlp(dec_out).permute(0, 3, 1, 2)   # b 7 l l
-            targets = refs['edges'].to(device)
-            max_len = predictions.size(-1)
-            targets = targets[:, :max_len, :max_len]
-            results['edges'] = (predictions, targets)
+        refs = to_device(refs, device)
+        for format_ in self.formats:
+            if format_ == 'graph':
+                output = self.decoder['graph'](encoder_out)
+                results['graph'] = (output, refs['graph'])
+            elif format_ == 'grid':
+                output = self.decoder['grid'](hiddens)
+                results['grid'] = (output, refs['grid'])
+            elif format_ == 'edges':
+                dec_out = results['nodes'][2]
+                predictions = self.decoder['edges'](dec_out).permute(0, 3, 1, 2)  # b 7 l l
+                targets = refs['edges']
+                max_len = predictions.size(-1)
+                targets = targets[:, :max_len, :max_len]
+                results['edges'] = (predictions, targets)
+            else:
+                labels, label_lengths = refs[format_]
+                results[format_] = self.decoder[format_](encoder_out, labels, label_lengths)
         return results
 
-    def decode(self, encoder_out, beam_size=1, n_best=1):
+    def decode(self, encoder_out, hiddens, beam_size=1, n_best=1):
         results = {}
-        for format_ in self.decoder:
-            results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
-        if self.args.edges:
-            dec_out = results['nodes'][2]
-            predictions = [[self.edge_mlp(h.unsqueeze(0)).argmax(-1) for h in hs] for hs in dec_out]
-            scores = [[0 for h in hs] for hs in predictions]
-            results['edges'] = (predictions, scores)
-        return results
+        predictions = {}
+        beam_predictions = {}
+        for format_ in self.formats:
+            if format_ == 'graph':
+                outputs = self.decoder['graph'].decode(encoder_out)
+                results['graph'] = outputs
+                def _convert(x):
+                    x = {k: v.tolist() for k, v in x.items()}
+                    x['symbols'] = self.tokenizer['graph'].labels_to_symbols(x['labels'])
+                    x.pop('labels')
+                    return x
+                predictions['graph'] = [_convert(pred) for pred in outputs]
+            elif format_ == 'grid':
+                outputs = self.decoder['grid'](hiddens)
+                results['grid'] = outputs
+                predictions['grid'] = [self.tokenizer['grid'].grid_to_nodes(grid.tolist())
+                                       for grid in outputs.argmax(1)]
+            elif format_ == 'edges':
+                dec_out = results['nodes'][2]  # batch x n_best x len x dim
+                outputs = [[self.decoder['edges'](h.unsqueeze(0)).argmax(-1).squeeze(0) for h in hs] for hs in dec_out]
+                results['edges'] = outputs     # batch x n_best x len x len
+                predictions['edges'] = [pred[0].tolist() for pred in outputs]
+            elif format_ == 'nodes':
+                results['nodes'] = self.decoder['nodes'].decode(encoder_out, beam_size, n_best)
+                outputs, scores, *_ = results['nodes']
+                beam_preds = [[self.tokenizer['nodes'].sequence_to_nodes(x.tolist()) for x in pred] for pred in outputs]
+                beam_predictions['nodes'] = (beam_preds, scores)
+                predictions['nodes'] = [pred[0] for pred in beam_preds]
+            else:
+                results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
+                outputs, scores, *_ = results[format_]
+                beam_preds = [[self.tokenizer[format_].predict_caption(x.tolist()) for x in pred] for pred in outputs]
+                beam_predictions[format_] = (beam_preds, scores)
+                def _pick_valid(preds, format_):
+                    """Pick the top valid prediction from n_best outputs
+                    """
+                    best = preds[0]  # default
+                    if self.args.check_validity:
+                        for i, p in enumerate(preds):
+                            if is_valid_mol(p, format_):
+                                best = p
+                                break
+                    return best
+                predictions[format_] = [_pick_valid(pred, format_) for pred in beam_preds]
+        return predictions, beam_predictions

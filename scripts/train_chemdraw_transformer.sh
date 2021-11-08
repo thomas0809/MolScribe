@@ -17,7 +17,7 @@ python -m torch.distributed.launch \
     --dataset chemdraw \
     --data_path data/molbank \
     --train_file indigo-data/train.csv \
-    --valid_file indigo-data/test.csv \
+    --valid_file indigo-data/valid.csv \
     --test_file real-acs/test.csv \
     --formats atomtok \
     --input_size 384 \
@@ -35,7 +35,7 @@ python -m torch.distributed.launch \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid \
+    --do_valid \
     --fp16 --backend nccl
 
 

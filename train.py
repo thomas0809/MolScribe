@@ -6,10 +6,8 @@ import math
 import random
 import argparse
 import datetime
-import collections
 import numpy as np
 import pandas as pd
-from tqdm.auto import tqdm
 
 import torch
 import torch.distributed as dist
@@ -21,11 +19,12 @@ from transformers import get_scheduler
 
 from bms.dataset import TrainDataset, bms_collate
 from bms.model import Encoder, Decoder
-from bms.loss import SequenceLoss
-from bms.utils import init_summary_writer, seed_torch,  AverageMeter, asMinutes, timeSince, print_rank_0, FORMAT_INFO
-from bms.chemistry import is_valid_mol, get_score, get_canon_smiles_score, merge_inchi, batch_convert_smiles_to_inchi
+from bms.loss import Criterion
+from bms.utils import init_summary_writer, seed_torch, LossMeter, AverageMeter, asMinutes, timeSince, print_rank_0, \
+                      FORMAT_INFO
+from bms.chemistry import get_score, get_canon_smiles_score, merge_inchi, convert_smiles_to_inchi, \
+                          evaluate_nodes, convert_graph_to_smiles
 from bms.tokenizer import Tokenizer, NodeTokenizer, PAD_ID
-from bms.nodes import evaluate_nodes
 
 import warnings 
 warnings.filterwarnings('ignore')
@@ -50,6 +49,7 @@ def get_args():
     parser.add_argument('--use_checkpoint', action='store_true')
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--embed_dim', type=int, default=256)
+    parser.add_argument('--enc_pos_emb', action='store_true')
     group = parser.add_argument_group("lstm_options")
     group.add_argument('--decoder_dim', type=int, default=512)
     # group.add_argument('--decoder_scale', type=int, default=1)
@@ -58,7 +58,8 @@ def get_args():
     group = parser.add_argument_group("transformer_options")
     group.add_argument("--dec_num_layers", help="No. of layers in transformer decoder", type=int, default=6)
     group.add_argument("--dec_hidden_size", help="Decoder hidden size", type=int, default=256)
-    group.add_argument("--dec_attn_heads", help="Decoder no. of attention heads", type=int, default=4)
+    group.add_argument("--dec_attn_heads", help="Decoder no. of attention heads", type=int, default=8)
+    group.add_argument("--dec_num_queries", type=int, default=128)
     group.add_argument("--hidden_dropout", help="Hidden dropout", type=float, default=0.1)
     group.add_argument("--attn_dropout", help="Attention dropout", type=float, default=0.1)
     group.add_argument("--max_relative_positions", help="Max relative positions", type=int, default=0)
@@ -69,7 +70,6 @@ def get_args():
     parser.add_argument('--valid_file', type=str, default=None)
     parser.add_argument('--test_file', type=str, default=None)
     parser.add_argument('--dynamic_indigo', action='store_true')
-    parser.add_argument('--format', type=str, choices=['inchi', 'atomtok', 'spe'], default='atomtok')
     parser.add_argument('--formats', type=str, default=None)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--input_size', type=int, default=224)
@@ -99,6 +99,8 @@ def get_args():
     parser.add_argument('--label_smoothing', type=float, default=0.0)
     parser.add_argument('--selftrain', type=str, default=None)
     parser.add_argument('--cycada', action='store_true')
+    parser.add_argument('--shuffle_nodes', action='store_true')
+    parser.add_argument('--coord_bins', type=int, default=100)
     # Inference
     parser.add_argument('--beam_size', type=int, default=1)
     parser.add_argument('--n_best', type=int, default=1)
@@ -184,8 +186,7 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
              encoder_scheduler, decoder_scheduler, scaler, device, global_step, SUMMARY, args):
     batch_time = AverageMeter()
     data_time = AverageMeter()
-    losses = AverageMeter()
-    epoch_losses = AverageMeter()
+    loss_meter = LossMeter()
     # switch to train mode
     encoder.train()
     decoder.train()
@@ -199,16 +200,12 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         images = images.to(device)
         batch_size = images.size(0)
         with torch.cuda.amp.autocast(enabled=args.fp16):
-            loss = 0
-            features = encoder(images)
-            results = decoder(features, refs)
-            for format_ in args.formats:
-                predictions, targets, *_ = results[format_]
-                format_loss = criterion[format_](predictions, targets)
-                loss = loss + format_loss
+            features, hiddens = encoder(images)
+            results = decoder(features, hiddens, refs)
+            losses = criterion(results)
+            loss = sum(losses.values())
         # record loss
-        losses.update(loss.item(), batch_size)
-        epoch_losses.update(loss.item(), batch_size)
+        loss_meter.update(loss, losses, batch_size)
         if args.gradient_accumulation_steps > 1:
             loss = loss / args.gradient_accumulation_steps
         scaler.scale(loss).backward()
@@ -217,9 +214,8 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
             scaler.unscale_(decoder_optimizer)
             encoder_grad_norm = torch.nn.utils.clip_grad_norm_(encoder.parameters(), args.max_grad_norm)
             decoder_grad_norm = torch.nn.utils.clip_grad_norm_(decoder.parameters(), args.max_grad_norm)
-            if 0 <= encoder_grad_norm < np.inf and 0 <= decoder_grad_norm < np.inf:
-                scaler.step(encoder_optimizer)
-                scaler.step(decoder_optimizer)
+            scaler.step(encoder_optimizer)
+            scaler.step(decoder_optimizer)
             scaler.update()
             encoder_optimizer.zero_grad()
             decoder_optimizer.zero_grad()
@@ -230,44 +226,30 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         batch_time.update(time.time() - end)
         end = time.time()
         if step % args.print_freq == 0 or step == (len(train_loader)-1):
+            loss_str = ' '.join([f'{k}:{v.avg:.4f}' for k, v in loss_meter.subs.items()])
             print_rank_0('Epoch: [{0}][{1}/{2}] '
-                  'Data {data_time.avg:.3f}s ({sum_data_time}) '
-                  'Elapsed {remain:s} '
-                  'Loss: {loss.val:.4f}({loss.avg:.4f}) '
-                  'EncGrad: {encoder_grad_norm:.4f}  '
-                  'DecGrad: {decoder_grad_norm:.4f}  '
-                  'LR: {encoder_lr:.6f} {decoder_lr:.6f}  '
-                  .format(
-                   epoch+1, step, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses,
-                   sum_data_time=asMinutes(data_time.sum),
-                   remain=timeSince(start, float(step+1)/len(train_loader)),
-                   encoder_grad_norm=encoder_grad_norm,
-                   decoder_grad_norm=decoder_grad_norm,
-                   encoder_lr=encoder_scheduler.get_lr()[0],
-                   decoder_lr=decoder_scheduler.get_lr()[0],
-                   ))
-            losses.reset()
-        if args.train_steps_per_epoch != -1 and \
-                (step + 1) // args.gradient_accumulation_steps == args.train_steps_per_epoch:
+                'Data {data_time.avg:.3f}s ({sum_data_time}) '
+                'Run {remain:s} '
+                'Loss: {loss.avg:.4f} ({loss_str}) '
+                'Grad: {encoder_grad_norm:.3f}/{decoder_grad_norm:.3f} '
+                'LR: {encoder_lr:.6f} {decoder_lr:.6f}'
+                .format(
+                epoch+1, step, len(train_loader), batch_time=batch_time,
+                data_time=data_time, loss=loss_meter, loss_str=loss_str,
+                sum_data_time=asMinutes(data_time.sum),
+                remain=timeSince(start, float(step+1)/len(train_loader)),
+                encoder_grad_norm=encoder_grad_norm,
+                decoder_grad_norm=decoder_grad_norm,
+                encoder_lr=encoder_scheduler.get_lr()[0],
+                decoder_lr=decoder_scheduler.get_lr()[0]))
+            loss_meter.reset()
+        if args.train_steps_per_epoch != -1 and (step+1)//args.gradient_accumulation_steps == args.train_steps_per_epoch:
             break
-        
-    return epoch_losses.avg, global_step
+
+    return loss_meter.epoch.avg, global_step
 
 
 def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
-    
-    def _pick_valid(preds, format_):
-        """Pick the top valid prediction from n_best outputs
-        """
-        best = preds[0]  # default
-        if args.check_validity:
-            for i, p in enumerate(preds):
-                if is_valid_mol(p, format_):
-                    best = p
-                    break
-        return best
-    
     batch_time = AverageMeter()
     data_time = AverageMeter()
     # switch to evaluation mode
@@ -276,52 +258,51 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
         decoder = decoder.module
     encoder.eval()
     decoder.eval()
-    all_preds = {format_:{} for format_ in args.formats}
-    final_preds = {format_:{} for format_ in args.formats}
+    predictions = {format_: {} for format_ in args.formats}
+    beam_predictions = {format_: {} for format_ in args.formats}
     start = end = time.time()
     for step, (indices, images) in enumerate(valid_loader):
         # measure data loading time
         data_time.update(time.time() - end)
         indices = indices.tolist()
         images = images.to(device)
-        batch_size = images.size(0)
         with torch.cuda.amp.autocast(enabled=args.fp16):
             with torch.no_grad():
-                features = encoder(images)
-                # predictions = decoder.predict(features)
-                # replace predict -> decode, output predicted sequence directly
-                predictions = decoder.decode(
-                    features, beam_size=args.beam_size, n_best=args.n_best)
+                features, hiddens = encoder(images)
+                batch_preds, batch_beam_preds = decoder.decode(features, hiddens,
+                                                               beam_size=args.beam_size, n_best=args.n_best)
         for format_ in args.formats:
-            # predicted_sequence = torch.argmax(predictions[format_].detach().cpu(), -1).numpy()
-            # text_preds = tokenizer[format_].predict_captions(predicted_sequence)
-            preds, scores, *_ = predictions[format_]
-            if format_ == 'nodes':
-                preds = [[tokenizer['nodes'].sequence_to_nodes(x.cpu().numpy()) for x in pred]
-                         for pred in preds]
-            elif format_ == 'edges':
-                preds = [[x.cpu().numpy() for x in pred] for pred in preds]
-            else:
-                preds = [[tokenizer[format_].predict_caption(x.cpu().numpy()) for x in pred]
-                         for pred in preds]
-            for idx, pred, sc in zip(indices, preds, scores):
-                all_preds[format_][idx] = (pred, sc)
-            valid_preds = [_pick_valid(pred, format_) for pred in preds]
-            for idx, pred in zip(indices, valid_preds):
-                final_preds[format_][idx] = pred
+            if format_ in batch_beam_preds:
+                preds, scores = batch_beam_preds[format_]
+                for idx, pred, score in zip(indices, preds, scores):
+                    beam_predictions[format_][idx] = (pred, score)
+            for idx, preds in zip(indices, batch_preds[format_]):
+                predictions[format_][idx] = preds
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
         if step % args.print_freq == 0 or step == (len(valid_loader)-1):
             print_rank_0('EVAL: [{0}/{1}] '
-                  'Data {data_time.avg:.3f}s ({sum_data_time}) '
-                  'Elapsed {remain:s} '
-                  .format(
-                   step, len(valid_loader), batch_time=batch_time,
-                   data_time=data_time,
-                   sum_data_time=asMinutes(data_time.sum),
-                   remain=timeSince(start, float(step+1)/len(valid_loader))))
-    return all_preds, final_preds
+                'Data {data_time.avg:.3f}s ({sum_data_time}) '
+                'Elapsed {remain:s} '
+                .format(
+                step, len(valid_loader), batch_time=batch_time,
+                data_time=data_time,
+                sum_data_time=asMinutes(data_time.sum),
+                remain=timeSince(start, float(step+1)/len(valid_loader))))
+    # gather predictions
+    gathered_preds = [None for i in range(dist.get_world_size())]
+    dist.all_gather_object(gathered_preds, [predictions, beam_predictions])
+    n = len(valid_loader.dataset)
+    predictions = {format_: [None for i in range(n)] for format_ in args.formats}
+    beam_predictions = {format_: [None for i in range(n)] for format_ in args.formats}
+    for preds, beam_preds in gathered_preds:
+        for format_ in args.formats:
+            for idx, pred in preds[format_].items():
+                predictions[format_][idx] = pred
+            for idx, pred in beam_preds[format_].items():
+                beam_predictions[format_][idx] = pred
+    return predictions, beam_predictions
 
 
 def train_loop(args, train_df, valid_df, tokenizer, save_path):
@@ -373,13 +354,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     # ====================================================
     # loop
     # ====================================================
-    criterion = {}
-    for format_ in args.formats:
-        if format_ == 'edges':
-            criterion['edges'] = torch.nn.CrossEntropyLoss()
-        else:
-            criterion[format_] = SequenceLoss(args.label_smoothing, len(tokenizer[format_]), ignore_index=PAD_ID)
-            criterion[format_].to(device)
+    criterion = Criterion(args, tokenizer).to(device)
 
     best_score = -np.inf
     best_loss = np.inf
@@ -391,70 +366,61 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
 
         if args.local_rank != -1:
             train_sampler.set_epoch(epoch)
+            dist.barrier()
 
-        # if args.eval_steps != -1:
-        #     eval_times = len(train_loader) // args.eval_steps + 1
-        #     train_iter = iter(train_loader)
-        # else:
-        eval_times = 1
-        train_iter = train_loader
+        start_time = time.time()
 
-        for eval_i in range(eval_times):
+        # train
+        avg_loss, global_step = train_fn(
+            train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch,
+            encoder_scheduler, decoder_scheduler, scaler, device, global_step, SUMMARY, args)
 
-            if args.local_rank != -1:
-                dist.barrier()
-            start_time = time.time()
+        # eval
+        scores = inference(args, valid_df, tokenizer, encoder, decoder, save_path, split='valid')
 
-            # train
-            avg_loss, global_step = train_fn(
-                train_iter, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch,
-                encoder_scheduler, decoder_scheduler, scaler, device, global_step, SUMMARY, args)
+        if args.local_rank != 0:
+            continue
 
-            # eval
-            scores = inference(args, valid_df, tokenizer, encoder, decoder, save_path, split='valid')
+        elapsed = time.time() - start_time
 
-            if args.local_rank != 0:
-                continue
+        print_rank_0(f'Epoch {epoch+1} - Time: {elapsed:.0f}s')
+        print_rank_0(f'Epoch {epoch+1} - Score: ' + json.dumps(scores))
 
-            elapsed = time.time() - start_time
+        save_obj = {'encoder': encoder.state_dict(),
+                    'encoder_optimizer': encoder_optimizer.state_dict(),
+                    'encoder_scheduler': encoder_scheduler.state_dict(),
+                    'decoder': decoder.state_dict(),
+                    'decoder_optimizer': decoder_optimizer.state_dict(),
+                    'decoder_scheduler': decoder_scheduler.state_dict(),
+                    'global_step': global_step}
 
-            print_rank_0(f'Epoch {epoch+1} - Time: {elapsed:.0f}s')
-            print_rank_0(f'Epoch {epoch+1} - Score: ' + json.dumps(scores))
+        if 'edges' in args.formats or 'graph' in args.formats:
+            score = scores['graph_em']
+        elif 'nodes' in args.formats or 'grid' in args.formats:
+            score = scores['symbols']
+        else:
+            score = scores['canon_smiles_em']
 
-            save_obj = {'encoder': encoder.state_dict(),
-                        'encoder_optimizer': encoder_optimizer.state_dict(),
-                        'encoder_scheduler': encoder_scheduler.state_dict(),
-                        'decoder': decoder.state_dict(),
-                        'decoder_optimizer': decoder_optimizer.state_dict(),
-                        'decoder_scheduler': decoder_scheduler.state_dict(),
-                        'global_step': global_step
-                       }
+        if SUMMARY:
+            SUMMARY.add_scalar('train/loss', avg_loss, global_step)
+            encoder_lr = encoder_scheduler.get_lr()[0]
+            decoder_lr = decoder_scheduler.get_lr()[0]
+            SUMMARY.add_scalar('train/encoder_lr', encoder_lr, global_step)
+            SUMMARY.add_scalar('train/decoder_lr', decoder_lr, global_step)
+            for key in scores:
+                SUMMARY.add_scalar(f'valid/{key}', scores[key], global_step)
 
-            if args.nodes:
-                score = -scores['nodes']
-            else:
-                score = scores['canon_smiles_em']
+        if score > best_score:
+            best_score = score
+            print_rank_0(f'Epoch {epoch+1} - Save Best Score: {best_score:.4f} Model')
+            torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_best.pth'))
+            with open(os.path.join(save_path, 'best_valid.json'), 'w') as f:
+                json.dump(scores, f)
 
-            if SUMMARY:
-                SUMMARY.add_scalar('train/loss', avg_loss, global_step)
-                encoder_lr = encoder_scheduler.get_lr()[0]
-                decoder_lr = decoder_scheduler.get_lr()[0]
-                SUMMARY.add_scalar('train/encoder_lr', encoder_lr, global_step)
-                SUMMARY.add_scalar('train/decoder_lr', decoder_lr, global_step)
-                for key in scores:
-                    SUMMARY.add_scalar(f'valid/{key}', scores[key], global_step)
-
-            if score > best_score:
-                best_score = score
-                print_rank_0(f'Epoch {epoch+1} - Save Best Score: {best_score:.4f} Model')
-                torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_best.pth'))
-                with open(os.path.join(save_path, 'best_valid.json'), 'w') as f:
-                    json.dump(scores, f)
-
-            if args.save_mode == 'all':
-                torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
-            if args.save_mode == 'last':
-                torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_last.pth'))
+        if args.save_mode == 'all':
+            torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
+        if args.save_mode == 'last':
+            torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_last.pth'))
     
     if args.local_rank != -1:
         dist.barrier()
@@ -485,27 +451,15 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         # valid/test mode
         encoder, decoder = get_model(args, tokenizer, device, save_path)
     
-    local_preds = valid_fn(dataloader, encoder, decoder, tokenizer, device, args)
-    gathered_preds = [None for i in range(dist.get_world_size())]
-    dist.all_gather_object(gathered_preds, local_preds)
-    
+    predictions, beam_predictions = valid_fn(dataloader, encoder, decoder, tokenizer, device, args)
+
     if args.local_rank != 0:
         return
-    
-    predictions = {format_: [None for i in range(len(dataset))] for format_ in args.formats}
-    all_predictions = {format_: [None for i in range(len(dataset))] for format_ in args.formats}
-    for preds in gathered_preds:
-        beam_preds, final_preds = preds
-        for format_ in args.formats:
-            for idx, pred in final_preds[format_].items():
-                predictions[format_][idx] = pred
-            for idx, pred in beam_preds[format_].items():
-                all_predictions[format_][idx] = pred
 
     if args.beam_size > 1:
         for format_ in args.formats:
             with open(os.path.join(save_path, f'{split}_{format_}_beam.jsonl'), 'w') as f:
-                for idx, pred in enumerate(all_predictions[format_]):
+                for idx, pred in enumerate(beam_predictions[format_]):
                     text, score = pred
                     f.write(json.dumps({'id': idx, 'text': text, 'score': score}) + '\n')
 
@@ -521,15 +475,21 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             # SMILES
             pred_df['SMILES'] = text_preds
             print('Converting SMILES to InChI ...')
-            inchi_list, r_success = batch_convert_smiles_to_inchi(text_preds)
+            inchi_list, r_success = convert_smiles_to_inchi(text_preds)
             pred_df['SMILES_InChI'] = inchi_list
             print(f'{split} SMILES to InChI success ratio: {r_success:.4f}')
             scores['smiles_inchi_success'] = r_success
-        if format_ == 'nodes':
-            pred_df['node_coords'] = [pred['coords'] for pred in text_preds]
-            pred_df['node_symbols'] = [pred['symbols'] for pred in text_preds]
-        if format_ == 'edges':
-            pred_df['edges'] = text_preds
+        if format_ in ['nodes', 'graph', 'grid']:
+            pred_df['node_coords'] = [pred['coords'] for pred in predictions[format_]]
+            pred_df['node_symbols'] = [pred['symbols'] for pred in predictions[format_]]
+        if format_ == 'graph':
+            predictions['edges'] = [pred['edges'] for pred in predictions['graph']]
+
+    if 'edges' in args.formats or 'graph' in args.formats:
+        pred_df['edges'] = predictions['edges']
+        smiles_list = convert_graph_to_smiles(pred_df['node_coords'].values, pred_df['node_symbols'].values,
+                                              pred_df['edges'].values)
+        pred_df['SMILES'] = smiles_list
     
     if 'atomtok' in args.formats and 'inchi' in args.formats:
         pred_df['merge_InChI'], _ = merge_inchi(pred_df['SMILES_InChI'].values, pred_df['InChI'].values)
@@ -539,18 +499,22 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         if 'inchi' in args.formats:
             scores['inchi'], scores['inchi_em'] = get_score(data_df['InChI'].values, pred_df['InChI'].values)
         if 'atomtok' in args.formats:
-            scores['smiles'], scores['smiles_em'] = get_score(data_df['SMILES'].values, pred_df['SMILES'].values)
-            scores['smiles_inchi'], scores['smiles_inchi_em'] = get_score(data_df['InChI'].values, pred_df['SMILES_InChI'].values)
-            scores['canon_smiles_em'] = get_canon_smiles_score(data_df['SMILES'].values, pred_df['SMILES'].values)
-            scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'].values, pred_df['SMILES'].values, ignore_chiral=True)
+            scores['smiles'], scores['smiles_em'] = get_score(data_df['SMILES'], pred_df['SMILES'])
+            scores['smiles_inchi'], scores['smiles_inchi_em'] = get_score(data_df['InChI'], pred_df['SMILES_InChI'])
+            scores['canon_smiles_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'])
+            scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'], ignore_chiral=True)
             print('label:')
             print(data_df['SMILES'].values[:4])
             print('pred:')
             print(pred_df['SMILES'].values[:4])
         if 'atomtok' in args.formats and 'inchi' in args.formats:
-            scores['merge_inchi'], scores['merge_inchi_em'] = get_score(data_df['InChI'].values, pred_df['merge_InChI'].values)
-        if 'nodes' in args.formats:
-            scores['nodes'], scores['num_nodes'] = evaluate_nodes(data_df['SMILES'].values, pred_df['node_coords'].values)
+            scores['merge_inchi'], scores['merge_inchi_em'] = get_score(data_df['InChI'], pred_df['merge_InChI'])
+        if 'nodes' in args.formats or 'graph' in args.formats or 'grid' in args.formats:
+            scores['nodes'], scores['num_nodes'], scores['symbols'] = \
+                evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])
+        if 'edges' in args.formats or 'graph' in args.formats:
+            scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'],
+                                                        ignore_chiral=True, ignore_charge=True)
             
     pred_df.to_csv(os.path.join(save_path, f'prediction_{split}.csv'), index=False)
     
@@ -601,8 +565,11 @@ def get_chemdraw_data(args):
         test_df = pd.read_csv(os.path.join(args.data_path, args.test_file))
         print_rank_0(f'test.shape: {test_df.shape}')
     tokenizer = {}
-    tokenizer['atomtok'] = Tokenizer('bms/vocab.json')
-    tokenizer['nodes'] = NodeTokenizer(100, 'bms/node_vocab.json')
+    for format_ in args.formats:
+        if format_ == 'atomtok':
+            tokenizer['atomtok'] = Tokenizer('bms/vocab.json')
+        elif format_ in ['nodes', 'graph', 'grid']:
+            tokenizer[format_] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json')
     return train_df, valid_df, test_df, tokenizer
 
 
@@ -614,22 +581,18 @@ def main():
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     if args.local_rank != -1:
-
         dist.init_process_group(backend=args.backend, init_method='env://', timeout=datetime.timedelta(0, 7200))
         torch.cuda.set_device(args.local_rank)
         torch.backends.cudnn.benchmark = True
-        
-    if args.formats is None: 
-        args.formats = [args.format]
-    else:
-        args.formats = args.formats.split(',')
-        args.nodes = ('nodes' in args.formats)
-        args.edges = ('edges' in args.formats)
+
+    args.formats = args.formats.split(',')
+    args.nodes = ('nodes' in args.formats) or ('graph' in args.formats) or ('grid' in args.formats)
+    args.edges = ('edges' in args.formats) or ('graph' in args.formats)
     print_rank_0('Output formats: ' + ' '.join(args.formats))
 
     if args.dataset == 'bms':
         train_df, valid_df, test_df, tokenizer = get_bms_data(args)
-    elif args.dataset == 'chemdraw':
+    else:
         train_df, valid_df, test_df, tokenizer = get_chemdraw_data(args)
         
     if args.do_train and args.all_data:
@@ -638,9 +601,9 @@ def main():
         
     if args.trunc_train:
         if args.do_train:
-            train_df = train_df.sample(n=args.trunc_train, random_state=42).reset_index(drop=True)
+            train_df = train_df[:args.trunc_train]
         if args.do_valid:
-            valid_df = valid_df.sample(n=args.trunc_train, random_state=42).reset_index(drop=True)
+            valid_df = valid_df[:args.trunc_train]
     
     if args.debug:
         args.epochs = 1

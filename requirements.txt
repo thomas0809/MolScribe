@@ -1,0 +1,10 @@
+pandas
+matplotlib
+transformers
+tensorboardX
+python-Levenshtein
+SmilesPE
+OpenNMT-py
+rdkit-pypi
+albumentations
+timm

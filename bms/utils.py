@@ -71,6 +71,36 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
+class EpochMeter(AverageMeter):
+    def __init__(self):
+        super().__init__()
+        self.epoch = AverageMeter()
+
+    def update(self, val, n=1):
+        super().update(val, n)
+        self.epoch.update(val, n)
+
+
+class LossMeter(EpochMeter):
+    def __init__(self):
+        self.subs = {}
+        super().__init__()
+
+    def reset(self):
+        super().reset()
+        for k in self.subs:
+            self.subs[k].reset()
+
+    def update(self, loss, losses, n=1):
+        loss = loss.item()
+        super().update(loss, n)
+        losses = {k: v.item() for k, v in losses.items()}
+        for k, v in losses.items():
+            if k not in self.subs:
+                self.subs[k] = EpochMeter()
+            self.subs[k].update(v, n)
+
+
 def asMinutes(s):
     m = math.floor(s / 60)
     s -= m * 60
@@ -93,3 +123,10 @@ def print_rank_0(message):
         print(message, flush=True)
 
 
+def to_device(data, device):
+    if torch.is_tensor(data):
+        return data
+    if type(data) is list:
+        return [to_device(v, device) for v in data]
+    if type(data) is dict:
+        return {k: to_device(v, device) for k, v in data.items()}

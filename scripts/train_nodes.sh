@@ -1,7 +1,7 @@
 #!/bin/bash
 
 NUM_NODES=1
-NUM_GPUS_PER_NODE=8
+NUM_GPUS_PER_NODE=4
 NODE_RANK=0
 
 BATCH_SIZE=128
@@ -23,20 +23,19 @@ python -m torch.distributed.launch \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
     --decoder transformer \
-    --encoder_lr 3e-4 \
-    --decoder_lr 3e-4 \
-    --dynamic_indigo \
-    --augment \
-    --save_path output/indigo/swin_base_graph \
+    --encoder_lr 4e-4 \
+    --decoder_lr 4e-4 \
+    --dynamic_indigo --augment \
+    --coord_bins 64 \
+    --save_path output/indigo/swin_base_edges_bin64_ep100 \
     --label_smoothing 0.1 \
-    --epochs 50 \
+    --epochs 100 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid \
-    --fp16
+    --do_train --do_valid
 
 
 #    --valid_file indigo-data/valid.csv \

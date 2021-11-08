@@ -1,4 +1,5 @@
 import cv2
+import json
 import random
 import string
 import numpy as np
@@ -35,9 +36,9 @@ def get_transforms(args, labelled=True):
         trans_list += [
             A.Downscale(scale_min=0.25, scale_max=0.5),
             A.Blur(),
-            A.GaussNoise()
+            # A.GaussNoise()  # TODO GaussNoise applies clip [0,1]
         ]
-    trans_list.append(CropWhite(pad=3))
+    # trans_list.append(CropWhite(pad=3))
     trans_list.append(A.Resize(args.input_size, args.input_size))
     if args.cycada:
         mean = std = [0.5, 0.5, 0.5]
@@ -161,7 +162,7 @@ def add_comment(indigo):
         indigo.setOption('render-comment-offset', random.randint(2, 30))
 
 
-def get_graph(mol):
+def get_graph(mol, img, shuffle_nodes=False):
 
     def normalize_nodes(nodes):
         x, y = nodes[:, 0], nodes[:, 1]
@@ -174,12 +175,15 @@ def get_graph(mol):
     mol.layout()
     coords, symbols = [], []
     index_map = {}
-    for i, atom in enumerate(mol.iterateAtoms()):
-        x, y, z = atom.xyz()
-        coords.append([x, y])
+    atoms = [atom for atom in mol.iterateAtoms()]
+    if shuffle_nodes:
+        random.shuffle(atoms)
+    height, width, _ = img.shape
+    for i, atom in enumerate(atoms):
+        x, y = atom.coords()
+        coords.append([y/height, x/width])
         symbols.append(atom.symbol())
         index_map[atom.index()] = i
-    coords = normalize_nodes(np.array(coords))
     n = len(symbols)
     edges = np.zeros((n, n), dtype=int)
     for bond in mol.iterateBonds():
@@ -196,10 +200,10 @@ def get_graph(mol):
         'symbols': symbols,
         'edges': edges
     }
-    return graph
+    return graph, img
 
 
-def generate_indigo_image(smiles, mol_augment=True, debug=False):
+def generate_indigo_image(smiles, mol_augment=True, shuffle_nodes=False, debug=False):
     indigo = Indigo()
     renderer = IndigoRenderer(indigo)
     indigo.setOption('render-output-format', 'png')
@@ -220,14 +224,14 @@ def generate_indigo_image(smiles, mol_augment=True, debug=False):
             if random.random() < INDIGO_DEARMOTIZE_PROB:
                 mol.dearomatize()
             smiles = mol.canonicalSmiles()
-            add_comment(indigo)
+            # add_comment(indigo)
             mol, smiles = add_explicit_hydrogen(indigo, mol, smiles)
             mol, smiles = add_rgroup(indigo, mol, smiles)
             mol = add_functional_group(indigo, mol, debug)
         buf = renderer.renderToBuffer(mol)
-        img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 0)  # decode buffer to image
-        img = np.repeat(np.expand_dims(img, 2), 3, axis=2)  # expand to RGB
-        graph = get_graph(mol)
+        img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 1)  # decode buffer to image
+        # img = np.repeat(np.expand_dims(img, 2), 3, axis=2)  # expand to RGB
+        graph, img = get_graph(mol, img, shuffle_nodes)
         success = True
     except Exception:
         if debug:
@@ -253,11 +257,10 @@ class TrainDataset(Dataset):
             self.smiles = df['SMILES'].values
             self.labels = {}
             for format_ in self.formats:
-                if format_ in ['nodes', 'edges']:
-                    continue
-                field = FORMAT_INFO[format_]['name']
-                if field in df.columns:
-                    self.labels[format_] = df[field].values
+                if format_ in ['atomtok', 'inchi']:
+                    field = FORMAT_INFO[format_]['name']
+                    if field in df.columns:
+                        self.labels[format_] = df[field].values
         self.transform = get_transforms(args, self.labelled)
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
         self.dynamic_indigo = (args.dynamic_indigo and split == 'train')
@@ -272,7 +275,9 @@ class TrainDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.dynamic_indigo:
-            image, smiles, graph, success = generate_indigo_image(self.smiles[idx])
+            image, smiles, graph, success = generate_indigo_image(self.smiles[idx],
+                                                                  shuffle_nodes=self.args.shuffle_nodes)
+            raw_image = image
             self.total += 1
             if not success and idx != 0:
                 self.failed += 1
@@ -295,11 +300,22 @@ class TrainDataset(Dataset):
                     label = torch.LongTensor(self.tokenizer['atomtok'].text_to_sequence(smiles, tokenized=False)[:max_len])
                     label_length = torch.LongTensor([len(label)])
                     ref['atomtok'] = (label, label_length)
-                max_len = FORMAT_INFO['nodes']['max_len']
-                label = torch.LongTensor(self.tokenizer['nodes'].nodes_to_sequence(graph)[:max_len])
-                label_length = torch.LongTensor([len(label)])
-                ref['nodes'] = (label, label_length)
-                ref['edges'] = torch.LongTensor(graph['edges'])
+                if 'nodes' in self.formats:
+                    max_len = FORMAT_INFO['nodes']['max_len']
+                    label = torch.LongTensor(self.tokenizer['nodes'].nodes_to_sequence(graph)[:max_len])
+                    label_length = torch.LongTensor([len(label)])
+                    ref['nodes'] = (label, label_length)
+                if 'edges' in self.formats:
+                    ref['edges'] = torch.tensor(graph['edges'])
+                if 'graph' in self.formats:
+                    graph_ref = {
+                        'coords': torch.tensor(graph['coords']),
+                        'labels': torch.tensor(self.tokenizer['graph'].symbols_to_labels(graph['symbols'])),
+                        'edges': torch.tensor(graph['edges'])
+                    }
+                    ref['graph'] = graph_ref
+                if 'grid' in self.formats:
+                    ref['grid'] = torch.tensor(self.tokenizer['grid'].nodes_to_grid(graph))
             else:
                 for format_ in self.formats:
                     label = self.labels[format_][idx]
@@ -308,56 +324,43 @@ class TrainDataset(Dataset):
                     label_length = len(label)
                     label_length = torch.LongTensor([label_length])
                     ref[format_] = (label, label_length)
+            if idx < 200:
+                x = {'image': image.tolist(), 'raw': raw_image.tolist(), 'grid': ref['grid'].tolist(), 'smiles': smiles}
+                with open(f'image/{idx}.json', 'w') as f:
+                    json.dump(x, f)
             return idx, image, ref
         else:
             return idx, image
 
 
-# Deprecated
-class TestDataset(Dataset):
-    def __init__(self, args, df):
-        super().__init__()
-        self.df = df
-        self.file_paths = df['file_path'].values
-        self.transform = get_transforms(args)
-        self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
-
-    def __len__(self):
-        return len(self.df)
-
-    def __getitem__(self, idx):
-        file_path = self.file_paths[idx]
-        image = cv2.imread(file_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32)
-        h, w, _ = image.shape
-        if h > w:
-            image = self.fix_transform(image=image)['image']
-        if self.transform:
-            augmented = self.transform(image=image)
-            image = augmented['image']
-        return image
-
-
 def bms_collate(batch):
     ids = []
     imgs = []
-    formats = [k for k in batch[0][2].keys() if k != 'edges']
-    refs = {key: [[], []] for key in formats}
-    refs['edges'] = []
-    for data_point in batch:
-        ids.append(data_point[0])
-        imgs.append(data_point[1])
-        ref = data_point[2]
-        for key in formats:
+    formats = list(batch[0][2].keys())
+    seq_formats = [k for k in formats if k not in ['edges', 'graph', 'grid']]
+    refs = {key: [[], []] for key in seq_formats}
+    for ex in batch:
+        ids.append(ex[0])
+        imgs.append(ex[1])
+        ref = ex[2]
+        for key in seq_formats:
             refs[key][0].append(ref[key][0])
             refs[key][1].append(ref[key][1])
-        refs['edges'].append(ref['edges'])
-    for key in formats:
+    # Sequence
+    for key in seq_formats:
         refs[key][0] = pad_sequence(refs[key][0], batch_first=True, padding_value=PAD_ID)
         refs[key][1] = torch.stack(refs[key][1]).reshape(-1, 1)
-    max_len = max([len(edges) for edges in refs['edges']])
-    refs['edges'] = torch.stack(
-        [F.pad(edges, (0, max_len-len(edges), 0, max_len-len(edges)), value=-100) for edges in refs['edges']],
-        dim=0)
+    # Graph
+    if 'graph' in formats:
+        refs['graph'] = [ex[2]['graph'] for ex in batch]
+    # Grid
+    if 'grid' in formats:
+        refs['grid'] = torch.stack([ex[2]['grid'] for ex in batch])
+    # Edges
+    if 'edges' in formats:
+        edges_list = [ex[2]['edges'] for ex in batch]
+        max_len = max([len(edges) for edges in edges_list])
+        refs['edges'] = torch.stack(
+            [F.pad(edges, (0, max_len-len(edges), 0, max_len-len(edges)), value=-100) for edges in edges_list], dim=0)
     return torch.LongTensor(ids), torch.stack(imgs), refs
 
