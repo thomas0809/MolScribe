@@ -1,8 +1,10 @@
+import os
 import cv2
-import json
+import time
 import random
 import string
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
@@ -28,7 +30,7 @@ INDIGO_DEARMOTIZE_PROB = 0.5
 def get_transforms(args, labelled=True):
     trans_list = []
     if labelled and args.augment:
-        if not args.nodes:
+        if not args.nodes and not args.patch:
             trans_list.append(
                 ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, interpolation=cv2.INTER_NEAREST,
                                  value=(255, 255, 255))
@@ -39,12 +41,15 @@ def get_transforms(args, labelled=True):
             # A.GaussNoise()  # TODO GaussNoise applies clip [0,1]
         ]
     # trans_list.append(CropWhite(pad=3))
-    trans_list.append(A.Resize(args.input_size, args.input_size))
-    if args.cycada:
-        mean = std = [0.5, 0.5, 0.5]
+    if args.multiscale:
+        if labelled:
+            trans_list.append(A.LongestMaxSize([224, 256, 288, 320, 352, 384, 416, 448, 480]))
+        else:
+            trans_list.append(A.LongestMaxSize(480))
     else:
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
+        trans_list.append(A.Resize(args.input_size, args.input_size))
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
     trans_list += [
         A.ToGray(p=1),
         A.Normalize(mean=mean, std=std),
@@ -236,7 +241,7 @@ def generate_indigo_image(smiles, mol_augment=True, shuffle_nodes=False, debug=F
     except Exception:
         if debug:
             raise Exception
-        img = np.array([[[255., 255., 255.]] * 10] * 10).astype(np.float32)
+        img = None  # np.array([[[255., 255., 255.]] * 10] * 10).astype(np.float32)
         graph = {}
         success = False
     return img, smiles, graph, success
@@ -261,6 +266,13 @@ class TrainDataset(Dataset):
                     field = FORMAT_INFO[format_]['name']
                     if field in df.columns:
                         self.labels[format_] = df[field].values
+        if args.load_graph_path:
+            self.load_graph = True
+            file = df.attrs['file'].split('/')[-1]
+            file = os.path.join(args.load_graph_path, f'prediction_{file}')
+            self.pred_graph_df = pd.read_csv(file)
+        else:
+            self.load_graph = False
         self.transform = get_transforms(args, self.labelled)
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
         self.dynamic_indigo = (args.dynamic_indigo and split == 'train')
@@ -275,13 +287,17 @@ class TrainDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.dynamic_indigo:
-            image, smiles, graph, success = generate_indigo_image(self.smiles[idx],
-                                                                  shuffle_nodes=self.args.shuffle_nodes)
+            begin = time.time()
+            image, smiles, graph, success = generate_indigo_image(
+                self.smiles[idx],
+                mol_augment=self.args.mol_augment,
+                shuffle_nodes=self.args.shuffle_nodes)
+            end = time.time()
             raw_image = image
             self.total += 1
-            if not success and idx != 0:
+            if not success:
                 self.failed += 1
-                return self.__getitem__(0)
+                return idx, None, {}
         else:
             file_path = self.file_paths[idx]
             image = cv2.imread(file_path)
@@ -295,6 +311,7 @@ class TrainDataset(Dataset):
         if self.labelled:
             ref = {}
             if self.dynamic_indigo:
+                ref['time'] = end - begin
                 if 'atomtok' in self.formats:
                     max_len = FORMAT_INFO['atomtok']['max_len']
                     label = torch.LongTensor(self.tokenizer['atomtok'].text_to_sequence(smiles, tokenized=False)[:max_len])
@@ -307,7 +324,7 @@ class TrainDataset(Dataset):
                     ref['nodes'] = (label, label_length)
                 if 'edges' in self.formats:
                     ref['edges'] = torch.tensor(graph['edges'])
-                if 'graph' in self.formats:
+                if 'graph' in self.formats or self.args.patch:
                     graph_ref = {
                         'coords': torch.tensor(graph['coords']),
                         'labels': torch.tensor(self.tokenizer['graph'].symbols_to_labels(graph['symbols'])),
@@ -324,20 +341,40 @@ class TrainDataset(Dataset):
                     label_length = len(label)
                     label_length = torch.LongTensor([label_length])
                     ref[format_] = (label, label_length)
-            if idx < 200:
-                x = {'image': image.tolist(), 'raw': raw_image.tolist(), 'grid': ref['grid'].tolist(), 'smiles': smiles}
-                with open(f'image/{idx}.json', 'w') as f:
-                    json.dump(x, f)
             return idx, image, ref
         else:
-            return idx, image
+            ref = {}
+            if self.load_graph:
+                row = self.pred_graph_df.iloc[idx]
+                ref['graph'] = {
+                    'coords': torch.tensor(eval(row['node_coords'])),
+                    'labels': torch.LongTensor(self.tokenizer['graph'].symbols_to_labels(eval(row['node_symbols']))),
+                    # 'edges': torch.tensor(eval(row['edges']))
+                }
+            return idx, image, ref
+
+
+def pad_images(imgs):
+    # B, C, H, W
+    max_shape = [0, 0]
+    for img in imgs:
+        for i in range(len(max_shape)):
+            max_shape[i] = max(max_shape[i], img.shape[-1-i])
+    stack = []
+    for img in imgs:
+        pad = []
+        for i in range(len(max_shape)):
+            pad = pad + [0, max_shape[i] - img.shape[-1-i]]
+        stack.append(F.pad(img, pad, value=0))
+    return torch.stack(stack)
 
 
 def bms_collate(batch):
     ids = []
     imgs = []
+    batch = [ex for ex in batch if ex[1] is not None]
     formats = list(batch[0][2].keys())
-    seq_formats = [k for k in formats if k not in ['edges', 'graph', 'grid']]
+    seq_formats = [k for k in formats if k not in ['edges', 'graph', 'grid', 'time']]
     refs = {key: [[], []] for key in seq_formats}
     for ex in batch:
         ids.append(ex[0])
@@ -350,6 +387,9 @@ def bms_collate(batch):
     for key in seq_formats:
         refs[key][0] = pad_sequence(refs[key][0], batch_first=True, padding_value=PAD_ID)
         refs[key][1] = torch.stack(refs[key][1]).reshape(-1, 1)
+    # Time
+    if 'time' in formats:
+        refs['time'] = [ex[2]['time'] for ex in batch]
     # Graph
     if 'graph' in formats:
         refs['graph'] = [ex[2]['graph'] for ex in batch]
@@ -362,5 +402,5 @@ def bms_collate(batch):
         max_len = max([len(edges) for edges in edges_list])
         refs['edges'] = torch.stack(
             [F.pad(edges, (0, max_len-len(edges), 0, max_len-len(edges)), value=-100) for edges in edges_list], dim=0)
-    return torch.LongTensor(ids), torch.stack(imgs), refs
+    return ids, pad_images(imgs), refs
 

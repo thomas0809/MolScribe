@@ -23,11 +23,11 @@ python -m torch.distributed.launch \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
     --decoder transformer \
-    --encoder_lr 1e-4 \
-    --decoder_lr 1e-4 \
+    --encoder_lr 4e-4 \
+    --decoder_lr 4e-4 \
     --dynamic_indigo --augment \
-    --save_path output/indigo/swin_base_graph_nar2 \
-    --epochs 50 \
+    --save_path output/indigo/swin_base_graph_nar \
+    --epochs 100 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \

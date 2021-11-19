@@ -1,7 +1,7 @@
 #!/bin/bash
 
 NUM_NODES=1
-NUM_GPUS_PER_NODE=1
+NUM_GPUS_PER_NODE=2
 NODE_RANK=0
 
 BATCH_SIZE=64
@@ -11,7 +11,7 @@ MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 set -x
 
-python -m torch.distributed.launch \
+torchrun \
     --nproc_per_node=$NUM_GPUS_PER_NODE --nnodes=$NUM_NODES --node_rank $NODE_RANK --master_addr localhost --master_port $MASTER_PORT \
     train.py \
     --dataset chemdraw \
@@ -21,14 +21,13 @@ python -m torch.distributed.launch \
     --test_file indigo-data/test.csv \
     --formats atomtok \
     --input_size 384 \
-    --encoder swin_base_patch4_window12_384 \
+    --encoder swin_base \
     --decoder transformer \
     --encoder_lr 4e-4 \
     --decoder_lr 4e-4 \
     --dynamic_indigo \
     --augment \
-    --save_mode last \
-    --save_path output/zinc/swin_base_10 \
+    --save_path output/debug \
     --label_smoothing 0.1 \
     --epochs 4 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -36,7 +35,7 @@ python -m torch.distributed.launch \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid\
+    --do_train --do_valid \
     --fp16 --debug
 
 

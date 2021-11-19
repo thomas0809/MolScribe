@@ -18,16 +18,16 @@ python -m torch.distributed.launch \
     --data_path data/molbank \
     --train_file indigo-data/train.csv \
     --valid_file indigo-data/valid.csv \
-    --test_file real-acs/test.csv \
+    --test_file pubchem/test_small.csv,pubchem/test_large.csv \
     --formats grid \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
     --decoder transformer \
-    --encoder_lr 1e-3 \
-    --decoder_lr 1e-3 \
+    --encoder_lr 4e-3 \
+    --decoder_lr 4e-3 \
     --dynamic_indigo --augment \
     --coord_bins 96 \
-    --save_path output/indigo/swin_base_grid \
+    --save_path output/indigo/swin_base_grid_ep100 \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -35,7 +35,7 @@ python -m torch.distributed.launch \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid
+    --do_valid --do_test
 
 
 #    --valid_file indigo-data/valid.csv \

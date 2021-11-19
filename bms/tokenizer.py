@@ -142,7 +142,7 @@ class NodeTokenizer(Tokenizer):
 
     def id_to_y(self, id):
         if self.sep_xy:
-            return (id - self.offset - self.maxx) / self.maxy
+            return (id - self.offset - self.maxx) / (self.maxy - 1)
         return (id - self.offset) / (self.maxy - 1)
 
     def symbol_to_id(self, symbol):
@@ -205,7 +205,7 @@ class NodeTokenizer(Tokenizer):
                 break
             if self.is_x(sequence[i]) and self.is_y(sequence[i+1]) and self.is_symbol(sequence[i+2]):
                 x = self.id_to_x(sequence[i])
-                y = self.id_to_x(sequence[i+1])
+                y = self.id_to_y(sequence[i+1])
                 symbol = self.itos[sequence[i+2]]
                 coords.append([x, y])
                 symbols.append(symbol)

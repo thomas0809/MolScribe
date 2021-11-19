@@ -9,6 +9,7 @@ import timm
 from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID, to_device
 from bms.inference import GreedySearch, BeamSearch
 from bms.transformer import TransformerDecoder, Embeddings
+from bms.patch import ImagePatch
 from bms.chemistry import is_valid_mol
 
 
@@ -16,8 +17,7 @@ class Encoder(nn.Module):
     def __init__(self, args, pretrained=False):
         super().__init__()
         model_name = args.encoder
-        trunc_encoder = args.trunc_encoder
-        self.trunc_encoder = trunc_encoder
+        self.model_name = model_name
         if model_name.startswith('resnet'):
             self.model_type = 'resnet'
             self.cnn = timm.create_model(model_name, pretrained=pretrained)
@@ -30,12 +30,6 @@ class Encoder(nn.Module):
                                                  use_checkpoint=args.use_checkpoint)
             self.n_features = self.transformer.num_features
             self.transformer.head = nn.Identity()
-            if trunc_encoder:
-                self.n_features = self.n_features // 2
-                self.transformer.layers = self.transformer.layers[:3]
-                self.transformer.layers[2].downsample = None
-                self.transformer.norm = nn.Identity() 
-                self.transformer.normt = nn.LayerNorm(self.n_features)
         elif 'efficientnet' in model_name:
             self.model_type = 'efficientnet'
             self.cnn = timm.create_model(model_name, pretrained=pretrained)
@@ -44,6 +38,10 @@ class Encoder(nn.Module):
             self.cnn.classifier = nn.Identity()
         else:
             raise NotImplemented
+        if args.patch:
+            self.image_patch = ImagePatch(args, args.patch_size, args.num_symbols)
+        else:
+            self.image_patch = None
 
     def swin_forward(self, transformer, x):
         x = transformer.patch_embed(x)
@@ -71,13 +69,18 @@ class Encoder(nn.Module):
         hiddens[-1] = x.view_as(hiddens[-1])
         return x, hiddens
 
-    def forward(self, x):
+    def forward(self, x, refs=None):
+        if self.image_patch and refs and 'graph' in refs:
+            x = self.image_patch(x, refs['graph'])
         if self.model_type in ['resnet', 'efficientnet']:
             features = self.cnn(x)
             features = features.permute(0, 2, 3, 1)
             hiddens = []
         elif self.model_type == 'swin':
-            features, hiddens = self.swin_forward(self.transformer, x)
+            if 'patch' in self.model_name:
+                features, hiddens = self.swin_forward(self.transformer, x)
+            else:
+                features, hiddens = self.transformer(x)
         else:
             raise NotImplemented
         return features, hiddens
@@ -459,27 +462,26 @@ class TransformerDecoderAR(TransformerDecoderBase):
 
 class TransformerDecoderNAR(TransformerDecoderBase):
 
-    def __init__(self, args, tokenizer):
+    def __init__(self, args, num_classes):
         super(TransformerDecoderNAR, self).__init__(args)
         self.dec_len = args.dec_num_queries
-        num_classes = len(tokenizer)
         dec_dim = args.dec_hidden_size
         self.query_embedding = nn.Embedding(self.dec_len, dec_dim)
         self.coords_mlp = nn.Sequential(
             nn.Linear(dec_dim, dec_dim), nn.GELU(),
-            nn.Linear(dec_dim, dec_dim), nn.GELU(),
+            # nn.Linear(dec_dim, dec_dim), nn.GELU(),
             nn.Linear(dec_dim, 2)
         )
         self.class_mlp = nn.Sequential(
             nn.Linear(dec_dim, dec_dim), nn.GELU(),
-            nn.Linear(dec_dim, dec_dim), nn.GELU(),
+            # nn.Linear(dec_dim, dec_dim), nn.GELU(),
             nn.Linear(dec_dim, num_classes)
         )
-        # self.edges_mlp = nn.Sequential(
-        #     nn.Linear(dec_dim * 2, dec_dim), nn.GELU(),
-        #     nn.Linear(dec_dim, dec_dim), nn.GELU(),
-        #     nn.Linear(dec_dim, 7)
-        # )
+        self.edges_mlp = nn.Sequential(
+            nn.Linear(dec_dim * 2, dec_dim), nn.GELU(),
+            # nn.Linear(dec_dim, dec_dim), nn.GELU(),
+            nn.Linear(dec_dim, 7)
+        )
 
     def forward(self, encoder_out):
         batch_size, max_len, _ = encoder_out.size()
@@ -494,10 +496,9 @@ class TransformerDecoderNAR(TransformerDecoderBase):
         def _get_predictions(hidden):
             coords_pred = self.coords_mlp(hidden)  # (b, t, h) -> (b, t, 2)
             class_pred = self.class_mlp(hidden)    # (b, t, h) -> (b, t, c)
-            # x = torch.cat([hidden.unsqueeze(2).expand(b, l, l, h),
-            #                hidden.unsqueeze(1).expand(b, l, l, h)], dim=3)
-            # edges_pred = self.edges_mlp(x)
-            edges_pred = None
+            x = torch.cat([hidden.unsqueeze(2).expand(b, l, l, h),
+                           hidden.unsqueeze(1).expand(b, l, l, h)], dim=3)
+            edges_pred = self.edges_mlp(x)
             return {"coords": coords_pred, "logits": class_pred, "edges": edges_pred}
 
         predictions = _get_predictions(dec_out)
@@ -517,8 +518,8 @@ class TransformerDecoderNAR(TransformerDecoderBase):
             ids = labels.ne(PAD_ID).nonzero().view(-1)  # len
             output["labels"] = labels[ids]
             output["coords"] = preds["coords"][i, ids]
-            # edges = preds["edges"][i].argmax(-1)
-            # output["edges"] = edges[ids][:, ids]
+            edges = preds["edges"][i].argmax(-1)
+            output["edges"] = edges[ids][:, ids]
             output["edges"] = torch.zeros((len(ids), len(ids)), dtype=torch.int)
             outputs.append(output)
         return outputs
@@ -553,7 +554,7 @@ def conv3x3(in_planes, out_planes, stride=1, has_bias=False):
 def conv3x3_bn_relu(in_planes, out_planes, stride=1):
     return nn.Sequential(
             conv3x3(in_planes, out_planes, stride),
-            nn.SyncBatchNorm(out_planes, eps=1e-6),  # replaced BN with LayerNorm
+            nn.SyncBatchNorm(out_planes, eps=1e-6),
             nn.ReLU())
 
 
@@ -582,7 +583,7 @@ class FeaturePyramidNetwork(nn.Module):
 
     def _upsample_add(self, x, y):
         _, _, H, W = y.size()
-        return F.interpolate(x, size=(H, W), mode='bilinear', align_corners=False) + y
+        return F.interpolate(x, size=(H, W), mode='bilinear') + y
 
     def forward(self, hiddens):
         hiddens = [x.permute(0, 3, 1, 2).contiguous() for x in hiddens]
@@ -617,7 +618,7 @@ class Decoder(nn.Module):
         decoder = {}
         for format_ in args.formats:
             if format_ == 'graph':
-                decoder[format_] = TransformerDecoderNAR(args, tokenizer[format_])
+                decoder[format_] = TransformerDecoderNAR(args, tokenizer[format_].len_symbols())
             elif format_ == 'grid':
                 dim = args.encoder_dim
                 hidden_dims = [dim // 8, dim // 4, dim // 2, dim]

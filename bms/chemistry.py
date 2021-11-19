@@ -1,8 +1,10 @@
+import cv2
 import copy
 import numpy as np
 import multiprocessing
 
 from indigo import Indigo
+from indigo.renderer import IndigoRenderer
 import rdkit
 import rdkit.Chem as Chem
 rdkit.RDLogger.DisableLog('rdApp.*')
@@ -100,14 +102,23 @@ def normalize_nodes(nodes):
 
 def convert_smiles_to_nodes(smiles):
     indigo = Indigo()
+    renderer = IndigoRenderer(indigo)
+    indigo.setOption('render-output-format', 'png')
+    indigo.setOption('render-background-color', '1,1,1')
+    indigo.setOption('render-stereo-style', 'none')
     mol = indigo.loadMolecule(smiles)
     mol.layout()
+    buf = renderer.renderToBuffer(mol)
+    img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 1)
+    height, width, _ = img.shape
     coords, symbols = [], []
     for atom in mol.iterateAtoms():
-        x, y, z = atom.xyz()
-        coords.append([x, y])
+        # x, y, z = atom.xyz()
+        # coords.append([x, y])
+        x, y = atom.coords()
+        coords.append([y / height, x / width])
         symbols.append(atom.symbol())
-    coords = normalize_nodes(np.array(coords))
+    # coords = normalize_nodes(np.array(coords))
     return coords, symbols
 
 

@@ -2,7 +2,6 @@ import os
 import sys
 import time
 import json
-import math
 import random
 import argparse
 import datetime
@@ -24,7 +23,7 @@ from bms.utils import init_summary_writer, seed_torch, LossMeter, AverageMeter, 
                       FORMAT_INFO
 from bms.chemistry import get_score, get_canon_smiles_score, merge_inchi, convert_smiles_to_inchi, \
                           evaluate_nodes, convert_graph_to_smiles
-from bms.tokenizer import Tokenizer, NodeTokenizer, PAD_ID
+from bms.tokenizer import Tokenizer, NodeTokenizer
 
 import warnings 
 warnings.filterwarnings('ignore')
@@ -32,7 +31,6 @@ warnings.filterwarnings('ignore')
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--local_rank', type=int, default=-1, metavar='N', help='Local process rank.')
     parser.add_argument('--do_train', action='store_true')
     parser.add_argument('--do_valid', action='store_true')
     parser.add_argument('--do_test', action='store_true')
@@ -52,7 +50,6 @@ def get_args():
     parser.add_argument('--enc_pos_emb', action='store_true')
     group = parser.add_argument_group("lstm_options")
     group.add_argument('--decoder_dim', type=int, default=512)
-    # group.add_argument('--decoder_scale', type=int, default=1)
     group.add_argument('--decoder_layer', type=int, default=1)
     group.add_argument('--attention_dim', type=int, default=256)
     group = parser.add_argument_group("transformer_options")
@@ -73,9 +70,16 @@ def get_args():
     parser.add_argument('--formats', type=str, default=None)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--input_size', type=int, default=224)
+    parser.add_argument('--multiscale', action='store_true')
     parser.add_argument('--augment', action='store_true')
+    parser.add_argument('--mol_augment', action='store_true')
     parser.add_argument('--resize_pad', action='store_true')
     parser.add_argument('--no_crop_white', action='store_true')
+    parser.add_argument('--coord_bins', type=int, default=100)
+    parser.add_argument('--sep_xy', action='store_true')
+    parser.add_argument('--patch', action='store_true')
+    parser.add_argument('--patch_size', type=int, default=5)
+    parser.add_argument('--load_graph_path', type=str, default=None)
     # Training
     parser.add_argument('--epochs', type=int, default=8)
     parser.add_argument('--batch_size', type=int, default=256)
@@ -100,7 +104,6 @@ def get_args():
     parser.add_argument('--selftrain', type=str, default=None)
     parser.add_argument('--cycada', action='store_true')
     parser.add_argument('--shuffle_nodes', action='store_true')
-    parser.add_argument('--coord_bins', type=int, default=100)
     # Inference
     parser.add_argument('--beam_size', type=int, default=1)
     parser.add_argument('--n_best', type=int, default=1)
@@ -140,9 +143,9 @@ def get_model(args, tokenizer, device, load_path=None):
     
     if load_path:
         states = load_states(args, load_path)
-        print_rank_0('Loading encoder')
+        # print_rank_0('Loading encoder')
         safe_load(encoder, states['encoder'])
-        print_rank_0('Loading decoder')
+        # print_rank_0('Loading decoder')
         safe_load(decoder, states['decoder'])
         print_rank_0(f"Model loaded from {load_path}")
     
@@ -193,14 +196,17 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
     
     start = end = time.time()
     encoder_grad_norm = decoder_grad_norm = 0
+    image_time = {}
 
     for step, (indices, images, refs) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
         images = images.to(device)
         batch_size = images.size(0)
+        for idx, t in zip(indices, refs['time']):
+            image_time[idx] = t
         with torch.cuda.amp.autocast(enabled=args.fp16):
-            features, hiddens = encoder(images)
+            features, hiddens = encoder(images, refs)
             results = decoder(features, hiddens, refs)
             losses = criterion(results)
             loss = sum(losses.values())
@@ -246,6 +252,9 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         if args.train_steps_per_epoch != -1 and (step+1)//args.gradient_accumulation_steps == args.train_steps_per_epoch:
             break
 
+    # with open(f'time_ep{epoch}_{args.local_rank}', 'w') as f:
+    #     json.dump(image_time, f)
+
     return loss_meter.epoch.avg, global_step
 
 
@@ -261,14 +270,13 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
     predictions = {format_: {} for format_ in args.formats}
     beam_predictions = {format_: {} for format_ in args.formats}
     start = end = time.time()
-    for step, (indices, images) in enumerate(valid_loader):
+    for step, (indices, images, refs) in enumerate(valid_loader):
         # measure data loading time
         data_time.update(time.time() - end)
-        indices = indices.tolist()
         images = images.to(device)
         with torch.cuda.amp.autocast(enabled=args.fp16):
             with torch.no_grad():
-                features, hiddens = encoder(images)
+                features, hiddens = encoder(images, refs)
                 batch_preds, batch_beam_preds = decoder.decode(features, hiddens,
                                                                beam_size=args.beam_size, n_best=args.n_best)
         for format_ in args.formats:
@@ -410,7 +418,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
             for key in scores:
                 SUMMARY.add_scalar(f'valid/{key}', scores[key], global_step)
 
-        if score > best_score:
+        if score >= best_score:
             best_score = score
             print_rank_0(f'Epoch {epoch+1} - Save Best Score: {best_score:.4f} Model')
             torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_best.pth'))
@@ -429,6 +437,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
 def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=None, split='test'):
     
     print_rank_0("========== inference ==========")
+    print_rank_0(data_df.attrs['file'])
     
     if args.local_rank == 0 and not args.debug:
         os.makedirs(save_path, exist_ok=True)
@@ -445,7 +454,8 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                             sampler=sampler, 
                             num_workers=args.num_workers,
                             pin_memory=True, 
-                            drop_last=False)
+                            drop_last=False,
+                            collate_fn=bms_collate)
     
     if encoder is None or decoder is None:
         # valid/test mode
@@ -463,6 +473,8 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                     text, score = pred
                     f.write(json.dumps({'id': idx, 'text': text, 'score': score}) + '\n')
 
+    if 'pubchem_cid' in data_df.columns:
+        data_df['image_id'] = data_df['pubchem_cid']
     pred_df = data_df[['image_id']].copy()
     scores = {}
     
@@ -497,16 +509,14 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     # Compute scores
     if split == 'valid':
         if 'inchi' in args.formats:
-            scores['inchi'], scores['inchi_em'] = get_score(data_df['InChI'].values, pred_df['InChI'].values)
+            scores['inchi'], scores['inchi_em'] = get_score(data_df['InChI'], pred_df['InChI'])
         if 'atomtok' in args.formats:
             scores['smiles'], scores['smiles_em'] = get_score(data_df['SMILES'], pred_df['SMILES'])
             scores['smiles_inchi'], scores['smiles_inchi_em'] = get_score(data_df['InChI'], pred_df['SMILES_InChI'])
             scores['canon_smiles_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'])
             scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'], ignore_chiral=True)
-            print('label:')
-            print(data_df['SMILES'].values[:4])
-            print('pred:')
-            print(pred_df['SMILES'].values[:4])
+            print('label:', data_df['SMILES'].values[:2])
+            print('pred:', pred_df['SMILES'].values[:2])
         if 'atomtok' in args.formats and 'inchi' in args.formats:
             scores['merge_inchi'], scores['merge_inchi_em'] = get_score(data_df['InChI'], pred_df['merge_InChI'])
         if 'nodes' in args.formats or 'graph' in args.formats or 'grid' in args.formats:
@@ -515,8 +525,9 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         if 'edges' in args.formats or 'graph' in args.formats:
             scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'],
                                                         ignore_chiral=True, ignore_charge=True)
-            
-    pred_df.to_csv(os.path.join(save_path, f'prediction_{split}.csv'), index=False)
+
+    file = data_df.attrs['file'].split('/')[-1]
+    pred_df.to_csv(os.path.join(save_path, f'prediction_{file}'), index=False)
     
     # Save predictions
     if split == 'test':
@@ -556,20 +567,29 @@ def get_bms_data(args):
 def get_chemdraw_data(args):
     train_df, valid_df, test_df = None, None, None
     if args.do_train:
-        train_df = pd.read_csv(os.path.join(args.data_path, args.train_file))
+        train_files = args.train_file.split(',')
+        train_df = pd.concat([pd.read_csv(os.path.join(args.data_path, file)) for file in train_files])
         print_rank_0(f'train.shape: {train_df.shape}')
     if args.do_train or args.do_valid:
         valid_df = pd.read_csv(os.path.join(args.data_path, args.valid_file))
+        valid_df.attrs['file'] = args.valid_file
         print_rank_0(f'valid.shape: {valid_df.shape}')
     if args.do_test:
-        test_df = pd.read_csv(os.path.join(args.data_path, args.test_file))
-        print_rank_0(f'test.shape: {test_df.shape}')
+        test_files = args.test_file.split(',')
+        test_df = [pd.read_csv(os.path.join(args.data_path, file)) for file in test_files]
+        for file, df in zip(test_files, test_df):
+            df.attrs['file'] = file
+            print_rank_0(file + f' test.shape: {df.shape}')
     tokenizer = {}
     for format_ in args.formats:
         if format_ == 'atomtok':
             tokenizer['atomtok'] = Tokenizer('bms/vocab.json')
         elif format_ in ['nodes', 'graph', 'grid']:
-            tokenizer[format_] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json')
+            tokenizer[format_] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
+            args.num_symbols = tokenizer[format_].len_symbols()
+    if args.patch:
+        tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
+        args.num_symbols = tokenizer['graph'].len_symbols()
     return train_df, valid_df, test_df, tokenizer
 
 
@@ -579,7 +599,8 @@ def main():
     seed_torch(seed=args.seed)
     
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
+    args.local_rank = int(os.environ['LOCAL_RANK'])
     if args.local_rank != -1:
         dist.init_process_group(backend=args.backend, init_method='env://', timeout=datetime.timedelta(0, 7200))
         torch.cuda.set_device(args.local_rank)
@@ -616,12 +637,6 @@ def main():
         if args.do_test:
             test_df = test_df.sample(n=1000, random_state=42).reset_index(drop=True)
     
-    if args.selftrain:
-        from bms.selftrain import get_self_training_data
-        selftrain_df = get_self_training_data(test_df, args.selftrain, tokenizer)
-        print_rank_0(f'selftrain.shape: {selftrain_df.shape}')
-        train_df = pd.concat([train_df, selftrain_df])
-    
     if args.do_train:
         train_loop(args, train_df, valid_df, tokenizer, args.save_path)
         
@@ -630,7 +645,10 @@ def main():
         print_rank_0(json.dumps(scores, indent=4))
 
     if args.do_test:
-        inference(args, test_df, tokenizer, save_path=args.save_path, split='test')
+        assert type(test_df) is list
+        for df in test_df:
+            scores = inference(args, df, tokenizer, save_path=args.save_path, split='valid')
+            print_rank_0(json.dumps(scores, indent=4))
 
 
 if __name__ == "__main__":

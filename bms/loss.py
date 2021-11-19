@@ -163,6 +163,7 @@ class SetLoss(nn.Module):
         target_classes = torch.full(src_logits.shape[:2], PAD_ID, dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
 
+        # print(src_logits.shape, target_classes.shape)
         loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.labels_weight)
         losses = {'labels': loss_ce}
 
@@ -256,8 +257,6 @@ class SetLoss(nn.Module):
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
-            if loss == 'edges':
-                continue
             losses.update(self.get_loss(loss, outputs, targets, indices, num_nodes))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
