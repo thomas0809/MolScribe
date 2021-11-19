@@ -148,6 +148,13 @@ def evaluate_nodes(smiles_list, node_coords, node_symbols, num_workers=16):
 
 def _convert_graph_to_smiles(arguments):
     coords, symbols, edges = arguments
+    # if not symbols == ['C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'O', 'C', 'O', 'O', 'C']:
+    # if not symbols == ['C', 'C', 'C', 'O', 'N', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'O', 'C', 'S', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'Cl']:
+    # if not symbols == ['C', 'C', 'C', 'C', 'C', 'C', 'C', 'N', 'C', 'O', 'C', 'C', 'N', 'O', 'C', 'C', 'O', 'C', 'C', 'C', 'C', 'C', 'C', 'N', 'O', 'O', 'C', 'C', 'C', 'C', 'C', 'C', 'O']:
+    # if not symbols == ['C', 'C', 'C', 'C', 'C', 'C', 'C', 'O', 'C', 'C', 'N', 'C', 'N', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'O', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C']:
+    #     return ""
+    # [print(c, s) for c, s in zip(coords, symbols)]
+    # [print(e) for e in edges]
     mol = Chem.RWMol()
     n = len(symbols)
     ids = []
@@ -158,20 +165,73 @@ def _convert_graph_to_smiles(arguments):
         except:
             idx = mol.AddAtom(Chem.Atom('C'))
         ids.append(idx)
+
     for i in range(n):
-        for j in range(n):
-            if i < j and edges[i][j] != 0:
-                if edges[i][j] in [1, 5, 6]:
-                    mol.AddBond(ids[i], ids[j], Chem.BondType.SINGLE)
-                elif edges[i][j] == 2:
-                    mol.AddBond(ids[i], ids[j], Chem.BondType.DOUBLE)
-                elif edges[i][j] == 3:
-                    mol.AddBond(ids[i], ids[j], Chem.BondType.TRIPLE)
-                elif edges[i][j] == 4:
-                    mol.AddBond(ids[i], ids[j], Chem.BondType.AROMATIC)
+        for j in range(i + 1, n):
+            if edges[i][j] == 1:
+                mol.AddBond(ids[i], ids[j], Chem.BondType.SINGLE)
+            elif edges[i][j] == 2:
+                mol.AddBond(ids[i], ids[j], Chem.BondType.DOUBLE)
+            elif edges[i][j] == 3:
+                mol.AddBond(ids[i], ids[j], Chem.BondType.TRIPLE)
+            elif edges[i][j] == 4:
+                mol.AddBond(ids[i], ids[j], Chem.BondType.AROMATIC)
+            elif edges[i][j] == 5:
+                mol.AddBond(ids[i], ids[j], Chem.BondType.SINGLE)
+                mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINDASH)
+            elif edges[i][j] == 6:
+                mol.AddBond(ids[i], ids[j], Chem.BondType.SINGLE)
+                mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINWEDGE)
+
+    # Formal charge correction
+    mol.UpdatePropertyCache(strict=False)
+    for a in mol.GetAtoms():            # TODO: WIP
+        # N in nitro
+        if a.GetAtomicNum() == 7 and a.GetExplicitValence() == 4 and a.GetFormalCharge() == 0:
+            a.SetFormalCharge(1)
+
+    if any((5 in e or 6 in e) for e in edges):
+        try:
+            # Make a temp mol to find chiral centers
+            mol_tmp = mol.GetMol()
+            Chem.SanitizeMol(mol_tmp)
+
+            chiral_centers = Chem.FindMolChiralCenters(
+                mol_tmp, includeUnassigned=True, includeCIP=False, useLegacyImplementation=False)
+            chiral_center_ids = [idx for idx, _ in chiral_centers]          # List[Tuple[int, any]] -> List[int]
+
+            # Second loop to reset any wedge/dash bond to be starting from the chiral center)
+            for i in range(n):
+                for j in range(i + 1, n):
+                    if edges[i][j] == 5 and i not in chiral_center_ids:
+                        assert edges[j][i] == 6
+                        mol.RemoveBond(ids[i], ids[j])
+                        mol.AddBond(ids[j], ids[i], Chem.BondType.SINGLE)
+                        mol.GetBondBetweenAtoms(ids[j], ids[i]).SetBondDir(Chem.BondDir.BEGINWEDGE)
+                    elif edges[i][j] == 6 and i not in chiral_center_ids:
+                        assert edges[j][i] == 5
+                        mol.RemoveBond(ids[i], ids[j])
+                        mol.AddBond(ids[j], ids[i], Chem.BondType.SINGLE)
+                        mol.GetBondBetweenAtoms(ids[j], ids[i]).SetBondDir(Chem.BondDir.BEGINDASH)
+
+            # Create conformer from 2D coordinate
+            conf = Chem.Conformer(n)
+            conf.Set3D(False)
+            for i, (x, y) in enumerate(coords):
+                conf.SetAtomPosition(i, (1 - x, y, 0))
+            mol.AddConformer(conf)
+        except Exception as e:
+            # print(f"Failed sanitization, symbols: {symbols}")
+            pass
+
     try:
         mol = mol.GetMol()
-        pred_smiles = Chem.MolToSmiles(mol)
+        # Magic, infering chirality from coordinates and BondDir. DO NOT CHANGE.
+        Chem.SanitizeMol(mol)
+        Chem.DetectBondStereochemistry(mol)
+        Chem.AssignChiralTypesFromBondDirs(mol)
+        Chem.AssignStereochemistry(mol)
+        pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
     except:
         pred_smiles = ''
     return pred_smiles
