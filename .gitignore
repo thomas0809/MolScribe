@@ -4,7 +4,6 @@ output/
 *.log
 **/__pycache__
 *.csv
-*.ipynb
 tmp/
 guo/
 i2i_output/
