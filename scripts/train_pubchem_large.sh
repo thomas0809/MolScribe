@@ -17,7 +17,7 @@ torchrun \
     --dataset chemdraw \
     --data_path data/molbank \
     --train_file pubchem/train_200k.csv,pubchem/train_large.csv \
-    --valid_file pubchem/test_large.csv \
+    --valid_file pubchem/valid.csv \
     --test_file pubchem/test_small.csv,pubchem/test_large.csv \
     --formats atomtok \
     --input_size 384 \
@@ -28,7 +28,6 @@ torchrun \
     --dynamic_indigo \
     --augment \
     --save_path output/pubchem/swin_base_200klarge \
-    --load_path output/pubchem/swin_base_200klarge --resume \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -36,7 +35,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 100 \
-    --do_train --do_valid --do_test \
+    --do_valid --do_test \
     --fp16 --backend nccl
 
 

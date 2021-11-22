@@ -130,12 +130,12 @@ class NodeTokenizer(Tokenizer):
         return len(self.special_tokens) <= s < self.offset or s == UNK_ID
 
     def x_to_id(self, x):
-        return self.offset + int(x * (self.maxx - 1))
+        return self.offset + round(x * (self.maxx - 1))
 
     def y_to_id(self, y):
         if self.sep_xy:
-            return self.offset + self.maxx + int(y * (self.maxy - 1))
-        return self.offset + int(y * (self.maxy - 1))
+            return self.offset + self.maxx + round(y * (self.maxy - 1))
+        return self.offset + round(y * (self.maxy - 1))
 
     def id_to_x(self, id):
         return (id - self.offset) / (self.maxx - 1)

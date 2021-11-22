@@ -148,13 +148,6 @@ def evaluate_nodes(smiles_list, node_coords, node_symbols, num_workers=16):
 
 def _convert_graph_to_smiles(arguments):
     coords, symbols, edges = arguments
-    # if not symbols == ['C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'O', 'C', 'O', 'O', 'C']:
-    # if not symbols == ['C', 'C', 'C', 'O', 'N', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'O', 'C', 'S', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'Cl']:
-    # if not symbols == ['C', 'C', 'C', 'C', 'C', 'C', 'C', 'N', 'C', 'O', 'C', 'C', 'N', 'O', 'C', 'C', 'O', 'C', 'C', 'C', 'C', 'C', 'C', 'N', 'O', 'O', 'C', 'C', 'C', 'C', 'C', 'C', 'O']:
-    # if not symbols == ['C', 'C', 'C', 'C', 'C', 'C', 'C', 'O', 'C', 'C', 'N', 'C', 'N', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'O', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C']:
-    #     return ""
-    # [print(c, s) for c, s in zip(coords, symbols)]
-    # [print(e) for e in edges]
     mol = Chem.RWMol()
     n = len(symbols)
     ids = []
@@ -184,11 +177,11 @@ def _convert_graph_to_smiles(arguments):
                 mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINWEDGE)
 
     # Formal charge correction
-    mol.UpdatePropertyCache(strict=False)
-    for a in mol.GetAtoms():            # TODO: WIP
-        # N in nitro
-        if a.GetAtomicNum() == 7 and a.GetExplicitValence() == 4 and a.GetFormalCharge() == 0:
-            a.SetFormalCharge(1)
+    # mol.UpdatePropertyCache(strict=False)
+    # for a in mol.GetAtoms():            # TODO: WIP
+    #     # N in nitro
+    #     if a.GetAtomicNum() == 7 and a.GetExplicitValence() == 4 and a.GetFormalCharge() == 0:
+    #         a.SetFormalCharge(1)
 
     if any((5 in e or 6 in e) for e in edges):
         try:

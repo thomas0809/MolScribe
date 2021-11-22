@@ -523,6 +523,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             scores['nodes'], scores['num_nodes'], scores['symbols'] = \
                 evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])
         if 'edges' in args.formats or 'graph' in args.formats:
+            scores['canon_smiles_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'])
             scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'],
                                                         ignore_chiral=True, ignore_charge=True)
 
