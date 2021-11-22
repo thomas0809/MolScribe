@@ -16,8 +16,11 @@ from indigo import Indigo
 from indigo.renderer import IndigoRenderer
 
 from bms.augment import ExpandSafeRotate, CropWhite, ResizePad
-from bms.utils import PAD_ID, FORMAT_INFO
+from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
 from bms.chemistry import get_substitutions, RGROUP_SYMBOLS
+
+from SmilesPE.pretokenizer import atomwise_tokenizer
+from typing import Dict, List
 
 cv2.setNumThreads(1)
 
@@ -232,7 +235,9 @@ def generate_indigo_image(smiles, mol_augment=True, shuffle_nodes=False, debug=F
             # add_comment(indigo)
             mol, smiles = add_explicit_hydrogen(indigo, mol, smiles)
             mol, smiles = add_rgroup(indigo, mol, smiles)
-            mol = add_functional_group(indigo, mol, debug)
+            # mol = add_functional_group(indigo, mol, debug)
+            mol = indigo.loadMolecule(smiles)  # reload, important!
+
         buf = renderer.renderToBuffer(mol)
         img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 1)  # decode buffer to image
         # img = np.repeat(np.expand_dims(img, 2), 3, axis=2)  # expand to RGB
@@ -245,6 +250,38 @@ def generate_indigo_image(smiles, mol_augment=True, shuffle_nodes=False, debug=F
         graph = {}
         success = False
     return img, smiles, graph, success
+
+
+def pair_label_with_coords(label: List[int], label_length: int, smiles: str, graph: Dict
+                           ) -> torch.Tensor:
+    def _is_atom(_token: str):
+        return _token.isalpha() or _token.startswith("[")
+
+    tokens = ["<sos>"]
+    tokens += atomwise_tokenizer(smiles)
+    tokens.append("<eos>")
+    tokens = tokens[:label_length]              # in case len(tokens) > max_len
+
+    coords = iter(graph["coords"])              # List[float, float]
+    label_with_coords = []
+    for l, t in zip(label, tokens):
+        label_with_coord = [float(l)]
+        if _is_atom(t):
+            try:
+                label_with_coord.append(float(True))
+                label_with_coord.extend(next(coords))
+            except StopIteration:
+                print_rank_0(f"coords has shape {len(graph['coords'])}, "
+                             f"which is shorter than tokens len ({len(tokens)})")
+                print_rank_0(f"SMILES: {smiles}")
+                print_rank_0(f"tokens: {tokens}")
+                exit(0)
+        else:
+            label_with_coord.extend([float(False), 0.0, 0.0])
+        label_with_coords.append(label_with_coord)
+    label_with_coords = torch.tensor(label_with_coords, dtype=torch.float)
+
+    return label_with_coords
 
 
 class TrainDataset(Dataset):
@@ -333,6 +370,12 @@ class TrainDataset(Dataset):
                     ref['graph'] = graph_ref
                 if 'grid' in self.formats:
                     ref['grid'] = torch.tensor(self.tokenizer['grid'].nodes_to_grid(graph))
+                if "atomtok_with_coords" in self.formats:
+                    max_len = FORMAT_INFO['atomtok']['max_len']
+                    label = self.tokenizer['atomtok'].text_to_sequence(smiles, tokenized=False)[:max_len]
+                    label_length = len(label)
+                    label_with_coords = pair_label_with_coords(label, label_length, smiles, graph)
+                    ref["atomtok_with_coords"] = (label_with_coords, torch.LongTensor([len(label)]))
             else:
                 for format_ in self.formats:
                     label = self.labels[format_][idx]
@@ -385,6 +428,7 @@ def bms_collate(batch):
             refs[key][1].append(ref[key][1])
     # Sequence
     for key in seq_formats:
+        # this padding should work for atomtok_with_coords too, each of which has shape (length, 4)
         refs[key][0] = pad_sequence(refs[key][0], batch_first=True, padding_value=PAD_ID)
         refs[key][1] = torch.stack(refs[key][1]).reshape(-1, 1)
     # Time

@@ -588,6 +588,9 @@ def get_chemdraw_data(args):
         elif format_ in ['nodes', 'graph', 'grid']:
             tokenizer[format_] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
             args.num_symbols = tokenizer[format_].len_symbols()
+        elif format_ == "atomtok_with_coords":
+            tokenizer['atomtok'] = Tokenizer('bms/vocab.json')
+            tokenizer["atomtok_with_coords"] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
     if args.patch:
         tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
         args.num_symbols = tokenizer['graph'].len_symbols()
