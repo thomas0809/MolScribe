@@ -44,10 +44,13 @@ class SequenceLoss(nn.Module):
 
     def __init__(self, label_smoothing, vocab_size, ignore_index=-100):
         super(SequenceLoss, self).__init__()
-        if label_smoothing > 0:
-            self.criterion = LabelSmoothingLoss(label_smoothing, vocab_size, ignore_index)
-        else:
-            self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
+        # if label_smoothing > 0:
+        #     self.criterion = LabelSmoothingLoss(label_smoothing, vocab_size, ignore_index)
+        # else:
+        self.ignore_index = ignore_index
+        self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index,
+                                             label_smoothing=label_smoothing,
+                                             reduction='none')
 
     def forward(self, output, target):
         """
@@ -56,9 +59,11 @@ class SequenceLoss(nn.Module):
         :return:
         """
         batch_size, max_len, vocab_size = output.size()
+        mask = (target != self.ignore_index).float()
         output = output.reshape(-1, vocab_size)
         target = target.reshape(-1)
         loss = self.criterion(output, target)
+        loss = (loss.view(batch_size, max_len) * mask).sum(1) / mask.sum(1)
         return loss
 
 
@@ -294,13 +299,19 @@ class Criterion(nn.Module):
                 criterion[format_] = SequenceLoss(args.label_smoothing, len(tokenizer[format_]), ignore_index=PAD_ID)
         self.criterion = nn.ModuleDict(criterion)
 
-    def forward(self, results):
+    def forward(self, results, refs):
         losses = {}
+        reweight_coef = refs.get('reweight_coef', None)
         for format_ in results:
             predictions, targets, *_ = results[format_]
             loss_ = self.criterion[format_](predictions, targets)
             if type(loss_) is dict:
                 losses.update(loss_)
             else:
+                if loss_.numel() > 1:
+                    if reweight_coef is not None:
+                        loss_ = (reweight_coef.to(loss_.device) * loss_).mean()
+                    else:
+                        loss_ = loss_.mean()
                 losses[format_] = loss_
         return losses

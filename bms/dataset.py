@@ -16,8 +16,8 @@ from indigo import Indigo
 from indigo.renderer import IndigoRenderer
 
 from bms.augment import ExpandSafeRotate, CropWhite, ResizePad
-from bms.utils import PAD_ID, FORMAT_INFO
-from bms.chemistry import get_substitutions, RGROUP_SYMBOLS
+from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
+from bms.chemistry import get_substitutions, get_num_atoms, RGROUP_SYMBOLS
 
 cv2.setNumThreads(1)
 
@@ -203,7 +203,8 @@ def get_graph(mol, img, shuffle_nodes=False):
     graph = {
         'coords': coords,
         'symbols': symbols,
-        'edges': edges
+        'edges': edges,
+        'num_atoms': len(symbols)
     }
     return graph, img
 
@@ -266,6 +267,8 @@ class TrainDataset(Dataset):
                     field = FORMAT_INFO[format_]['name']
                     if field in df.columns:
                         self.labels[format_] = df[field].values
+        if self.labelled and args.reweight:
+            self.compute_reweight_coef()
         if args.load_graph_path:
             self.load_graph = True
             file = df.attrs['file'].split('/')[-1]
@@ -276,14 +279,24 @@ class TrainDataset(Dataset):
         self.transform = get_transforms(args, self.labelled)
         self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
         self.dynamic_indigo = (args.dynamic_indigo and split == 'train')
-        self.reset()
         
     def __len__(self):
         return len(self.df)
 
-    def reset(self):
-        self.failed = 0
-        self.total = 0
+    def compute_reweight_coef(self):
+        if 'num_atoms' in self.df.columns:
+            num_atoms = self.df['num_atoms'].values
+        else:
+            num_atoms = get_num_atoms(self.smiles)
+        # hist, bin_edges = np.histogram(num_atoms, bins=[0, 10, 20, 30, 40, 50, 1000], density=True)
+        hist = [2., 1., 1., 1., 2., 10.]
+        bin_edges = [0, 10, 20, 30, 40, 50, 1000]
+        self.reweight_coef = {}
+        for i in range(len(hist)):
+            l, r = bin_edges[i], bin_edges[i+1]
+            for j in range(l, r):
+                self.reweight_coef[j] = hist[i]
+        return
 
     def __getitem__(self, idx):
         if self.dynamic_indigo:
@@ -294,9 +307,7 @@ class TrainDataset(Dataset):
                 shuffle_nodes=self.args.shuffle_nodes)
             end = time.time()
             raw_image = image
-            self.total += 1
             if not success:
-                self.failed += 1
                 return idx, None, {}
         else:
             file_path = self.file_paths[idx]
@@ -312,6 +323,8 @@ class TrainDataset(Dataset):
             ref = {}
             if self.dynamic_indigo:
                 ref['time'] = end - begin
+                if self.args.reweight:
+                    ref['reweight_coef'] = self.reweight_coef[graph['num_atoms']]
                 if 'atomtok' in self.formats:
                     max_len = FORMAT_INFO['atomtok']['max_len']
                     label = torch.LongTensor(self.tokenizer['atomtok'].text_to_sequence(smiles, tokenized=False)[:max_len])
@@ -374,7 +387,7 @@ def bms_collate(batch):
     imgs = []
     batch = [ex for ex in batch if ex[1] is not None]
     formats = list(batch[0][2].keys())
-    seq_formats = [k for k in formats if k not in ['edges', 'graph', 'grid', 'time']]
+    seq_formats = [k for k in formats if k in ['atomtok', 'inchi', 'nodes']]
     refs = {key: [[], []] for key in seq_formats}
     for ex in batch:
         ids.append(ex[0])
@@ -390,6 +403,8 @@ def bms_collate(batch):
     # Time
     if 'time' in formats:
         refs['time'] = [ex[2]['time'] for ex in batch]
+    if 'reweight_coef' in formats:
+        refs['reweight_coef'] = torch.tensor([ex[2]['reweight_coef'] for ex in batch])
     # Graph
     if 'graph' in formats:
         refs['graph'] = [ex[2]['graph'] for ex in batch]

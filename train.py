@@ -104,6 +104,7 @@ def get_args():
     parser.add_argument('--selftrain', type=str, default=None)
     parser.add_argument('--cycada', action='store_true')
     parser.add_argument('--shuffle_nodes', action='store_true')
+    parser.add_argument('--reweight', action='store_true')
     # Inference
     parser.add_argument('--beam_size', type=int, default=1)
     parser.add_argument('--n_best', type=int, default=1)
@@ -208,7 +209,7 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         with torch.cuda.amp.autocast(enabled=args.fp16):
             features, hiddens = encoder(images, refs)
             results = decoder(features, hiddens, refs)
-            losses = criterion(results)
+            losses = criterion(results, refs)
             loss = sum(losses.values())
         # record loss
         loss_meter.update(loss, losses, batch_size)

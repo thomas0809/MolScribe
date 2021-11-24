@@ -91,6 +91,21 @@ def get_score(y_true, y_pred):
     return avg_score, exact_match
 
 
+def _get_num_atoms(smiles):
+    try:
+        return Chem.MolFromSmiles(smiles).GetNumAtoms()
+    except:
+        return 0
+
+
+def get_num_atoms(smiles, num_workers=8):
+    if type(smiles) is str:
+        return _get_num_atoms(smiles)
+    with multiprocessing.Pool(num_workers) as p:
+        num_atoms = p.map(_get_num_atoms, smiles)
+    return num_atoms
+
+
 def normalize_nodes(nodes):
     x, y = nodes[:, 0], nodes[:, 1]
     minx, maxx = min(x), max(x)
