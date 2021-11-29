@@ -94,13 +94,14 @@ class Tokenizer(object):
 
 class NodeTokenizer(Tokenizer):
 
-    def __init__(self, input_size=100, path=None, sep_xy=False):
+    def __init__(self, input_size=100, path=None, sep_xy=False, debug=False):
         super().__init__(path)
         self.maxx = input_size  # height
         self.maxy = input_size  # width
         self.sep_xy = sep_xy
         self.special_tokens = [PAD, SOS, EOS, UNK]
         self.offset = len(self.stoi)
+        self.debug = debug
 
     def __len__(self):
         if self.sep_xy:
@@ -128,6 +129,9 @@ class NodeTokenizer(Tokenizer):
 
     def is_symbol(self, s):
         return len(self.special_tokens) <= s < self.offset or s == UNK_ID
+
+    def is_atom_token(self, token):
+        return token.isalpha() or token.startswith("[")
 
     def x_to_id(self, x):
         return self.offset + round(x * (self.maxx - 1))
@@ -211,3 +215,46 @@ class NodeTokenizer(Tokenizer):
                 symbols.append(symbol)
             i += 3
         return {'coords': coords, 'symbols': symbols}
+
+    def smiles_coords_to_sequence(self, smiles, coords):
+        tokens = atomwise_tokenizer(smiles)
+        labels = [SOS_ID]
+        indices = []
+        atom_idx = -1
+        for token in tokens:
+            if token in self.stoi:
+                labels.append(self.stoi[token])
+            else:
+                if self.debug:
+                    print(f'{token} not in vocab')
+                labels.append(UNK_ID)
+            if self.is_atom_token(token):
+                atom_idx += 1
+                assert atom_idx < len(coords)
+                x, y = coords[atom_idx]
+                assert 0 <= x <= 1
+                assert 0 <= y <= 1
+                labels.append(self.x_to_id(x))
+                labels.append(self.y_to_id(y))
+                indices.append(len(labels) - 1)
+        labels.append(EOS_ID)
+        return labels, indices
+
+    def sequence_to_smiles(self, sequence):
+        smiles = ''
+        coords, symbols, indices = [], [], []
+        for i, label in enumerate(sequence):
+            if label == EOS_ID or label == PAD_ID:
+                break
+            if self.is_x(label) or self.is_y(label) or label == UNK_ID:
+                continue
+            token = self.itos[label]
+            smiles += token
+            if self.is_atom_token(token):
+                if i+3 < len(sequence) and self.is_x(sequence[i+1]) and self.is_y(sequence[i+2]):
+                    x = self.id_to_x(sequence[i+1])
+                    y = self.id_to_y(sequence[i+2])
+                    coords.append([x, y])
+                    symbols.append(token)
+                    indices.append(i+3)
+        return {'smiles': smiles, 'coords': coords, 'symbols': symbols, 'indices': indices}

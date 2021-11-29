@@ -19,6 +19,9 @@ from bms.augment import ExpandSafeRotate, CropWhite, ResizePad
 from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
 from bms.chemistry import get_substitutions, get_num_atoms, RGROUP_SYMBOLS
 
+from SmilesPE.pretokenizer import atomwise_tokenizer
+from typing import Dict, List
+
 cv2.setNumThreads(1)
 
 INDIGO_HYGROGEN_PROB = 0.1
@@ -216,8 +219,9 @@ def generate_indigo_image(smiles, mol_augment=True, shuffle_nodes=False, debug=F
     indigo.setOption('render-background-color', '1,1,1')
     indigo.setOption('render-stereo-style', 'none')
     indigo.setOption('render-superatom-mode', 'collapse')
-    indigo.setOption('render-relative-thickness', random.uniform(1, 2))
-    indigo.setOption('render-bond-line-width', random.uniform(1, 3))
+    thickness = random.uniform(1, 1.5)   # limit the sum of the following two parameters to be smaller than 4
+    indigo.setOption('render-relative-thickness', thickness)
+    indigo.setOption('render-bond-line-width', random.uniform(1, 4 - thickness))
     indigo.setOption('render-label-mode', random.choice(['hetero', 'terminal-hetero']))
     indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
     if debug:
@@ -233,7 +237,10 @@ def generate_indigo_image(smiles, mol_augment=True, shuffle_nodes=False, debug=F
             # add_comment(indigo)
             mol, smiles = add_explicit_hydrogen(indigo, mol, smiles)
             mol, smiles = add_rgroup(indigo, mol, smiles)
-            mol = add_functional_group(indigo, mol, debug)
+            # mol = add_functional_group(indigo, mol, debug)
+            # TODO: this reload is problematic with [R]
+            mol = indigo.loadMolecule(smiles)  # reload, important!
+
         buf = renderer.renderToBuffer(mol)
         img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 1)  # decode buffer to image
         # img = np.repeat(np.expand_dims(img, 2), 3, axis=2)  # expand to RGB
@@ -335,7 +342,7 @@ class TrainDataset(Dataset):
                     label = torch.LongTensor(self.tokenizer['nodes'].nodes_to_sequence(graph)[:max_len])
                     label_length = torch.LongTensor([len(label)])
                     ref['nodes'] = (label, label_length)
-                if 'edges' in self.formats:
+                if 'edges' in self.formats and 'atomtok_coords' not in self.formats:
                     ref['edges'] = torch.tensor(graph['edges'])
                 if 'graph' in self.formats or self.args.patch:
                     graph_ref = {
@@ -346,6 +353,21 @@ class TrainDataset(Dataset):
                     ref['graph'] = graph_ref
                 if 'grid' in self.formats:
                     ref['grid'] = torch.tensor(self.tokenizer['grid'].nodes_to_grid(graph))
+                if 'atomtok_coords' in self.formats:
+                    max_len = FORMAT_INFO['atomtok_coords']['max_len']
+                    label, indices = self.tokenizer['atomtok_coords'].smiles_coords_to_sequence(smiles, graph['coords'])
+                    # edges = torch.ones((len(label), len(label)), dtype=torch.long) * (-100)
+                    # for i in range(graph['num_atoms']):
+                    #     for j in range(graph['num_atoms']):
+                    #         edges[indices[i]][indices[j]] = graph['edges'][i][j]
+                    # edges = edges[:len(label), :len(label)]
+                    label = torch.LongTensor(label[:max_len])
+                    label_length = torch.LongTensor([len(label)])
+                    edges = torch.tensor(graph['edges'])
+                    ref['atomtok_coords'] = (label, label_length)
+                    indices = [i for i in indices if i < max_len]
+                    ref['atom_indices'] = (torch.LongTensor(indices), torch.LongTensor([len(indices)]))
+                    ref['edges'] = edges[:len(indices), :len(indices)]
             else:
                 for format_ in self.formats:
                     label = self.labels[format_][idx]
@@ -387,7 +409,7 @@ def bms_collate(batch):
     imgs = []
     batch = [ex for ex in batch if ex[1] is not None]
     formats = list(batch[0][2].keys())
-    seq_formats = [k for k in formats if k in ['atomtok', 'inchi', 'nodes']]
+    seq_formats = [k for k in formats if k in ['atomtok', 'inchi', 'nodes', 'atomtok_coords', 'atom_indices']]
     refs = {key: [[], []] for key in seq_formats}
     for ex in batch:
         ids.append(ex[0])
@@ -398,6 +420,7 @@ def bms_collate(batch):
             refs[key][1].append(ref[key][1])
     # Sequence
     for key in seq_formats:
+        # this padding should work for atomtok_with_coords too, each of which has shape (length, 4)
         refs[key][0] = pad_sequence(refs[key][0], batch_first=True, padding_value=PAD_ID)
         refs[key][1] = torch.stack(refs[key][1]).reshape(-1, 1)
     # Time

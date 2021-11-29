@@ -22,7 +22,7 @@ from bms.loss import Criterion
 from bms.utils import init_summary_writer, seed_torch, LossMeter, AverageMeter, asMinutes, timeSince, print_rank_0, \
                       FORMAT_INFO
 from bms.chemistry import get_score, get_canon_smiles_score, merge_inchi, convert_smiles_to_inchi, \
-                          evaluate_nodes, convert_graph_to_smiles
+                          evaluate_nodes, convert_graph_to_smiles, postprocess_smiles
 from bms.tokenizer import Tokenizer, NodeTokenizer
 
 import warnings 
@@ -484,7 +484,9 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         if format_ == 'inchi':
             # InChI
             pred_df['InChI'] = [f"InChI=1S/{text}" for text in text_preds]
-        elif format_ in ['atomtok', 'spe']:
+        elif format_ in ['atomtok', 'spe', 'atomtok_coords']:
+            if format_ == 'atomtok_coords':
+                text_preds = [preds['smiles'] for preds in text_preds]
             # SMILES
             pred_df['SMILES'] = text_preds
             print('Converting SMILES to InChI ...')
@@ -492,41 +494,47 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             pred_df['SMILES_InChI'] = inchi_list
             print(f'{split} SMILES to InChI success ratio: {r_success:.4f}')
             scores['smiles_inchi_success'] = r_success
-        if format_ in ['nodes', 'graph', 'grid']:
+        if format_ in ['nodes', 'graph', 'grid', 'atomtok_coords']:
             pred_df['node_coords'] = [pred['coords'] for pred in predictions[format_]]
             pred_df['node_symbols'] = [pred['symbols'] for pred in predictions[format_]]
         if format_ == 'graph':
             predictions['edges'] = [pred['edges'] for pred in predictions['graph']]
 
-    if 'edges' in args.formats or 'graph' in args.formats:
+    if 'edges' in predictions:
         pred_df['edges'] = predictions['edges']
-        smiles_list = convert_graph_to_smiles(pred_df['node_coords'].values, pred_df['node_symbols'].values,
-                                              pred_df['edges'].values)
-        pred_df['SMILES'] = smiles_list
+        if 'atomtok_coords' not in args.formats:
+            smiles_list, r_success = convert_graph_to_smiles(pred_df['node_coords'], pred_df['node_symbols'],
+                                                             pred_df['edges'])
+            print(f'Graph to SMILES success ratio: {r_success:.4f}')
+            pred_df['SMILES'] = smiles_list
+
+    if 'atomtok_coords' in args.formats:
+        smiles_list, r_success = postprocess_smiles(pred_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'],
+                                                    pred_df['edges'])
+        print(f'Postprocess SMILES success ratio: {r_success:.4f}')
+        pred_df['post_SMILES'] = smiles_list
     
     if 'atomtok' in args.formats and 'inchi' in args.formats:
         pred_df['merge_InChI'], _ = merge_inchi(pred_df['SMILES_InChI'].values, pred_df['InChI'].values)
     
     # Compute scores
     if split == 'valid':
-        if 'inchi' in args.formats:
+        if 'InChI' in pred_df.columns:
             scores['inchi'], scores['inchi_em'] = get_score(data_df['InChI'], pred_df['InChI'])
-        if 'atomtok' in args.formats:
+        if 'SMILES' in pred_df.columns:
             scores['smiles'], scores['smiles_em'] = get_score(data_df['SMILES'], pred_df['SMILES'])
-            scores['smiles_inchi'], scores['smiles_inchi_em'] = get_score(data_df['InChI'], pred_df['SMILES_InChI'])
+            # scores['smiles_inchi'], scores['smiles_inchi_em'] = get_score(data_df['InChI'], pred_df['SMILES_InChI'])
             scores['canon_smiles_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'])
             scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'], ignore_chiral=True)
             print('label:', data_df['SMILES'].values[:2])
             print('pred:', pred_df['SMILES'].values[:2])
-        if 'atomtok' in args.formats and 'inchi' in args.formats:
+        if 'merge_InChI' in pred_df.columns:
             scores['merge_inchi'], scores['merge_inchi_em'] = get_score(data_df['InChI'], pred_df['merge_InChI'])
-        if 'nodes' in args.formats or 'graph' in args.formats or 'grid' in args.formats:
+        if 'node_coords' in pred_df.columns:
             scores['nodes'], scores['num_nodes'], scores['symbols'] = \
                 evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])
-        if 'edges' in args.formats or 'graph' in args.formats:
-            scores['canon_smiles_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'])
-            scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'],
-                                                        ignore_chiral=True, ignore_charge=True)
+        if 'post_SMILES' in pred_df.columns:
+            scores['post_smiles_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['post_SMILES'])
 
     file = data_df.attrs['file'].split('/')[-1]
     pred_df.to_csv(os.path.join(save_path, f'prediction_{file}'), index=False)
@@ -589,6 +597,8 @@ def get_chemdraw_data(args):
         elif format_ in ['nodes', 'graph', 'grid']:
             tokenizer[format_] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
             args.num_symbols = tokenizer[format_].len_symbols()
+        elif format_ == "atomtok_coords":
+            tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, 'bms/vocab.json', args.sep_xy)
     if args.patch:
         tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
         args.num_symbols = tokenizer['graph'].len_symbols()
@@ -636,8 +646,8 @@ def main():
             train_df = train_df.sample(n=10000, random_state=42).reset_index(drop=True)
         if args.do_train or args.do_valid:
             valid_df = valid_df.sample(n=1000, random_state=42).reset_index(drop=True)
-        if args.do_test:
-            test_df = test_df.sample(n=1000, random_state=42).reset_index(drop=True)
+        # if args.do_test:
+        #     test_df = test_df.sample(n=1000, random_state=42).reset_index(drop=True)
     
     if args.do_train:
         train_loop(args, train_df, valid_df, tokenizer, args.save_path)

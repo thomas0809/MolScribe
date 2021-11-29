@@ -535,10 +535,15 @@ class EdgePredictor(nn.Module):
             nn.Linear(decoder_dim, 7)
         )
 
-    def forward(self, hidden):
+    def forward(self, hidden, indices=None):
         b, l, h = hidden.size()
-        index = [i for i in range(3, l, 3)]
-        hidden = hidden[:, index]
+        if indices is None:
+            index = [i for i in range(3, l, 3)]
+            hidden = hidden[:, index]
+        else:
+            batch_id = torch.arange(b).unsqueeze(1).expand_as(indices).reshape(-1) #.to(device)
+            indices = indices.view(-1)
+            hidden = hidden[batch_id, indices].view(b, -1, h)
         b, l, h = hidden.size()
         hidden = torch.cat([hidden.unsqueeze(2).expand(b, l, l, h), hidden.unsqueeze(1).expand(b, l, l, h)], dim=3)
         logits = self.mlp(hidden)
@@ -648,8 +653,14 @@ class Decoder(nn.Module):
                 output = self.decoder['grid'](hiddens)
                 results['grid'] = (output, refs['grid'])
             elif format_ == 'edges':
-                dec_out = results['nodes'][2]
-                predictions = self.decoder['edges'](dec_out).permute(0, 3, 1, 2)  # b 7 l l
+                if 'nodes' in results:
+                    dec_out = results['nodes'][2]
+                    predictions = self.decoder['edges'](dec_out).permute(0, 3, 1, 2)  # b 7 l l
+                elif 'atomtok_coords' in results:
+                    dec_out = results['atomtok_coords'][2]
+                    predictions = self.decoder['edges'](dec_out, indices=refs['atom_indices'][0]).permute(0, 3, 1, 2)
+                else:
+                    raise NotImplemented
                 targets = refs['edges']
                 max_len = predictions.size(-1)
                 targets = targets[:, :max_len, :max_len]
@@ -679,16 +690,36 @@ class Decoder(nn.Module):
                 predictions['grid'] = [self.tokenizer['grid'].grid_to_nodes(grid.tolist())
                                        for grid in outputs.argmax(1)]
             elif format_ == 'edges':
-                dec_out = results['nodes'][2]  # batch x n_best x len x dim
-                outputs = [[self.decoder['edges'](h.unsqueeze(0)).argmax(-1).squeeze(0) for h in hs] for hs in dec_out]
+                if 'nodes' in results:
+                    dec_out = results['nodes'][2]  # batch x n_best x len x dim
+                    outputs = [[self.decoder['edges'](h.unsqueeze(0)).argmax(-1).squeeze(0) for h in hs]
+                               for hs in dec_out]
+                    predictions['edges'] = [pred[0].tolist() for pred in outputs]
+                elif 'atomtok_coords' in results:
+                    dec_out = results['atomtok_coords'][2]  # batch x n_best x len x dim
+                    # outputs = [[self.decoder['edges'](h.unsqueeze(0), nodes=False).argmax(-1).squeeze(0) for h in hs]
+                    #            for hs in dec_out]
+                    predictions['edges'] = []
+                    for i in range(len(dec_out)):
+                        hidden = dec_out[i][0].unsqueeze(0)  # 1 * len * dim
+                        indices = torch.LongTensor(predictions['atomtok_coords'][i]['indices']).unsqueeze(0)  # 1 * k
+                        pred = self.decoder['edges'](hidden, indices).argmax(-1).squeeze(0)  # k * k
+                        predictions['edges'].append(pred.tolist())
+                else:
+                    raise NotImplemented
                 results['edges'] = outputs     # batch x n_best x len x len
-                predictions['edges'] = [pred[0].tolist() for pred in outputs]
             elif format_ == 'nodes':
                 results['nodes'] = self.decoder['nodes'].decode(encoder_out, beam_size, n_best)
                 outputs, scores, *_ = results['nodes']
                 beam_preds = [[self.tokenizer['nodes'].sequence_to_nodes(x.tolist()) for x in pred] for pred in outputs]
                 beam_predictions['nodes'] = (beam_preds, scores)
                 predictions['nodes'] = [pred[0] for pred in beam_preds]
+            elif format_ == 'atomtok_coords':
+                results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
+                outputs, scores, *_ = results[format_]
+                beam_preds = [[self.tokenizer[format_].sequence_to_smiles(x.tolist()) for x in pred] for pred in outputs]
+                beam_predictions[format_] = (beam_preds, scores)
+                predictions[format_] = [pred[0] for pred in beam_preds]
             else:
                 results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
                 outputs, scores, *_ = results[format_]
