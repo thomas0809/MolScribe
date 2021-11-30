@@ -19,8 +19,6 @@ from bms.augment import ExpandSafeRotate, CropWhite, ResizePad
 from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
 from bms.chemistry import get_substitutions, get_num_atoms, RGROUP_SYMBOLS
 
-from SmilesPE.pretokenizer import atomwise_tokenizer
-from typing import Dict, List
 
 cv2.setNumThreads(1)
 

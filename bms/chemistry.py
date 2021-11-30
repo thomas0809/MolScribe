@@ -68,9 +68,12 @@ def get_canon_smiles_score(gold_smiles, pred_smiles, ignore_chiral=False, num_wo
         pred_canon_smiles = p.starmap(canonicalize_smiles,
                                       [(smiles, ignore_chiral) for smiles in pred_smiles],
                                       chunksize=128)
+    score = (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
+    # ignore double bond cis/trans
     gold_canon_smiles = [s.replace('/', '').replace('\\', '') for s in gold_canon_smiles]
     pred_canon_smiles = [s.replace('/', '').replace('\\', '') for s in pred_canon_smiles]
-    return (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
+    score_corrected = (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
+    return score, score_corrected
 
 
 def merge_inchi(inchi1, inchi2):
@@ -142,8 +145,8 @@ def convert_smiles_to_nodes(smiles):
 
 def _evaluate_nodes(smiles, coords, symbols):
     gold_coords, gold_symbols = convert_smiles_to_nodes(smiles)
-    n = len(gold_coords)
-    m = len(coords)
+    n = len(gold_symbols)
+    m = len(symbols)
     num_node_correct = (n == m)
     # coords = np.array(coords)
     # dist = np.zeros((n, m))
@@ -196,7 +199,7 @@ def _convert_graph_to_smiles_simple(coords, symbols, edges):
     return pred_smiles
 
 
-def _verify_chirality(mol, coords, symbols, edges):
+def _verify_chirality(mol, coords, symbols, edges, debug=False):
     try:
         n = mol.GetNumAtoms()
         # Make a temp mol to find chiral centers
@@ -209,13 +212,13 @@ def _verify_chirality(mol, coords, symbols, edges):
 
         # Second loop to reset any wedge/dash bond to be starting from the chiral center)
         for i in range(n):
-            for j in range(i + 1, n):
-                if edges[i][j] == 5 and i not in chiral_center_ids:
+            for j in range(n):
+                if edges[i][j] == 5 and i not in chiral_center_ids and j in chiral_center_ids:
                     # assert edges[j][i] == 6
                     mol.RemoveBond(i, j)
                     mol.AddBond(j, i, Chem.BondType.SINGLE)
                     mol.GetBondBetweenAtoms(j, i).SetBondDir(Chem.BondDir.BEGINWEDGE)
-                elif edges[i][j] == 6 and i not in chiral_center_ids:
+                elif edges[i][j] == 6 and i not in chiral_center_ids and j in chiral_center_ids:
                     # assert edges[j][i] == 5
                     mol.RemoveBond(i, j)
                     mol.AddBond(j, i, Chem.BondType.SINGLE)
@@ -236,7 +239,8 @@ def _verify_chirality(mol, coords, symbols, edges):
         Chem.AssignStereochemistry(mol)
 
     except Exception as e:
-        # print(f"Failed sanitization, symbols: {symbols}")
+        if debug:
+            print(e)
         pass
     return mol
 
@@ -293,15 +297,20 @@ def convert_graph_to_smiles(node_coords, node_symbols, edges, num_workers=16, si
     return smiles_list, r_success
 
 
-def _postprocess_smiles(smiles, coords, symbols, edges):
+def _postprocess_smiles(smiles, coords, symbols, edges, debug=False):
     if type(smiles) is not str or smiles == '':
         return ''
     try:
+        # smiles = smiles.replace('@', '')
         mol = Chem.RWMol(Chem.MolFromSmiles(smiles))
-        mol = _verify_chirality(mol, coords, symbols, edges)
+        mol = _verify_chirality(mol, coords, symbols, edges, debug)
         pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-    except:
+    except Exception as e:
+        if debug:
+            print(e)
         pred_smiles = smiles
+    if debug:
+        return pred_smiles, mol
     return pred_smiles
 
 

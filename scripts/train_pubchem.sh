@@ -21,14 +21,13 @@ torchrun \
     --test_file pubchem/test_small.csv,pubchem/test_large.csv \
     --formats atomtok \
     --input_size 384 \
-    --encoder swin_base \
+    --encoder swin_base_patch4_window12_384 \
     --decoder transformer \
     --encoder_lr 1e-3 \
     --decoder_lr 1e-3 \
     --dynamic_indigo \
     --augment \
-    --reweight \
-    --save_path output/pubchem/swin_base_200k_reweight \
+    --save_path output/pubchem/swin_base_200k \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -36,7 +35,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 100 \
-    --do_test \
+    --do_valid --do_test \
     --fp16
 
 

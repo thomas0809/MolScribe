@@ -28,7 +28,7 @@ torchrun \
     --dynamic_indigo \
     --augment \
     --coord_bins 64 --sep_xy \
-    --save_path output/pubchem/swin_base_200k_jointedges1 \
+    --save_path output/pubchem/swin_base_200k_jointedges \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -36,7 +36,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 100 \
-    --do_train --do_valid --do_valid \
+    --do_valid --do_test \
     --fp16
 
 

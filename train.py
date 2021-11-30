@@ -524,17 +524,20 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         if 'SMILES' in pred_df.columns:
             scores['smiles'], scores['smiles_em'] = get_score(data_df['SMILES'], pred_df['SMILES'])
             # scores['smiles_inchi'], scores['smiles_inchi_em'] = get_score(data_df['InChI'], pred_df['SMILES_InChI'])
-            scores['canon_smiles_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'])
-            scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'], ignore_chiral=True)
+            scores['canon_smiles_em'], scores['canon_smiles'] = \
+                get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'])
+            scores['graph_em'], _ = \
+                get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'], ignore_chiral=True)
             print('label:', data_df['SMILES'].values[:2])
             print('pred:', pred_df['SMILES'].values[:2])
         if 'merge_InChI' in pred_df.columns:
             scores['merge_inchi'], scores['merge_inchi_em'] = get_score(data_df['InChI'], pred_df['merge_InChI'])
         if 'node_coords' in pred_df.columns:
-            scores['nodes'], scores['num_nodes'], scores['symbols'] = \
+            _, scores['num_nodes'], scores['symbols'] = \
                 evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])
         if 'post_SMILES' in pred_df.columns:
-            scores['post_smiles_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['post_SMILES'])
+            scores['post_smiles_em'], scores['post_smiles'] = \
+                get_canon_smiles_score(data_df['SMILES'], pred_df['post_SMILES'])
 
     file = data_df.attrs['file'].split('/')[-1]
     pred_df.to_csv(os.path.join(save_path, f'prediction_{file}'), index=False)
