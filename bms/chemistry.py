@@ -209,20 +209,8 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         chiral_centers = Chem.FindMolChiralCenters(
             mol_tmp, includeUnassigned=True, includeCIP=False, useLegacyImplementation=False)
         chiral_center_ids = [idx for idx, _ in chiral_centers]  # List[Tuple[int, any]] -> List[int]
-
-        # Second loop to reset any wedge/dash bond to be starting from the chiral center)
-        for i in range(n):
-            for j in range(n):
-                if edges[i][j] == 5 and i not in chiral_center_ids and j in chiral_center_ids:
-                    # assert edges[j][i] == 6
-                    mol.RemoveBond(i, j)
-                    mol.AddBond(j, i, Chem.BondType.SINGLE)
-                    mol.GetBondBetweenAtoms(j, i).SetBondDir(Chem.BondDir.BEGINWEDGE)
-                elif edges[i][j] == 6 and i not in chiral_center_ids and j in chiral_center_ids:
-                    # assert edges[j][i] == 5
-                    mol.RemoveBond(i, j)
-                    mol.AddBond(j, i, Chem.BondType.SINGLE)
-                    mol.GetBondBetweenAtoms(j, i).SetBondDir(Chem.BondDir.BEGINDASH)
+        # print(chiral_center_ids)
+        # [print(e) for e in edges]
 
         # Create conformer from 2D coordinate
         conf = Chem.Conformer(n)
@@ -231,12 +219,34 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
             conf.SetAtomPosition(i, (1 - x, y, 0))
         mol.AddConformer(conf)
 
-        mol = mol.GetMol()
         # Magic, infering chirality from coordinates and BondDir. DO NOT CHANGE.
         Chem.SanitizeMol(mol)
         Chem.AssignChiralTypesFromBondDirs(mol)
-        Chem.DetectBondStereochemistry(mol)
-        Chem.AssignStereochemistry(mol)
+        Chem.AssignStereochemistry(mol, force=True)
+
+        # Second loop to reset any wedge/dash bond to be starting from the chiral center)
+        for i in chiral_center_ids:
+            for j in range(n):
+                if edges[i][j] == 5:
+                    # print(f"5, i: {i}, j: {j}")
+                    # assert edges[j][i] == 6
+                    mol.RemoveBond(i, j)
+                    mol.AddBond(i, j, Chem.BondType.SINGLE)
+                    mol.GetBondBetweenAtoms(i, j).SetBondDir(Chem.BondDir.BEGINDASH)
+                elif edges[i][j] == 6:
+                    # print(f"6, i: {i}, j: {j}")
+                    # assert edges[j][i] == 5
+                    mol.RemoveBond(i, j)
+                    mol.AddBond(i, j, Chem.BondType.SINGLE)
+                    mol.GetBondBetweenAtoms(i, j).SetBondDir(Chem.BondDir.BEGINWEDGE)
+            Chem.AssignChiralTypesFromBondDirs(mol)
+            Chem.AssignStereochemistry(mol, force=True)
+
+        # reset chiral tags for nitrogen
+        for atom in mol.GetAtoms():
+            if atom.GetSymbol() == "N":
+                atom.SetChiralTag(Chem.rdchem.ChiralType.CHI_UNSPECIFIED)
+        mol = mol.GetMol()
 
     except Exception as e:
         if debug:
