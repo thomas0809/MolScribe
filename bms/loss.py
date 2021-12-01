@@ -286,7 +286,7 @@ class Criterion(nn.Module):
         criterion = {}
         for format_ in args.formats:
             if format_ == 'edges':
-                weight = torch.ones(7)
+                weight = torch.ones(7) * 10
                 weight[0] = 1
                 criterion['edges'] = nn.CrossEntropyLoss(weight, ignore_index=-100)
             elif format_ == 'graph':

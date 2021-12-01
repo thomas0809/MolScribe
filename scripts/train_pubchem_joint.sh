@@ -28,7 +28,7 @@ torchrun \
     --dynamic_indigo \
     --augment \
     --coord_bins 64 --sep_xy \
-    --save_path output/pubchem/swin_base_200k_jointedges \
+    --save_path output/pubchem/swin_base_200k_jointedges1 \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \

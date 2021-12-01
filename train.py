@@ -331,6 +331,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     # ====================================================
 
     train_dataset = TrainDataset(args, train_df, tokenizer, split='train')
+    print_rank_0(train_dataset.transform)
     if args.local_rank != -1:
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
     else:
@@ -622,8 +623,8 @@ def main():
         torch.backends.cudnn.benchmark = True
 
     args.formats = args.formats.split(',')
-    args.nodes = ('nodes' in args.formats) or ('graph' in args.formats) or ('grid' in args.formats)
-    args.edges = ('edges' in args.formats) or ('graph' in args.formats)
+    args.nodes = any([f in args.formats for f in ['nodes', 'graph', 'grid', 'atomtok_coords']])
+    args.edges = any([f in args.formats for f in ['edges', 'graph', 'atomtok_coords']])
     print_rank_0('Output formats: ' + ' '.join(args.formats))
 
     if args.dataset == 'bms':

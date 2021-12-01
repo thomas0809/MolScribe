@@ -32,16 +32,13 @@ def get_transforms(args, labelled=True):
     trans_list = []
     if labelled and args.augment:
         if not args.nodes and not args.patch:
-            trans_list.append(
-                ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, interpolation=cv2.INTER_NEAREST,
-                                 value=(255, 255, 255))
-            )
+            trans_list.append(ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, value=(255, 255, 255)))
         trans_list += [
             A.Downscale(scale_min=0.25, scale_max=0.5),
             A.Blur(),
             # A.GaussNoise()  # TODO GaussNoise applies clip [0,1]
         ]
-    # trans_list.append(CropWhite(pad=3))
+    trans_list.append(CropWhite(pad=5))
     if args.multiscale:
         if labelled:
             trans_list.append(A.LongestMaxSize([224, 256, 288, 320, 352, 384, 416, 448, 480]))
@@ -282,7 +279,7 @@ class TrainDataset(Dataset):
         else:
             self.load_graph = False
         self.transform = get_transforms(args, self.labelled)
-        self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
+        # self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
         self.dynamic_indigo = (args.dynamic_indigo and split == 'train')
         
     def __len__(self):

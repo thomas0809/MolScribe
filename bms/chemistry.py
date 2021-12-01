@@ -234,8 +234,8 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         mol = mol.GetMol()
         # Magic, infering chirality from coordinates and BondDir. DO NOT CHANGE.
         Chem.SanitizeMol(mol)
-        Chem.DetectBondStereochemistry(mol)
         Chem.AssignChiralTypesFromBondDirs(mol)
+        Chem.DetectBondStereochemistry(mol)
         Chem.AssignStereochemistry(mol)
 
     except Exception as e:
@@ -300,8 +300,9 @@ def convert_graph_to_smiles(node_coords, node_symbols, edges, num_workers=16, si
 def _postprocess_smiles(smiles, coords, symbols, edges, debug=False):
     if type(smiles) is not str or smiles == '':
         return ''
+    mol = None
     try:
-        # smiles = smiles.replace('@', '')
+        smiles = smiles.replace('@', '').replace('/', '').replace('\\', '')
         mol = Chem.RWMol(Chem.MolFromSmiles(smiles))
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
         pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)

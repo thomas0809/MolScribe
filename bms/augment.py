@@ -72,7 +72,7 @@ class ExpandSafeRotate(A.SafeRotate):
     
 class CropWhite(A.DualTransform):
     
-    def __init__(self, value=255, pad=0):
+    def __init__(self, value=(255, 255, 255), pad=0):
         super(CropWhite, self).__init__(always_apply=True)
         self.value = value
         self.pad = pad
@@ -87,22 +87,28 @@ class CropWhite(A.DualTransform):
         top = 0
         while row_sum[top] == 0 and top+1 < height:
             top += 1
-        top = max(0, top - self.pad)
+        # top = max(0, top - self.pad)
         bottom = height
         while row_sum[bottom-1] == 0 and bottom-1 > top:
             bottom -= 1
-        bottom = min(height, bottom + self.pad)
+        # bottom = min(height, bottom + self.pad)
         col_sum = x.sum(axis=0)
         left = 0
         while col_sum[left] == 0 and left+1 < width:
             left += 1
-        left = max(0, left - self.pad)
+        # left = max(0, left - self.pad)
         right = width
         while col_sum[right-1] == 0 and right-1 > left:
             right -= 1
-        right = min(width, right + self.pad)
+        # right = min(width, right + self.pad)
         img = img[top:bottom, left:right]
+        if self.pad > 0:
+            img = A.augmentations.pad_with_params(img, self.pad, self.pad, self.pad, self.pad,
+                                                  border_mode=cv2.BORDER_CONSTANT, value=self.value)
         return img
+
+    def get_transform_init_args_names(self):
+        return ('value', 'pad')
 
     
 class ResizePad(A.DualTransform):
