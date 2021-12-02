@@ -42,11 +42,8 @@ class LabelSmoothingLoss(nn.Module):
 
 class SequenceLoss(nn.Module):
 
-    def __init__(self, label_smoothing, vocab_size, ignore_index=-100):
+    def __init__(self, label_smoothing, ignore_index=-100):
         super(SequenceLoss, self).__init__()
-        # if label_smoothing > 0:
-        #     self.criterion = LabelSmoothingLoss(label_smoothing, vocab_size, ignore_index)
-        # else:
         self.ignore_index = ignore_index
         self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index,
                                              label_smoothing=label_smoothing,
@@ -65,6 +62,31 @@ class SequenceLoss(nn.Module):
         loss = self.criterion(output, target)
         loss = (loss.view(batch_size, max_len) * mask).sum(1) / mask.sum(1)
         return loss
+
+
+class GraphLoss(nn.Module):
+
+    def __init__(self):
+        super(GraphLoss, self).__init__()
+        weight = torch.ones(7) * 10
+        weight[0] = 1
+        self.criterion = nn.CrossEntropyLoss(weight, ignore_index=-100)
+
+    def forward(self, outputs, targets):
+        results = {}
+        if 'coords' in outputs:
+            pred = outputs['coords']
+            max_len = pred.size(1)
+            target = targets['coords'][:, :max_len]
+            mask = target.ge(0)
+            loss = F.l1_loss(pred, target, reduction='none')
+            results['coords'] = (loss * mask).sum() / mask.sum()
+        if 'edges' in outputs:
+            pred = outputs['edges']
+            max_len = pred.size(-1)
+            target = targets['edges'][:, :max_len, :max_len]
+            results['edges'] = self.criterion(pred, target)
+        return results
 
 
 class HungarianMatcher(nn.Module):
@@ -286,9 +308,7 @@ class Criterion(nn.Module):
         criterion = {}
         for format_ in args.formats:
             if format_ == 'edges':
-                weight = torch.ones(7) * 10
-                weight[0] = 1
-                criterion['edges'] = nn.CrossEntropyLoss(weight, ignore_index=-100)
+                criterion['edges'] = GraphLoss()
             elif format_ == 'graph':
                 criterion['graph'] = SetLoss(tokenizer['graph'].len_symbols())
             elif format_ == 'grid':
@@ -296,7 +316,7 @@ class Criterion(nn.Module):
                 weight[PAD_ID] = 1
                 criterion['grid'] = nn.CrossEntropyLoss(weight)
             else:
-                criterion[format_] = SequenceLoss(args.label_smoothing, len(tokenizer[format_]), ignore_index=PAD_ID)
+                criterion[format_] = SequenceLoss(args.label_smoothing, ignore_index=PAD_ID)
         self.criterion = nn.ModuleDict(criterion)
 
     def forward(self, results, refs):

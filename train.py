@@ -80,6 +80,7 @@ def get_args():
     parser.add_argument('--patch', action='store_true')
     parser.add_argument('--patch_size', type=int, default=5)
     parser.add_argument('--load_graph_path', type=str, default=None)
+    parser.add_argument('--continuous_coords', action='store_true')
     # Training
     parser.add_argument('--epochs', type=int, default=8)
     parser.add_argument('--batch_size', type=int, default=256)
@@ -252,9 +253,6 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
             loss_meter.reset()
         if args.train_steps_per_epoch != -1 and (step+1)//args.gradient_accumulation_steps == args.train_steps_per_epoch:
             break
-
-    # with open(f'time_ep{epoch}_{args.local_rank}', 'w') as f:
-    #     json.dump(image_time, f)
 
     return loss_meter.epoch.avg, global_step
 
@@ -647,7 +645,7 @@ def main():
         args.save_path = 'output/debug'
         args.print_freq = 50
         if args.do_train:
-            train_df = train_df.sample(n=10000, random_state=42).reset_index(drop=True)
+            train_df = train_df.sample(n=2000, random_state=42).reset_index(drop=True)
         if args.do_train or args.do_valid:
             valid_df = valid_df.sample(n=1000, random_state=42).reset_index(drop=True)
         # if args.do_test:

@@ -350,12 +350,12 @@ class TrainDataset(Dataset):
                     ref['grid'] = torch.tensor(self.tokenizer['grid'].nodes_to_grid(graph))
                 if 'atomtok_coords' in self.formats:
                     max_len = FORMAT_INFO['atomtok_coords']['max_len']
-                    label, indices = self.tokenizer['atomtok_coords'].smiles_coords_to_sequence(smiles, graph['coords'])
-                    # edges = torch.ones((len(label), len(label)), dtype=torch.long) * (-100)
-                    # for i in range(graph['num_atoms']):
-                    #     for j in range(graph['num_atoms']):
-                    #         edges[indices[i]][indices[j]] = graph['edges'][i][j]
-                    # edges = edges[:len(label), :len(label)]
+                    if self.args.continuous_coords:
+                        ref['coords'] = torch.tensor(graph['coords'])
+                        label, indices = self.tokenizer['atomtok_coords'].smiles_coords_to_sequence(smiles)
+                    else:
+                        label, indices = \
+                            self.tokenizer['atomtok_coords'].smiles_coords_to_sequence(smiles, graph['coords'])
                     label = torch.LongTensor(label[:max_len])
                     label_length = torch.LongTensor([len(label)])
                     edges = torch.tensor(graph['edges'])
@@ -429,6 +429,9 @@ def bms_collate(batch):
     # Grid
     if 'grid' in formats:
         refs['grid'] = torch.stack([ex[2]['grid'] for ex in batch])
+    # Coords
+    if 'coords' in formats:
+        refs['coords'] = pad_sequence([ex[2]['coords'] for ex in batch], batch_first=True, padding_value=-1.)
     # Edges
     if 'edges' in formats:
         edges_list = [ex[2]['edges'] for ex in batch]

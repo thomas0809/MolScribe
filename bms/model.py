@@ -525,29 +525,40 @@ class TransformerDecoderNAR(TransformerDecoderBase):
         return outputs
 
 
-class EdgePredictor(nn.Module):
+class GraphPredictor(nn.Module):
 
-    def __init__(self, decoder_dim):
-        super(EdgePredictor, self).__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(decoder_dim * 2, decoder_dim), nn.GELU(),
-            # nn.Linear(decoder_dim, decoder_dim), nn.GELU(),
-            nn.Linear(decoder_dim, 7)
-        )
+    def __init__(self, decoder_dim, edges=True, coords=False):
+        super(GraphPredictor, self).__init__()
+        self.edges = edges
+        self.coords = coords
+        if edges:
+            self.edges_mlp = nn.Sequential(
+                nn.Linear(decoder_dim * 2, decoder_dim), nn.GELU(),
+                nn.Linear(decoder_dim, 7)
+            )
+        if coords:
+            self.coords_mlp = nn.Sequential(
+                nn.Linear(decoder_dim, decoder_dim), nn.GELU(),
+                nn.Linear(decoder_dim, 2)
+            )
 
     def forward(self, hidden, indices=None):
-        b, l, h = hidden.size()
+        b, l, dim = hidden.size()
         if indices is None:
             index = [i for i in range(3, l, 3)]
             hidden = hidden[:, index]
         else:
             batch_id = torch.arange(b).unsqueeze(1).expand_as(indices).reshape(-1) #.to(device)
             indices = indices.view(-1)
-            hidden = hidden[batch_id, indices].view(b, -1, h)
-        b, l, h = hidden.size()
-        hidden = torch.cat([hidden.unsqueeze(2).expand(b, l, l, h), hidden.unsqueeze(1).expand(b, l, l, h)], dim=3)
-        logits = self.mlp(hidden)
-        return logits
+            hidden = hidden[batch_id, indices].view(b, -1, dim)
+        b, l, dim = hidden.size()
+        results = {}
+        if self.edges:
+            hh = torch.cat([hidden.unsqueeze(2).expand(b, l, l, dim), hidden.unsqueeze(1).expand(b, l, l, dim)], dim=3)
+            results['edges'] = self.edges_mlp(hh).permute(0, 3, 1, 2)
+        if self.coords:
+            results['coords'] = self.coords_mlp(hidden)
+        return results
 
 
 def conv3x3(in_planes, out_planes, stride=1, has_bias=False):
@@ -629,7 +640,7 @@ class Decoder(nn.Module):
                 hidden_dims = [dim // 8, dim // 4, dim // 2, dim]
                 decoder[format_] = FeaturePyramidNetwork(hidden_dims, tokenizer[format_].len_symbols())
             elif format_ == 'edges':
-                decoder['edges'] = EdgePredictor(args.dec_hidden_size)
+                decoder['edges'] = GraphPredictor(args.dec_hidden_size, coords=args.continuous_coords)
             else:
                 if args.decoder == 'lstm':
                     decoder[format_] = LstmDecoder(
@@ -655,15 +666,15 @@ class Decoder(nn.Module):
             elif format_ == 'edges':
                 if 'nodes' in results:
                     dec_out = results['nodes'][2]
-                    predictions = self.decoder['edges'](dec_out).permute(0, 3, 1, 2)  # b 7 l l
+                    predictions = self.decoder['edges'](dec_out)  # b 7 l l
                 elif 'atomtok_coords' in results:
                     dec_out = results['atomtok_coords'][2]
-                    predictions = self.decoder['edges'](dec_out, indices=refs['atom_indices'][0]).permute(0, 3, 1, 2)
+                    predictions = self.decoder['edges'](dec_out, indices=refs['atom_indices'][0])
                 else:
                     raise NotImplemented
-                targets = refs['edges']
-                max_len = predictions.size(-1)
-                targets = targets[:, :max_len, :max_len]
+                targets = {'edges': refs['edges']}
+                if 'coords' in predictions:
+                    targets['coords'] = refs['coords']
                 results['edges'] = (predictions, targets)
             else:
                 labels, label_lengths = refs[format_]
@@ -692,19 +703,19 @@ class Decoder(nn.Module):
             elif format_ == 'edges':
                 if 'nodes' in results:
                     dec_out = results['nodes'][2]  # batch x n_best x len x dim
-                    outputs = [[self.decoder['edges'](h.unsqueeze(0)).argmax(-1).squeeze(0) for h in hs]
+                    outputs = [[self.decoder['edges'](h.unsqueeze(0))['edges'].argmax(-1).squeeze(0) for h in hs]
                                for hs in dec_out]
                     predictions['edges'] = [pred[0].tolist() for pred in outputs]
                 elif 'atomtok_coords' in results:
                     dec_out = results['atomtok_coords'][2]  # batch x n_best x len x dim
-                    # outputs = [[self.decoder['edges'](h.unsqueeze(0), nodes=False).argmax(-1).squeeze(0) for h in hs]
-                    #            for hs in dec_out]
                     predictions['edges'] = []
                     for i in range(len(dec_out)):
                         hidden = dec_out[i][0].unsqueeze(0)  # 1 * len * dim
                         indices = torch.LongTensor(predictions['atomtok_coords'][i]['indices']).unsqueeze(0)  # 1 * k
-                        pred = self.decoder['edges'](hidden, indices).argmax(-1).squeeze(0)  # k * k
-                        predictions['edges'].append(pred.tolist())
+                        pred = self.decoder['edges'](hidden, indices)  # k * k
+                        predictions['edges'].append(pred['edges'].argmax(-1).squeeze(0).tolist())
+                        if 'coords' in pred:
+                            predictions['atomtok_coords'][i]['coords'] = pred['coords'].squeeze(0).tolist()
                 else:
                     raise NotImplemented
                 results['edges'] = outputs     # batch x n_best x len x len
@@ -717,7 +728,9 @@ class Decoder(nn.Module):
             elif format_ == 'atomtok_coords':
                 results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
                 outputs, scores, *_ = results[format_]
-                beam_preds = [[self.tokenizer[format_].sequence_to_smiles(x.tolist()) for x in pred] for pred in outputs]
+                has_coords = (not self.args.continuous_coords)
+                beam_preds = [[self.tokenizer[format_].sequence_to_smiles(x.tolist(), has_coords) for x in pred]
+                              for pred in outputs]
                 beam_predictions[format_] = (beam_preds, scores)
                 predictions[format_] = [pred[0] for pred in beam_preds]
             else:

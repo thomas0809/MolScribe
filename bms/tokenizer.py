@@ -216,7 +216,7 @@ class NodeTokenizer(Tokenizer):
             i += 3
         return {'coords': coords, 'symbols': symbols}
 
-    def smiles_coords_to_sequence(self, smiles, coords):
+    def smiles_coords_to_sequence(self, smiles, coords=None):
         tokens = atomwise_tokenizer(smiles)
         labels = [SOS_ID]
         indices = []
@@ -230,17 +230,18 @@ class NodeTokenizer(Tokenizer):
                 labels.append(UNK_ID)
             if self.is_atom_token(token):
                 atom_idx += 1
-                assert atom_idx < len(coords)
-                x, y = coords[atom_idx]
-                assert 0 <= x <= 1
-                assert 0 <= y <= 1
-                labels.append(self.x_to_id(x))
-                labels.append(self.y_to_id(y))
+                if coords is not None:
+                    assert atom_idx < len(coords)
+                    x, y = coords[atom_idx]
+                    assert 0 <= x <= 1
+                    assert 0 <= y <= 1
+                    labels.append(self.x_to_id(x))
+                    labels.append(self.y_to_id(y))
                 indices.append(len(labels) - 1)
         labels.append(EOS_ID)
         return labels, indices
 
-    def sequence_to_smiles(self, sequence):
+    def sequence_to_smiles(self, sequence, has_coords=True):
         smiles = ''
         coords, symbols, indices = [], [], []
         for i, label in enumerate(sequence):
@@ -251,10 +252,18 @@ class NodeTokenizer(Tokenizer):
             token = self.itos[label]
             smiles += token
             if self.is_atom_token(token):
-                if i+3 < len(sequence) and self.is_x(sequence[i+1]) and self.is_y(sequence[i+2]):
-                    x = self.id_to_x(sequence[i+1])
-                    y = self.id_to_y(sequence[i+2])
-                    coords.append([x, y])
-                    symbols.append(token)
-                    indices.append(i+3)
-        return {'smiles': smiles, 'coords': coords, 'symbols': symbols, 'indices': indices}
+                if has_coords:
+                    if i+3 < len(sequence) and self.is_x(sequence[i+1]) and self.is_y(sequence[i+2]):
+                        x = self.id_to_x(sequence[i+1])
+                        y = self.id_to_y(sequence[i+2])
+                        coords.append([x, y])
+                        symbols.append(token)
+                        indices.append(i+3)
+                else:
+                    if i+1 < len(sequence):
+                        symbols.append(token)
+                        indices.append(i+1)
+        results = {'smiles': smiles, 'symbols': symbols, 'indices': indices}
+        if has_coords:
+            results['coords'] = coords
+        return results

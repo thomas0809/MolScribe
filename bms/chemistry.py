@@ -46,7 +46,7 @@ def convert_smiles_to_inchi(smiles_list, num_workers=16):
 
 def canonicalize_smiles(smiles, ignore_chiral=False):
     if type(smiles) is not str or smiles == '':
-        return  ''
+        return ''
     rlist = RGROUP_SYMBOLS
     rdict = {}
     for i, symbol in enumerate(rlist):
@@ -72,6 +72,13 @@ def get_canon_smiles_score(gold_smiles, pred_smiles, ignore_chiral=False, num_wo
     # ignore double bond cis/trans
     gold_canon_smiles = [s.replace('/', '').replace('\\', '') for s in gold_canon_smiles]
     pred_canon_smiles = [s.replace('/', '').replace('\\', '') for s in pred_canon_smiles]
+    # with multiprocessing.Pool(num_workers) as p:
+    #     gold_canon_smiles = p.starmap(canonicalize_smiles,
+    #                                   [(smiles, ignore_chiral) for smiles in gold_canon_smiles],
+    #                                   chunksize=128)
+    #     pred_canon_smiles = p.starmap(canonicalize_smiles,
+    #                                   [(smiles, ignore_chiral) for smiles in pred_canon_smiles],
+    #                                   chunksize=128)
     score_corrected = (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
     return score, score_corrected
 
@@ -312,8 +319,8 @@ def _postprocess_smiles(smiles, coords, symbols, edges, debug=False):
         return ''
     mol = None
     try:
-        smiles = smiles.replace('@', '').replace('/', '').replace('\\', '')
-        mol = Chem.RWMol(Chem.MolFromSmiles(smiles))
+        pred_smiles = smiles.replace('@', '').replace('/', '').replace('\\', '')
+        mol = Chem.RWMol(Chem.MolFromSmiles(pred_smiles))
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
         pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
     except Exception as e:
