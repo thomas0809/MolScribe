@@ -19,8 +19,8 @@ from transformers import get_scheduler
 from bms.dataset import TrainDataset, bms_collate
 from bms.model import Encoder, Decoder
 from bms.loss import Criterion
-from bms.utils import init_summary_writer, seed_torch, LossMeter, AverageMeter, asMinutes, timeSince, print_rank_0, \
-                      FORMAT_INFO
+from bms.utils import seed_torch, save_args, init_summary_writer, LossMeter, AverageMeter, asMinutes, timeSince, \
+                      print_rank_0, FORMAT_INFO
 from bms.chemistry import get_score, get_canon_smiles_score, merge_inchi, convert_smiles_to_inchi, \
                           evaluate_nodes, convert_graph_to_smiles, postprocess_smiles
 from bms.tokenizer import Tokenizer, NodeTokenizer
@@ -67,6 +67,7 @@ def get_args():
     parser.add_argument('--valid_file', type=str, default=None)
     parser.add_argument('--test_file', type=str, default=None)
     parser.add_argument('--dynamic_indigo', action='store_true')
+    parser.add_argument('--default_option', action='store_true')
     parser.add_argument('--formats', type=str, default=None)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--input_size', type=int, default=224)
@@ -318,6 +319,7 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     
     if args.local_rank == 0 and not args.debug:
         os.makedirs(save_path, exist_ok=True)
+        save_args(args)
         SUMMARY = init_summary_writer(save_path)
         
     print_rank_0("========== training ==========")
@@ -450,7 +452,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     else:
         sampler = SequentialSampler(dataset)
     dataloader = DataLoader(dataset, 
-                            batch_size=args.batch_size * 2, 
+                            batch_size=args.batch_size * 4,
                             sampler=sampler, 
                             num_workers=args.num_workers,
                             pin_memory=True, 
@@ -523,10 +525,9 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         if 'SMILES' in pred_df.columns:
             scores['smiles'], scores['smiles_em'] = get_score(data_df['SMILES'], pred_df['SMILES'])
             # scores['smiles_inchi'], scores['smiles_inchi_em'] = get_score(data_df['InChI'], pred_df['SMILES_InChI'])
-            scores['canon_smiles_em'], scores['canon_smiles'] = \
+            scores['canon_smiles_em'], scores['canon_smiles'], scores['canon_smiles_chiral'] = \
                 get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'])
-            scores['graph_em'], _ = \
-                get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'], ignore_chiral=True)
+            scores['graph_em'] = get_canon_smiles_score(data_df['SMILES'], pred_df['SMILES'], ignore_chiral=True)
             print('label:', data_df['SMILES'].values[:2])
             print('pred:', pred_df['SMILES'].values[:2])
         if 'merge_InChI' in pred_df.columns:
@@ -535,7 +536,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             _, scores['num_nodes'], scores['symbols'] = \
                 evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])
         if 'post_SMILES' in pred_df.columns:
-            scores['post_smiles_em'], scores['post_smiles'] = \
+            scores['post_smiles_em'], scores['post_smiles'], scores['post_chiral'] = \
                 get_canon_smiles_score(data_df['SMILES'], pred_df['post_SMILES'])
 
     file = data_df.attrs['file'].split('/')[-1]
@@ -611,7 +612,7 @@ def main():
 
     args = get_args()
     seed_torch(seed=args.seed)
-    
+
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     args.local_rank = int(os.environ['LOCAL_RANK'])

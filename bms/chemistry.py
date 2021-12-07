@@ -69,18 +69,22 @@ def get_canon_smiles_score(gold_smiles, pred_smiles, ignore_chiral=False, num_wo
                                       [(smiles, ignore_chiral) for smiles in pred_smiles],
                                       chunksize=128)
     score = (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
+    if ignore_chiral:
+        return score
     # ignore double bond cis/trans
     gold_canon_smiles = [s.replace('/', '').replace('\\', '') for s in gold_canon_smiles]
     pred_canon_smiles = [s.replace('/', '').replace('\\', '') for s in pred_canon_smiles]
-    # with multiprocessing.Pool(num_workers) as p:
-    #     gold_canon_smiles = p.starmap(canonicalize_smiles,
-    #                                   [(smiles, ignore_chiral) for smiles in gold_canon_smiles],
-    #                                   chunksize=128)
-    #     pred_canon_smiles = p.starmap(canonicalize_smiles,
-    #                                   [(smiles, ignore_chiral) for smiles in pred_canon_smiles],
-    #                                   chunksize=128)
+    with multiprocessing.Pool(num_workers) as p:
+        gold_canon_smiles = p.starmap(canonicalize_smiles,
+                                      [(smiles, ignore_chiral) for smiles in gold_canon_smiles],
+                                      chunksize=128)
+        pred_canon_smiles = p.starmap(canonicalize_smiles,
+                                      [(smiles, ignore_chiral) for smiles in pred_canon_smiles],
+                                      chunksize=128)
     score_corrected = (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
-    return score, score_corrected
+    chiral = np.array([[g, p] for g, p in zip(gold_canon_smiles, pred_canon_smiles) if '@' in g])
+    score_chiral = (chiral[:, 0] == chiral[:, 1]).mean() if len(chiral) > 0 else -1
+    return score, score_corrected, score_chiral
 
 
 def merge_inchi(inchi1, inchi2):

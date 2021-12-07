@@ -1,5 +1,6 @@
 import os
-import shutil
+import sys
+sys.path.append('./')
 import cv2
 import numpy as np
 import pandas as pd
@@ -54,14 +55,30 @@ def generate_image(obj):
 
 # Generate PubChem molecules
 
+# for split in ['valid', 'test']:
+#     print(split)
+#     df = pd.read_csv(f'data/molbank/pubchem/{split}_raw.csv')
+#     print('pubchem', len(df))
+#     df.rename(columns={'pubchem_cid': 'image_id'}, inplace=True)
+#     df['file_path'] = [f'data/molbank/pubchem/images/{id}.png' for id in df['image_id'].values]
+#     with multiprocessing.Pool(16) as pool:
+#         success = pool.map(generate_image, list(df.iterrows()))
+#     df = df[success]
+#     print('indigo', len(df))
+#     df.to_csv(f'data/molbank/pubchem/{split}.csv', index=False)
+
+
+# Generate Zinc molecules
+
 for split in ['valid', 'test']:
     print(split)
-    df = pd.read_csv(f'data/molbank/pubchem/{split}_raw.csv')
-    print('pubchem', len(df))
-    df.rename(columns={'pubchem_cid': 'image_id'}, inplace=True)
-    df['file_path'] = [f'data/molbank/pubchem/images/{id}.png' for id in df['image_id'].values]
+    df = pd.read_csv(f'data/molbank/zinc/{split}_raw.csv')
+    print('zinc', len(df))
+    # df = df[:20000]
+    df.rename(columns={'zinc_id': 'image_id'}, inplace=True)
+    df['file_path'] = [f'data/molbank/zinc/images/{id}.png' for id in df['image_id'].values]
     with multiprocessing.Pool(16) as pool:
         success = pool.map(generate_image, list(df.iterrows()))
     df = df[success]
     print('indigo', len(df))
-    df.to_csv(f'data/molbank/pubchem/{split}.csv', index=False)
+    df.to_csv(f'data/molbank/zinc/{split}.csv', index=False)

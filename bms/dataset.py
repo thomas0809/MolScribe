@@ -166,15 +166,6 @@ def add_comment(indigo):
 
 
 def get_graph(mol, img, shuffle_nodes=False):
-
-    def normalize_nodes(nodes):
-        x, y = nodes[:, 0], nodes[:, 1]
-        minx, maxx = min(x), max(x)
-        miny, maxy = min(y), max(y)
-        x = (x - minx) / max(maxx - minx, 1e-6)
-        y = (maxy - y) / max(maxy - miny, 1e-6)
-        return np.stack([x, y], axis=1)
-
     mol.layout()
     coords, symbols = [], []
     index_map = {}
@@ -207,18 +198,19 @@ def get_graph(mol, img, shuffle_nodes=False):
     return graph, img
 
 
-def generate_indigo_image(smiles, mol_augment=True, shuffle_nodes=False, debug=False):
+def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffle_nodes=False, debug=False):
     indigo = Indigo()
     renderer = IndigoRenderer(indigo)
     indigo.setOption('render-output-format', 'png')
     indigo.setOption('render-background-color', '1,1,1')
     indigo.setOption('render-stereo-style', 'none')
-    indigo.setOption('render-superatom-mode', 'collapse')
-    thickness = random.uniform(1, 1.5)   # limit the sum of the following two parameters to be smaller than 4
-    indigo.setOption('render-relative-thickness', thickness)
-    indigo.setOption('render-bond-line-width', random.uniform(1, 4 - thickness))
-    indigo.setOption('render-label-mode', random.choice(['hetero', 'terminal-hetero']))
-    indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
+    indigo.setOption('render-label-mode', 'hetero')
+    if not default_option:
+        thickness = random.uniform(1, 1.5)   # limit the sum of the following two parameters to be smaller than 4
+        indigo.setOption('render-relative-thickness', thickness)
+        indigo.setOption('render-bond-line-width', random.uniform(1, 4 - thickness))
+        indigo.setOption('render-label-mode', random.choice(['hetero', 'terminal-hetero']))
+        indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
     if debug:
         indigo.setOption('render-atom-ids-visible', True)
 
@@ -228,6 +220,8 @@ def generate_indigo_image(smiles, mol_augment=True, shuffle_nodes=False, debug=F
         if mol_augment:
             if random.random() < INDIGO_DEARMOTIZE_PROB:
                 mol.dearomatize()
+            else:
+                mol.aromatize()
             smiles = mol.canonicalSmiles()
             # add_comment(indigo)
             mol, smiles = add_explicit_hydrogen(indigo, mol, smiles)
@@ -306,6 +300,7 @@ class TrainDataset(Dataset):
             image, smiles, graph, success = generate_indigo_image(
                 self.smiles[idx],
                 mol_augment=self.args.mol_augment,
+                default_option=self.args.default_option,
                 shuffle_nodes=self.args.shuffle_nodes)
             end = time.time()
             raw_image = image

@@ -18,7 +18,7 @@ torchrun \
     --data_path data/molbank \
     --train_file pubchem/train_200k.csv \
     --valid_file pubchem/valid.csv \
-    --test_file pubchem/test_small.csv,pubchem/test_large.csv \
+    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv,zinc/test.csv \
     --formats atomtok_coords,edges \
     --input_size 384 \
     --encoder swin_base \
@@ -28,19 +28,18 @@ torchrun \
     --dynamic_indigo \
     --augment \
     --coord_bins 64 --sep_xy \
-    --continuous_coords \
-    --save_path output/pubchem/swin_base_200k_jointedges_cont \
+    --save_path output/pubchem/swin_base_200k_jointedges2 \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
     --warmup 0.05 \
-    --print_freq 100 \
-    --do_train --do_valid --do_test \
+    --print_freq 200 \
+    --do_valid --do_test \
     --fp16
 
-
+#    --test_file indigo-data/test.csv,chemdraw-data/test.csv \
 #    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
 #    --train_steps_per_epoch 3000 \
 #    --valid_file indigo-data/valid.csv \

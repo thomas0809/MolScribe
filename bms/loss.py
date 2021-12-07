@@ -42,12 +42,13 @@ class LabelSmoothingLoss(nn.Module):
 
 class SequenceLoss(nn.Module):
 
-    def __init__(self, label_smoothing, ignore_index=-100):
+    def __init__(self, label_smoothing, vocab_size, ignore_index=-100):
         super(SequenceLoss, self).__init__()
         self.ignore_index = ignore_index
-        self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index,
-                                             label_smoothing=label_smoothing,
-                                             reduction='none')
+        if label_smoothing == 0:
+            self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction='mean')
+        else:
+            self.criterion = LabelSmoothingLoss(label_smoothing, vocab_size, ignore_index)
 
     def forward(self, output, target):
         """
@@ -56,11 +57,9 @@ class SequenceLoss(nn.Module):
         :return:
         """
         batch_size, max_len, vocab_size = output.size()
-        mask = (target != self.ignore_index).float()
         output = output.reshape(-1, vocab_size)
         target = target.reshape(-1)
         loss = self.criterion(output, target)
-        loss = (loss.view(batch_size, max_len) * mask).sum(1) / mask.sum(1)
         return loss
 
 
@@ -79,7 +78,7 @@ class GraphLoss(nn.Module):
             max_len = pred.size(1)
             target = targets['coords'][:, :max_len]
             mask = target.ge(0)
-            loss = F.l1_loss(pred, target, reduction='none')
+            loss = F.mse_loss(pred, target, reduction='none')
             results['coords'] = (loss * mask).sum() / mask.sum()
         if 'edges' in outputs:
             pred = outputs['edges']
@@ -316,7 +315,7 @@ class Criterion(nn.Module):
                 weight[PAD_ID] = 1
                 criterion['grid'] = nn.CrossEntropyLoss(weight)
             else:
-                criterion[format_] = SequenceLoss(args.label_smoothing, ignore_index=PAD_ID)
+                criterion[format_] = SequenceLoss(args.label_smoothing, len(tokenizer[format_]), ignore_index=PAD_ID)
         self.criterion = nn.ModuleDict(criterion)
 
     def forward(self, results, refs):

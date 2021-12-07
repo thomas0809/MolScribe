@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import math
 import time
+import datetime
 from tensorboardX import SummaryWriter
 from bms.tokenizer import *
 
@@ -41,6 +42,15 @@ def init_summary_writer(save_path):
     # summary = SummaryWriter(os.path.join(save_path, datetime.now().strftime("%Y%m%d-%H%M%S")))
     summary = SummaryWriter(save_path)
     return summary
+
+
+def save_args(args):
+    dt = datetime.datetime.strftime(datetime.datetime.now(), "%y%m%d-%H%M")
+    path = os.path.join(args.save_path, f'train_{dt}.log')
+    with open(path, 'w') as f:
+        for k, v in vars(args).items():
+            f.write(f"**** {k} = *{v}*\n")
+    return
 
 
 def seed_torch(seed=42):

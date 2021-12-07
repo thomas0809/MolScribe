@@ -527,15 +527,13 @@ class TransformerDecoderNAR(TransformerDecoderBase):
 
 class GraphPredictor(nn.Module):
 
-    def __init__(self, decoder_dim, edges=True, coords=False):
+    def __init__(self, decoder_dim, coords=False):
         super(GraphPredictor, self).__init__()
-        self.edges = edges
         self.coords = coords
-        if edges:
-            self.edges_mlp = nn.Sequential(
-                nn.Linear(decoder_dim * 2, decoder_dim), nn.GELU(),
-                nn.Linear(decoder_dim, 7)
-            )
+        self.mlp = nn.Sequential(
+            nn.Linear(decoder_dim * 2, decoder_dim), nn.GELU(),
+            nn.Linear(decoder_dim, 7)
+        )
         if coords:
             self.coords_mlp = nn.Sequential(
                 nn.Linear(decoder_dim, decoder_dim), nn.GELU(),
@@ -548,14 +546,13 @@ class GraphPredictor(nn.Module):
             index = [i for i in range(3, l, 3)]
             hidden = hidden[:, index]
         else:
-            batch_id = torch.arange(b).unsqueeze(1).expand_as(indices).reshape(-1) #.to(device)
+            batch_id = torch.arange(b).unsqueeze(1).expand_as(indices).reshape(-1)  #.to(device)
             indices = indices.view(-1)
             hidden = hidden[batch_id, indices].view(b, -1, dim)
         b, l, dim = hidden.size()
         results = {}
-        if self.edges:
-            hh = torch.cat([hidden.unsqueeze(2).expand(b, l, l, dim), hidden.unsqueeze(1).expand(b, l, l, dim)], dim=3)
-            results['edges'] = self.edges_mlp(hh).permute(0, 3, 1, 2)
+        hh = torch.cat([hidden.unsqueeze(2).expand(b, l, l, dim), hidden.unsqueeze(1).expand(b, l, l, dim)], dim=3)
+        results['edges'] = self.mlp(hh).permute(0, 3, 1, 2)
         if self.coords:
             results['coords'] = self.coords_mlp(hidden)
         return results
@@ -703,7 +700,7 @@ class Decoder(nn.Module):
             elif format_ == 'edges':
                 if 'nodes' in results:
                     dec_out = results['nodes'][2]  # batch x n_best x len x dim
-                    outputs = [[self.decoder['edges'](h.unsqueeze(0))['edges'].argmax(-1).squeeze(0) for h in hs]
+                    outputs = [[self.decoder['edges'](h.unsqueeze(0))['edges'].argmax(1).squeeze(0) for h in hs]
                                for hs in dec_out]
                     predictions['edges'] = [pred[0].tolist() for pred in outputs]
                 elif 'atomtok_coords' in results:
@@ -713,12 +710,12 @@ class Decoder(nn.Module):
                         hidden = dec_out[i][0].unsqueeze(0)  # 1 * len * dim
                         indices = torch.LongTensor(predictions['atomtok_coords'][i]['indices']).unsqueeze(0)  # 1 * k
                         pred = self.decoder['edges'](hidden, indices)  # k * k
-                        predictions['edges'].append(pred['edges'].argmax(-1).squeeze(0).tolist())
+                        predictions['edges'].append(pred['edges'].argmax(1).squeeze(0).tolist())
                         if 'coords' in pred:
                             predictions['atomtok_coords'][i]['coords'] = pred['coords'].squeeze(0).tolist()
                 else:
                     raise NotImplemented
-                results['edges'] = outputs     # batch x n_best x len x len
+                # results['edges'] = outputs     # batch x n_best x len x len
             elif format_ == 'nodes':
                 results['nodes'] = self.decoder['nodes'].decode(encoder_out, beam_size, n_best)
                 outputs, scores, *_ = results['nodes']
