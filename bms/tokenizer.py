@@ -36,7 +36,7 @@ class Tokenizer(object):
         vocab = set()
         for text in texts:
             vocab.update(text.split(' '))
-        vocab = [PAD, SOS, EOS, UNK] + sorted(vocab)
+        vocab = [PAD, SOS, EOS, UNK] + list(vocab)
         for i, s in enumerate(vocab):
             self.stoi[s] = i
         self.itos = {item[1]: item[0] for item in self.stoi.items()}
@@ -231,6 +231,8 @@ class NodeTokenizer(Tokenizer):
             if self.is_atom_token(token):
                 atom_idx += 1
                 if coords is not None:
+                    # if atom_idx >= len(coords):
+                    #     print(smiles, atom_idx, len(coords))
                     assert atom_idx < len(coords)
                     x, y = coords[atom_idx]
                     assert 0 <= x <= 1

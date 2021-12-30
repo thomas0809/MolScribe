@@ -18,17 +18,16 @@ torchrun \
     --data_path data/molbank \
     --train_file pubchem/train_200k.csv \
     --valid_file pubchem/valid.csv \
-    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv,zinc/test.csv \
+    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/staker/staker.csv \
     --formats atomtok_coords,edges \
     --input_size 384 \
     --encoder swin_base \
     --decoder transformer \
     --encoder_lr 1e-3 \
     --decoder_lr 1e-3 \
-    --dynamic_indigo \
-    --augment \
+    --dynamic_indigo --augment --mol_augment \
     --coord_bins 64 --sep_xy \
-    --save_path output/pubchem/swin_base_200k_jointedges2 \
+    --save_path output/pubchem/swin_base_200k_joint \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -39,7 +38,7 @@ torchrun \
     --do_valid --do_test \
     --fp16
 
-#    --test_file indigo-data/test.csv,chemdraw-data/test.csv \
+#    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv,zinc/test.csv \
 #    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
 #    --train_steps_per_epoch 3000 \
 #    --valid_file indigo-data/valid.csv \

@@ -1,6 +1,7 @@
 import albumentations as A
 from albumentations.augmentations.geometric.functional import safe_rotate_enlarged_img_size, _maybe_process_in_chunks
 import cv2
+import math
 import numpy as np
 
 
@@ -143,3 +144,43 @@ class ResizePad(A.DualTransform):
             value=self.value,
         )
         return img
+
+
+def normalized_grid_distortion(
+        img,
+        num_steps=10,
+        xsteps=(),
+        ysteps=(),
+        *args,
+        **kwargs
+):
+    height, width = img.shape[:2]
+
+    # compensate for smaller last steps in source image.
+    x_step = width // num_steps
+    last_x_step = min(width, ((num_steps + 1) * x_step)) - (num_steps * x_step)
+    xsteps[-1] *= last_x_step / x_step
+
+    y_step = height // num_steps
+    last_y_step = min(height, ((num_steps + 1) * y_step)) - (num_steps * y_step)
+    ysteps[-1] *= last_y_step / y_step
+
+    # now normalize such that distortion never leaves image bounds.
+    tx = width / math.floor(width / num_steps)
+    ty = height / math.floor(height / num_steps)
+    xsteps = np.array(xsteps) * (tx / np.sum(xsteps))
+    ysteps = np.array(ysteps) * (ty / np.sum(ysteps))
+
+    # do actual distortion.
+    return A.augmentations.functional.grid_distortion(img, num_steps, xsteps, ysteps, *args, **kwargs)
+
+
+class NormalizedGridDistortion(A.augmentations.transforms.GridDistortion):
+    def apply(self, img, stepsx=(), stepsy=(), interpolation=cv2.INTER_LINEAR, **params):
+        return normalized_grid_distortion(img, self.num_steps, stepsx, stepsy, interpolation, self.border_mode,
+                                          self.value)
+
+    def apply_to_mask(self, img, stepsx=(), stepsy=(), **params):
+        return normalized_grid_distortion(
+            img, self.num_steps, stepsx, stepsy, cv2.INTER_NEAREST, self.border_mode, self.mask_value)
+

@@ -18,7 +18,7 @@ torchrun \
     --data_path data/molbank \
     --train_file pubchem/train_200k.csv \
     --valid_file pubchem/valid.csv \
-    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv,zinc/test.csv \
+    --test_file Img2Mol/CLEF.csv,Img2Mol/staker/staker.csv \
     --formats atomtok \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
@@ -26,7 +26,7 @@ torchrun \
     --encoder_lr 1e-3 \
     --decoder_lr 1e-3 \
     --dynamic_indigo --augment \
-    --save_path output/pubchem/swin_base_200k_dynaug \
+    --save_path output/pubchem/swin_base_200k_dynaug1 \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -34,7 +34,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 100 \
-    --do_valid --do_test \
+    --do_test \
     --fp16
 
 

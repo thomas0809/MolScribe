@@ -15,15 +15,15 @@ from albumentations.pytorch import ToTensorV2
 from indigo import Indigo
 from indigo.renderer import IndigoRenderer
 
-from bms.augment import ExpandSafeRotate, CropWhite, ResizePad
+from bms.augment import ExpandSafeRotate, CropWhite, NormalizedGridDistortion
 from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
 from bms.chemistry import get_substitutions, get_num_atoms, RGROUP_SYMBOLS
 
 
 cv2.setNumThreads(1)
 
-INDIGO_HYGROGEN_PROB = 0.1
-INDIGO_RGROUP_PROB = 0.2
+INDIGO_HYGROGEN_PROB = 0.2
+INDIGO_RGROUP_PROB = 0.4
 INDIGO_COMMENT_PROB = 0.3
 INDIGO_DEARMOTIZE_PROB = 0.5
 
@@ -34,11 +34,12 @@ def get_transforms(args, labelled=True):
         if not args.nodes and not args.patch:
             trans_list.append(ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, value=(255, 255, 255)))
         trans_list += [
-            A.Downscale(scale_min=0.25, scale_max=0.5),
+            # NormalizedGridDistortion(num_steps=10, distort_limit=0.3),
+            A.Downscale(scale_min=0.2, scale_max=0.4, interpolation=1),
             A.Blur(),
-            # A.GaussNoise()  # TODO GaussNoise applies clip [0,1]
+            A.GaussNoise()  # TODO GaussNoise applies clip [0,1]
         ]
-    trans_list.append(CropWhite(pad=5))
+    trans_list.append(CropWhite(pad=0))
     if args.multiscale:
         if labelled:
             trans_list.append(A.LongestMaxSize([224, 256, 288, 320, 352, 384, 416, 448, 480]))
@@ -84,12 +85,12 @@ def add_functional_group(indigo, mol, debug=False):
     # Delete functional group and add a pseudo atom with its abbrv
     substitutions = get_substitutions()
     random.shuffle(substitutions)
-    for abbrvs, smarts, p in substitutions:
-        query = indigo.loadSmarts(smarts)
+    for sub in substitutions:
+        query = indigo.loadSmarts(sub.smarts)
         matcher = indigo.substructureMatcher(mol)
         matched_atoms_ids = set()
         for match in matcher.iterateMatches(query):
-            if random.random() < p or debug:
+            if random.random() < sub.probability or debug:
                 atoms = []
                 atoms_ids = set()
                 for item in query.iterateAtoms():
@@ -98,7 +99,7 @@ def add_functional_group(indigo, mol, debug=False):
                     atoms_ids.add(atom.index())
                 if len(matched_atoms_ids.intersection(atoms_ids)) > 0:
                     continue
-                abbrv = random.choice(abbrvs)
+                abbrv = random.choice(sub.abbrvs)
                 superatom = mol.addAtom(abbrv)
                 for atom in atoms:
                     for nei in atom.iterateNeighbors():
@@ -114,7 +115,7 @@ def add_functional_group(indigo, mol, debug=False):
     return mol
 
 
-def add_explicit_hydrogen(indigo, mol, smiles):
+def add_explicit_hydrogen(indigo, mol):
     atoms = []
     for atom in mol.iterateAtoms():
         try:
@@ -128,7 +129,7 @@ def add_explicit_hydrogen(indigo, mol, smiles):
         for i in range(hs):
             h = mol.addAtom('H')
             h.addBond(atom, 1)
-    return mol, smiles
+    return mol
 
 
 def add_rgroup(indigo, mol, smiles):
@@ -149,11 +150,36 @@ def add_rgroup(indigo, mol, smiles):
         else:
             r = mol.addAtom(symbol)
         r.addBond(atom, 1)
-        new_smiles = mol.canonicalSmiles()
-        assert '*' in new_smiles
-        new_smiles = new_smiles.split(' ')[0].replace('*', f'[{symbol}]')
-        smiles = new_smiles
-    return mol, smiles
+        # new_smiles = mol.canonicalSmiles()
+        # assert '*' in new_smiles
+        # new_smiles = new_smiles.split(' ')[0].replace('*', f'[{symbol}]')
+        # smiles = new_smiles
+    return mol
+
+
+def generate_output_smiles(indigo, mol):
+    # TODO: if using mol.canonicalSmiles(), explicit H will be removed
+    smiles = mol.smiles()
+    mol = indigo.loadMolecule(smiles)
+    if '*' in smiles:
+        part_a, part_b = smiles.split(' ', maxsplit=1)
+        assert part_b[:2] == '|$' and part_b[-2:] == '$|'
+        part_b = part_b[2:-2].replace(' ', '')
+        symbols = [t for t in part_b.split(';') if len(t) > 0]
+        output = ''
+        cnt = 0
+        for i, c in enumerate(part_a):
+            if c != '*':
+                output += c
+            else:
+                output += f'[{symbols[cnt]}]'
+                cnt += 1
+        return mol, output
+    else:
+        if ' ' in smiles:
+            # special cases with extension
+            smiles = smiles.split(' ')[0]
+        return mol, smiles
 
 
 def add_comment(indigo):
@@ -206,9 +232,10 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
     indigo.setOption('render-stereo-style', 'none')
     indigo.setOption('render-label-mode', 'hetero')
     if not default_option:
-        thickness = random.uniform(1, 1.5)   # limit the sum of the following two parameters to be smaller than 4
+        thickness = random.uniform(0.5, 1.5)   # limit the sum of the following two parameters to be smaller than 4
         indigo.setOption('render-relative-thickness', thickness)
         indigo.setOption('render-bond-line-width', random.uniform(1, 4 - thickness))
+        indigo.setOption('render-font-family', random.choice(['Arial', 'Times', 'Courier', 'Helvetica']))
         indigo.setOption('render-label-mode', random.choice(['hetero', 'terminal-hetero']))
         indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
     if debug:
@@ -223,12 +250,11 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
             else:
                 mol.aromatize()
             smiles = mol.canonicalSmiles()
-            # add_comment(indigo)
-            mol, smiles = add_explicit_hydrogen(indigo, mol, smiles)
-            mol, smiles = add_rgroup(indigo, mol, smiles)
-            # mol = add_functional_group(indigo, mol, debug)
-            # TODO: this reload is problematic with [R]
-            mol = indigo.loadMolecule(smiles)  # reload, important!
+            add_comment(indigo)
+            mol = add_explicit_hydrogen(indigo, mol)
+            mol = add_rgroup(indigo, mol, smiles)
+            mol = add_functional_group(indigo, mol, debug)
+            mol, smiles = generate_output_smiles(indigo, mol)
 
         buf = renderer.renderToBuffer(mol)
         img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 1)  # decode buffer to image
@@ -309,7 +335,7 @@ class TrainDataset(Dataset):
         else:
             file_path = self.file_paths[idx]
             image = cv2.imread(file_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # .astype(np.float32)
         # h, w, _ = image.shape
         # if h > w:
         #     image = self.fix_transform(image=image)['image']
