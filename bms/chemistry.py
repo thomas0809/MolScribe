@@ -1,7 +1,6 @@
 import cv2
 import copy
 import numpy as np
-from typing import List
 import multiprocessing
 
 from indigo import Indigo
@@ -11,9 +10,7 @@ import rdkit.Chem as Chem
 rdkit.RDLogger.DisableLog('rdApp.*')
 import Levenshtein
 
-
-RGROUP_SYMBOLS = ['R', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12',
-                  'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Rf', 'X', 'Y', 'Z', 'A', 'D', 'E', 'Ar']
+from bms.constants import RGROUP_SYMBOLS, PLACEHOLDER_ATOMS, SUBSTITUTIONS, ABBREVIATIONS
 
 
 def is_valid_mol(s, format_='atomtok'):
@@ -306,7 +303,6 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
 
 
 def _replace_functional_group(smiles):
-    PLACEHOLDER_ATOMS = ["[Ne]", "[Kr]", "[Rn]", "[Nd]", "[Yb]", "[At]", "[Fm]", "[Er]"]
     for i, r in enumerate(RGROUP_SYMBOLS):
         symbol = f'[{r}]'
         if symbol in smiles:
@@ -321,7 +317,7 @@ def _replace_functional_group(smiles):
                 i += 1
                 placeholder = PLACEHOLDER_ATOMS[i]
                 while symbol in smiles:
-                    smiles = smiles.replace(symbol, placeholder, 1)
+                    smiles = smiles.replace(symbol, f'[{placeholder}]', 1)
                     mappings.append((placeholder, sub.smiles))
     return smiles, mappings
 
@@ -335,7 +331,7 @@ def _expand_functional_group(smiles, mappings):
             atom.SetNumRadicalElectrons(0)
         for placeholder_atom, sub_smiles in mappings:
             for i, atom in enumerate(mw.GetAtoms()):
-                symbol = f"[{atom.GetSymbol()}]"
+                symbol = atom.GetSymbol()
                 if symbol == placeholder_atom:
                     bond = atom.GetBonds()[0]  # assuming R is singly bonded to the other atom
                     # TODO: is it true to assume singly bonded?
@@ -363,16 +359,36 @@ def _expand_functional_group(smiles, mappings):
     return smiles
 
 
-def _convert_graph_to_smiles(coords, symbols, edges):
+def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
     mol = Chem.RWMol()
     n = len(symbols)
     ids = []
+    symbol_to_placeholder = {}
+    mappings = []
     for i in range(n):
-        # TODO: R-group, functional group
-        try:
-            idx = mol.AddAtom(Chem.Atom(symbols[i]))
-        except:
-            idx = mol.AddAtom(Chem.Atom('C'))
+        symbol = symbols[i]
+        if symbol[0] == '[':
+            symbol = symbol[1:-1]
+        if symbol in RGROUP_SYMBOLS:
+            atom = Chem.Atom("*")
+            atom.SetIsotope(RGROUP_SYMBOLS.index(symbol))
+            idx = mol.AddAtom(atom)
+        elif symbol in ABBREVIATIONS:
+            if symbol not in symbol_to_placeholder:
+                j = len(symbol_to_placeholder)
+                assert j < len(PLACEHOLDER_ATOMS), "Not enough placeholders"
+                placeholder = PLACEHOLDER_ATOMS[j]
+                symbol_to_placeholder[symbol] = placeholder
+            else:
+                placeholder = symbol_to_placeholder[symbol]
+            sub = ABBREVIATIONS[symbol]
+            mappings.append((placeholder, sub.smiles))
+            atom = Chem.Atom(placeholder)
+            idx = mol.AddAtom(atom)
+        else:
+            symbol = symbols[i]
+            atom = Chem.AtomFromSmiles(symbol)
+            idx = mol.AddAtom(atom)
         assert idx == i
         ids.append(idx)
 
@@ -397,27 +413,34 @@ def _convert_graph_to_smiles(coords, symbols, edges):
                 mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINWEDGE)
                 has_chirality = True
 
+    pred_smiles = ''
+
     try:
         if has_chirality:
             mol = _verify_chirality(mol, coords, symbols, edges)
         pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-    except:
-        pred_smiles = ''
+        pred_smiles = _expand_functional_group(pred_smiles, mappings)
+        success = True
+    except Exception as e:
+        if debug:
+            raise e
+        success = False
 
-    return pred_smiles
+    return pred_smiles, success
 
 
-def convert_graph_to_smiles(node_coords, node_symbols, edges, num_workers=16, simple=False):
+def convert_graph_to_smiles(coords, symbols, edges, num_workers=16, simple=False):
     fn = _convert_graph_to_smiles_simple if simple else _convert_graph_to_smiles
     with multiprocessing.Pool(num_workers) as p:
-        smiles_list = p.starmap(fn, zip(node_coords, node_symbols, edges), chunksize=128)
-    r_success = sum([s != '' for s in smiles_list]) / len(smiles_list)
+        results = p.starmap(fn, zip(coords, symbols, edges), chunksize=128)
+    smiles_list, success = zip(*results)
+    r_success = np.mean(success)
     return smiles_list, r_success
 
 
 def _postprocess_smiles(smiles, coords, symbols, edges, debug=False):
     if type(smiles) is not str or smiles == '':
-        return ''
+        return '', False
     mol = None
     try:
         pred_smiles = smiles.replace('@', '').replace('/', '').replace('\\', '')
@@ -426,101 +449,21 @@ def _postprocess_smiles(smiles, coords, symbols, edges, debug=False):
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
         pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         pred_smiles = _expand_functional_group(pred_smiles, mappings)
+        success = True
     except Exception as e:
         if debug:
             print(e)
         pred_smiles = smiles
+        success = False
     if debug:
         return pred_smiles, mol
-    return pred_smiles
+    return pred_smiles, success
 
 
 def postprocess_smiles(smiles, coords, symbols, edges, num_workers=16):
     with multiprocessing.Pool(num_workers) as p:
-        smiles_list = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges), chunksize=128)
-    r_success = sum([s != '' for s in smiles_list]) / len(smiles_list)
+        results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges), chunksize=128)
+    smiles_list, success = zip(*results)
+    r_success = np.mean(success)
     return smiles_list, r_success
 
-
-'''
-Define common substitutions for chemical shorthand
-Note: does not include R groups or halogens as X
-'''
-class Substitution(object):
-
-    def __init__(self, abbrvs, smarts, smiles, probability):
-        assert type(abbrvs) is list
-        self.abbrvs = abbrvs
-        self.smarts = smarts
-        self.smiles = smiles
-        self.probability = probability
-
-
-SUBSTITUTIONS: List[Substitution] = [
-    Substitution(['NO2', 'O2N'], '[N+](=O)[O-]', "[N+](=O)[O-]", 0.5),
-    Substitution(['CHO', 'OHC'], '[CH1](=O)', "[CH1](=O)", 0.5),
-    Substitution(['CO2Et', 'COOEt'], 'C(=O)[OH0;D2][CH2;D2][CH3]', "[C](=O)OCC", 0.5),
-
-    Substitution(['OAc'], '[OH0;X2]C(=O)[CH3]', "[O]C(=O)C", 0.8),
-    Substitution(['NHAc'], '[NH1;D2]C(=O)[CH3]', "[NH]C(=O)C", 0.8),
-    Substitution(['Ac'], 'C(=O)[CH3]', "[C](=O)C", 0.1),
-
-    Substitution(['OBz'], '[OH0;D2]C(=O)[cH0]1[cH][cH][cH][cH][cH]1', "[O]C(=O)c1ccccc1", 0.7),  # Benzoyl
-    Substitution(['Bz'], 'C(=O)[cH0]1[cH][cH][cH][cH][cH]1', "[C](=O)c1ccccc1", 0.2),  # Benzoyl
-
-    Substitution(['OBn'], '[OH0;D2][CH2;D2][cH0]1[cH][cH][cH][cH][cH]1', "[O]Cc1ccccc1", 0.7),  # Benzyl
-    Substitution(['Bn'], '[CH2;D2][cH0]1[cH][cH][cH][cH][cH]1', "[CH2]c1ccccc1", 0.2),  # Benzyl
-
-    Substitution(['NHBoc'], '[NH1;D2]C(=O)OC([CH3])([CH3])[CH3]', "[NH1]C(=O)OC(C)(C)C", 0.9),
-    Substitution(['NBoc'], '[NH0;D3]C(=O)OC([CH3])([CH3])[CH3]', "[NH1]C(=O)OC(C)(C)C", 0.9),
-    Substitution(['Boc'], 'C(=O)OC([CH3])([CH3])[CH3]', "[C](=O)OC(C)(C)C", 0.2),
-
-    Substitution(['Cbm'], 'C(=O)[NH2;D1]', "[C](=O)N", 0.2),
-    Substitution(['Cbz'], 'C(=O)OC[cH]1[cH][cH][cH1][cH][cH]1', "[C](=O)OCc1ccccc1", 0.4),
-    Substitution(['Cy'], '[CH1;X3]1[CH2][CH2][CH2][CH2][CH2]1', "[CH1]1CCCCC1", 0.3),
-    Substitution(['Fmoc'], 'C(=O)O[CH2][CH1]1c([cH1][cH1][cH1][cH1]2)c2c3c1[cH1][cH1][cH1][cH1]3',
-                           "[C](=O)OCC1c(cccc2)c2c3c1cccc3", 0.6),
-    Substitution(['Mes'], '[cH0]1c([CH3])cc([CH3])cc([CH3])1', "[c]1c(C)cc(C)cc(C)1", 0.5),
-    Substitution(['OMs'], '[OH0;D2]S(=O)(=O)[CH3]', "[O]S(=O)(=O)C", 0.8),
-    Substitution(['Ms'], 'S(=O)(=O)[CH3]', "[S](=O)(=O)C", 0.2),
-    Substitution(['Ph'], '[cH0]1[cH][cH][cH1][cH][cH]1', "[c]1ccccc1", 0.7),
-    Substitution(['Py'], '[cH0]1[n;+0][cH1][cH1][cH1][cH1]1', "[c]1ncccc1", 0.1),
-    Substitution(['Suc'], 'C(=O)[CH2][CH2]C(=O)[OH]', "[C](=O)CCC(=O)O", 0.2),
-    Substitution(['TBS'], '[Si]([CH3])([CH3])C([CH3])([CH3])[CH3]', "[Si](C)(C)C(C)(C)C", 0.5),
-    Substitution(['TBZ'], 'C(=S)[cH]1[cH][cH][cH1][cH][cH]1', "[C](=S)c1ccccc1", 0.2),
-    Substitution(['OTf'], '[OH0;D2]S(=O)(=O)C(F)(F)F', "[O]S(=O)(=O)C(F)(F)F", 0.8),
-    Substitution(['Tf'], 'S(=O)(=O)C(F)(F)F', "[S](=O)(=O)C(F)(F)F", 0.2),
-    Substitution(['TFA'], 'C(=O)C(F)(F)F', "[C](=O)C(F)(F)F", 0.3),
-    Substitution(['TMS'], '[Si]([CH3])([CH3])[CH3]', "[Si](C)(C)C", 0.5),
-    Substitution(['Ts'], 'S(=O)(=O)c1[cH1][cH1][cH0]([CH3])[cH1][cH1]1', "[S](=O)(=O)c1ccc(C)cc1", 0.6),  # Tos
-
-    # Alkyl chains
-    Substitution(['OMe', 'MeO'], '[OH0;D2][CH3;D1]', "[O]C", 0.3),
-    Substitution(['SMe', 'MeS'], '[SH0;D2][CH3;D1]', "[S]C", 0.3),
-    Substitution(['NMe', 'MeN'], '[N;X3][CH3;D1]', "[NH]C", 0.3),
-    Substitution(['Me'], '[CH3;D1]', "[CH3]", 0.1),
-    Substitution(['OEt', 'EtO'], '[OH0;D2][CH2;D2][CH3]', "[O]CC", 0.5),
-    Substitution(['Et'], '[CH2;D2][CH3]', "[CH2]C", 0.2),
-    Substitution(['Pr', 'nPr'], '[CH2;D2][CH2;D2][CH3]', "[CH2]CC", 0.1),
-    Substitution(['Bu', 'nBu'], '[CH2;D2][CH2;D2][CH2;D2][CH3]', "[CH2]CCC", 0.1),
-
-    # Branched
-    Substitution(['iPr'], '[CH1;D3]([CH3])[CH3]', "[CH1](C)C", 0.1),
-    Substitution(['iBu'], '[CH2;D2][CH1;D3]([CH3])[CH3]', "[CH2]C(C)C", 0.1),
-    Substitution(['OiBu'], '[OH0;D2][CH2;D2][CH1;D3]([CH3])[CH3]', "[O]CC(C)C", 0.1),
-    Substitution(['OtBu'], '[OH0;D2][CH0]([CH3])([CH3])[CH3]', "[O]C(C)(C)C", 0.7),
-    Substitution(['tBu'], '[CH0]([CH3])([CH3])[CH3]', "[C](C)(C)C", 0.3),
-
-    # Other shorthands (MIGHT NOT WANT ALL OF THESE)
-    Substitution(['CF3', 'F3C'], '[CH0;D4](F)(F)F', "[C](F)(F)F", 0.5),
-    Substitution(['NCF3'], '[N;X3][CH0;D4](F)(F)F', "[NH]C(F)(F)F", 0.5),
-    Substitution(['CCl3'], '[CH0;D4](Cl)(Cl)Cl', "[C](Cl)(Cl)Cl", 0.5),
-    Substitution(['CO2H', 'COOH'], 'C(=O)[OH]', "[C](=O)O", 0.2),  # COOH
-    Substitution(['CN'], 'C#[ND1]', "[C]#N", 0.1),
-    Substitution(['OCH3'], '[OH0;D2][CH3]', "[O]C", 0.2),
-    Substitution(['SO3H'], 'S(=O)(=O)[OH]', "[S](=O)(=O)O", 0.4),
-]
-
-
-def get_substitutions():
-    return SUBSTITUTIONS

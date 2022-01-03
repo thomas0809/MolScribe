@@ -504,11 +504,13 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
 
     if 'edges' in predictions:
         pred_df['edges'] = predictions['edges']
+        smiles_list, r_success = convert_graph_to_smiles(pred_df['node_coords'], pred_df['node_symbols'],
+                                                         pred_df['edges'])
+        print(f'Graph to SMILES success ratio: {r_success:.4f}')
         if 'atomtok_coords' not in args.formats:
-            smiles_list, r_success = convert_graph_to_smiles(pred_df['node_coords'], pred_df['node_symbols'],
-                                                             pred_df['edges'])
-            print(f'Graph to SMILES success ratio: {r_success:.4f}')
             pred_df['SMILES'] = smiles_list
+        else:
+            pred_df['graph_SMILES'] = smiles_list
 
     if 'atomtok_coords' in args.formats:
         smiles_list, r_success = postprocess_smiles(pred_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'],
@@ -529,6 +531,12 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                 scores['post_smiles'] = post_scores['canon_smiles']
                 scores['post_graph'] = post_scores['graph']
                 scores['post_chiral'] = post_scores['chiral']
+            if 'graph_SMILES' in pred_df.columns:
+                graph_scores = evaluator.evaluate(pred_df['graph_SMILES'])
+                scores['graph_smiles_em'] = graph_scores['canon_smiles_em']
+                scores['graph_smiles'] = graph_scores['canon_smiles']
+                scores['graph_graph'] = graph_scores['graph']
+                scores['graph_chiral'] = graph_scores['chiral']
         if 'node_coords' in pred_df.columns:
             _, scores['num_nodes'], scores['symbols'] = \
                 evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])

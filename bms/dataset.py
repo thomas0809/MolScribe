@@ -17,7 +17,7 @@ from indigo.renderer import IndigoRenderer
 
 from bms.augment import ExpandSafeRotate, CropWhite, NormalizedGridDistortion
 from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
-from bms.chemistry import get_substitutions, get_num_atoms, RGROUP_SYMBOLS
+from bms.chemistry import get_num_atoms, RGROUP_SYMBOLS, SUBSTITUTIONS
 
 
 cv2.setNumThreads(1)
@@ -57,33 +57,9 @@ def get_transforms(args, labelled=True):
     return A.Compose(trans_list)
 
 
-# Deprecaetd
-def add_functional_group_as_sgroup(indigo, mol, debug=False):
-    substitutions = get_substitutions()
-    random.shuffle(substitutions)
-    matcher = indigo.substructureMatcher(mol)
-    matched_atoms = set()
-    for abbrvs, smarts, p in substitutions:
-        query = indigo.loadSmarts(smarts)
-        for match in matcher.iterateMatches(query):
-            if random.random() < p or debug:
-                overlap = False
-                for item in query.iterateAtoms():
-                    atom = match.mapAtom(item).index()
-                    if atom in matched_atoms:
-                        overlap = True
-                        break
-                    matched_atoms.add(atom)
-                if overlap:
-                    continue
-                abbrv = random.choice(abbrvs)
-                mol.createSGroup("SUP", match, abbrv)
-    return mol, matched_atoms
-
-
 def add_functional_group(indigo, mol, debug=False):
     # Delete functional group and add a pseudo atom with its abbrv
-    substitutions = get_substitutions()
+    substitutions = [sub for sub in SUBSTITUTIONS]
     random.shuffle(substitutions)
     for sub in substitutions:
         query = indigo.loadSmarts(sub.smarts)
