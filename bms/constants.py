@@ -81,7 +81,7 @@ SUBSTITUTIONS: List[Substitution] = [
     Substitution(['NCF3', 'F3CN'], '[N;X3][CH0;D4](F)(F)F', "[NH]C(F)(F)F", 0.5),
     Substitution(['OCF3', 'F3CO'], '[OH0;X2][CH0;D4](F)(F)F', "OC(F)(F)F", 0.5),
     Substitution(['CCl3'], '[CH0;D4](Cl)(Cl)Cl', "[C](Cl)(Cl)Cl", 0.5),
-    Substitution(['CO2H', 'COOH'], 'C(=O)[OH]', "[C](=O)O", 0.2),  # COOH
+    Substitution(['CO2H', 'HO2C', 'COOH'], 'C(=O)[OH]', "[C](=O)O", 0.2),  # COOH
     Substitution(['CN', 'NC'], 'C#[ND1]', "[C]#N", 0.1),
     Substitution(['OCH3', 'H3CO'], '[OH0;D2][CH3]', "[O]C", 0.2),
     Substitution(['SO3H'], 'S(=O)(=O)[OH]', "[S](=O)(=O)O", 0.4),

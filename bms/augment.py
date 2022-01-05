@@ -1,11 +1,12 @@
 import albumentations as A
-from albumentations.augmentations.geometric.functional import safe_rotate_enlarged_img_size, _maybe_process_in_chunks
+from albumentations.augmentations.geometric.functional import safe_rotate_enlarged_img_size, _maybe_process_in_chunks, \
+                                                              keypoint_rotate
 import cv2
 import math
 import numpy as np
 
 
-def expand_safe_rotate(
+def safe_rotate(
     img: np.ndarray,
     angle: int = 0,
     interpolation: int = cv2.INTER_LINEAR,
@@ -44,7 +45,26 @@ def expand_safe_rotate(
     return rotated_img
 
 
-class ExpandSafeRotate(A.SafeRotate):
+def keypoint_safe_rotate(keypoint, angle, rows, cols):
+    old_rows = rows
+    old_cols = cols
+
+    # Rows and columns of the rotated image (not cropped)
+    new_rows, new_cols = safe_rotate_enlarged_img_size(angle=angle, rows=old_rows, cols=old_cols)
+
+    col_diff = (new_cols - old_cols) / 2
+    row_diff = (new_rows - old_rows) / 2
+
+    # Shift keypoint
+    shifted_keypoint = (int(keypoint[0] + col_diff), int(keypoint[1] + row_diff), keypoint[2], keypoint[3])
+
+    # Rotate keypoint
+    rotated_keypoint = keypoint_rotate(shifted_keypoint, angle, rows=new_rows, cols=new_cols)
+
+    return rotated_keypoint
+
+
+class SafeRotate(A.SafeRotate):
 
     def __init__(
         self,
@@ -56,7 +76,7 @@ class ExpandSafeRotate(A.SafeRotate):
         always_apply=False,
         p=0.5,
     ):
-        super(ExpandSafeRotate, self).__init__(
+        super(SafeRotate, self).__init__(
             limit=limit,
             interpolation=interpolation,
             border_mode=border_mode,
@@ -66,47 +86,59 @@ class ExpandSafeRotate(A.SafeRotate):
             p=p)
 
     def apply(self, img, angle=0, interpolation=cv2.INTER_LINEAR, **params):
-        return expand_safe_rotate(
-            img=img, value=self.value, angle=angle, interpolation=interpolation, border_mode=self.border_mode
-        )
+        return safe_rotate(
+            img=img, value=self.value, angle=angle, interpolation=interpolation, border_mode=self.border_mode)
 
-    
+    def apply_to_keypoint(self, keypoint, angle=0, **params):
+        return keypoint_safe_rotate(keypoint, angle=angle, rows=params["rows"], cols=params["cols"])
+
+
 class CropWhite(A.DualTransform):
     
-    def __init__(self, value=(255, 255, 255), pad=0):
-        super(CropWhite, self).__init__(always_apply=True)
+    def __init__(self, value=(255, 255, 255), pad=0, p=1.0):
+        super(CropWhite, self).__init__(p=p)
         self.value = value
         self.pad = pad
         assert pad >= 0
-        
-    def apply(self, img, **params):
+
+    def update_params(self, params, **kwargs):
+        super().update_params(params, **kwargs)
+        assert "image" in kwargs
+        img = kwargs["image"]
         height, width, _ = img.shape
         x = (img != self.value).sum(axis=2)
         if x.sum() == 0:
-            return img
+            return params
         row_sum = x.sum(axis=1)
         top = 0
         while row_sum[top] == 0 and top+1 < height:
             top += 1
-        # top = max(0, top - self.pad)
         bottom = height
         while row_sum[bottom-1] == 0 and bottom-1 > top:
             bottom -= 1
-        # bottom = min(height, bottom + self.pad)
         col_sum = x.sum(axis=0)
         left = 0
         while col_sum[left] == 0 and left+1 < width:
             left += 1
-        # left = max(0, left - self.pad)
         right = width
         while col_sum[right-1] == 0 and right-1 > left:
             right -= 1
-        # right = min(width, right + self.pad)
-        img = img[top:bottom, left:right]
-        if self.pad > 0:
-            img = A.augmentations.pad_with_params(img, self.pad, self.pad, self.pad, self.pad,
-                                                  border_mode=cv2.BORDER_CONSTANT, value=self.value)
+        crop_top = max(0, top - self.pad)
+        crop_bottom = max(0, height - bottom - self.pad)
+        crop_left = max(0, left - self.pad)
+        crop_right = max(0, width - right - self.pad)
+        params.update({"crop_top": crop_top, "crop_bottom": crop_bottom,
+                       "crop_left": crop_left, "crop_right": crop_right})
+        return params
+
+    def apply(self, img, crop_top=0, crop_bottom=0, crop_left=0, crop_right=0, **params):
+        height, width, _ = img.shape
+        img = img[crop_top:height - crop_bottom, crop_left:width - crop_right]
         return img
+
+    def apply_to_keypoint(self, keypoint, crop_top=0, crop_bottom=0, crop_left=0, crop_right=0, **params):
+        x, y, angle, scale = keypoint[:4]
+        return x - crop_left, y - crop_top, angle, scale
 
     def get_transform_init_args_names(self):
         return ('value', 'pad')

@@ -263,7 +263,7 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         conf = Chem.Conformer(n)
         conf.Set3D(False)
         for i, (x, y) in enumerate(coords):
-            conf.SetAtomPosition(i, (1 - x, y, 0))
+            conf.SetAtomPosition(i, (x, y, 0))
         mol.AddConformer(conf)
 
         # Magic, infering chirality from coordinates and BondDir. DO NOT CHANGE.
@@ -322,11 +322,10 @@ def _replace_functional_group(smiles):
     return smiles, mappings
 
 
-def _expand_functional_group(smiles, mappings):
+def _expand_functional_group(mol, mappings):
     if len(mappings) > 0:
-        m = Chem.MolFromSmiles(smiles)
-        # display(m)
-        mw = Chem.RWMol(m)
+        # m = Chem.MolFromSmiles(smiles)
+        mw = Chem.RWMol(mol)
         for i, atom in enumerate(mw.GetAtoms()):  # reset radical electrons
             atom.SetNumRadicalElectrons(0)
         for placeholder_atom, sub_smiles in mappings:
@@ -336,7 +335,7 @@ def _expand_functional_group(smiles, mappings):
                     bond = atom.GetBonds()[0]  # assuming R is singly bonded to the other atom
                     # TODO: is it true to assume singly bonded?
                     adjacent_idx = bond.GetOtherAtomIdx(i)  # getting the idx of the other atom
-                    mw.RemoveAtom(i)
+                    mw.RemoveBond(i, adjacent_idx)
 
                     adjacent_atom = mw.GetAtomWithIdx(adjacent_idx)
                     adjacent_atom.SetNumRadicalElectrons(1)
@@ -354,8 +353,11 @@ def _expand_functional_group(smiles, mappings):
 
                     mw = Chem.RWMol(combo)
                     mw.AddBond(bonding_atoms[0], bonding_atoms[1], order=Chem.rdchem.BondType.SINGLE)
+                    mw.RemoveAtom(i)
                     break
         smiles = Chem.MolToSmiles(mw)
+    else:
+        smiles = Chem.MolToSmiles(mol)
     return smiles
 
 
@@ -418,8 +420,8 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
     try:
         if has_chirality:
             mol = _verify_chirality(mol, coords, symbols, edges)
-        pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-        pred_smiles = _expand_functional_group(pred_smiles, mappings)
+        # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+        pred_smiles = _expand_functional_group(mol, mappings)
         success = True
     except Exception as e:
         if debug:
@@ -447,8 +449,8 @@ def _postprocess_smiles(smiles, coords, symbols, edges, debug=False):
         pred_smiles, mappings = _replace_functional_group(pred_smiles)
         mol = Chem.RWMol(Chem.MolFromSmiles(pred_smiles))
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
-        pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-        pred_smiles = _expand_functional_group(pred_smiles, mappings)
+        # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+        pred_smiles = _expand_functional_group(mol, mappings)
         success = True
     except Exception as e:
         if debug:

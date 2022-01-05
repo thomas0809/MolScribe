@@ -1,7 +1,7 @@
 import sys
 sys.path.append('..')
 from bms.utils import Tokenizer
-from bms.chemistry import RGROUP_SYMBOLS, get_substitutions
+from bms.chemistry import RGROUP_SYMBOLS, SUBSTITUTIONS
 
 
 # https://github.com/deepchem/deepchem/blob/master/deepchem/feat/tests/data/vocab.txt
@@ -12,7 +12,7 @@ with open('vocab.txt') as f:
 for symbol in RGROUP_SYMBOLS:
     data.append(f'[{symbol}]')
 
-for sub in get_substitutions():
+for sub in SUBSTITUTIONS:
     for symbol in sub.abbrvs:
         data.append(f'[{symbol}]')
 

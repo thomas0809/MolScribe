@@ -15,7 +15,7 @@ from albumentations.pytorch import ToTensorV2
 from indigo import Indigo
 from indigo.renderer import IndigoRenderer
 
-from bms.augment import ExpandSafeRotate, CropWhite, NormalizedGridDistortion
+from bms.augment import SafeRotate, CropWhite, NormalizedGridDistortion
 from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
 from bms.chemistry import get_num_atoms, RGROUP_SYMBOLS, SUBSTITUTIONS
 
@@ -23,38 +23,33 @@ from bms.chemistry import get_num_atoms, RGROUP_SYMBOLS, SUBSTITUTIONS
 cv2.setNumThreads(1)
 
 INDIGO_HYGROGEN_PROB = 0.2
-INDIGO_RGROUP_PROB = 0.4
+INDIGO_RGROUP_PROB = 0.5
 INDIGO_COMMENT_PROB = 0.3
 INDIGO_DEARMOTIZE_PROB = 0.5
 
 
-def get_transforms(args, labelled=True):
+def get_transforms(input_size, augment=True, rotate=True, debug=False):
     trans_list = []
-    if labelled and args.augment:
-        if not args.nodes and not args.patch:
-            trans_list.append(ExpandSafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, value=(255, 255, 255)))
+    if augment and rotate:
+        trans_list.append(SafeRotate(limit=90, border_mode=cv2.BORDER_CONSTANT, value=(255, 255, 255)))
+    trans_list.append(CropWhite(pad=5))
+    if augment:
         trans_list += [
             # NormalizedGridDistortion(num_steps=10, distort_limit=0.3),
-            A.Downscale(scale_min=0.2, scale_max=0.4, interpolation=1),
+            A.Downscale(scale_min=0.15, scale_max=0.3, interpolation=3),
             A.Blur(),
             A.GaussNoise()  # TODO GaussNoise applies clip [0,1]
         ]
-    trans_list.append(CropWhite(pad=0))
-    if args.multiscale:
-        if labelled:
-            trans_list.append(A.LongestMaxSize([224, 256, 288, 320, 352, 384, 416, 448, 480]))
-        else:
-            trans_list.append(A.LongestMaxSize(480))
-    else:
-        trans_list.append(A.Resize(args.input_size, args.input_size))
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
-    trans_list += [
-        A.ToGray(p=1),
-        A.Normalize(mean=mean, std=std),
-        ToTensorV2(),
-    ]
-    return A.Compose(trans_list)
+    trans_list.append(A.Resize(input_size, input_size))
+    if not debug:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+        trans_list += [
+            A.ToGray(p=1),
+            A.Normalize(mean=mean, std=std),
+            ToTensorV2(),
+        ]
+    return A.Compose(trans_list, keypoint_params=A.KeypointParams(format='xy', remove_invisible=False))
 
 
 def add_functional_group(indigo, mol, debug=False):
@@ -174,10 +169,9 @@ def get_graph(mol, img, shuffle_nodes=False):
     atoms = [atom for atom in mol.iterateAtoms()]
     if shuffle_nodes:
         random.shuffle(atoms)
-    height, width, _ = img.shape
     for i, atom in enumerate(atoms):
         x, y = atom.coords()
-        coords.append([y/height, x/width])
+        coords.append([x, y])
         symbols.append(atom.symbol())
         index_map[atom.index()] = i
     n = len(symbols)
@@ -197,7 +191,7 @@ def get_graph(mol, img, shuffle_nodes=False):
         'edges': edges,
         'num_atoms': len(symbols)
     }
-    return graph, img
+    return graph
 
 
 def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffle_nodes=False, debug=False):
@@ -214,6 +208,8 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
         indigo.setOption('render-font-family', random.choice(['Arial', 'Times', 'Courier', 'Helvetica']))
         indigo.setOption('render-label-mode', random.choice(['hetero', 'terminal-hetero']))
         indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
+        if random.random() < 0.1:
+            indigo.setOption('render-stereo-style', 'old')
     if debug:
         indigo.setOption('render-atom-ids-visible', True)
 
@@ -235,7 +231,7 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
         buf = renderer.renderToBuffer(mol)
         img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 1)  # decode buffer to image
         # img = np.repeat(np.expand_dims(img, 2), 3, axis=2)  # expand to RGB
-        graph, img = get_graph(mol, img, shuffle_nodes)
+        graph = get_graph(mol, img, shuffle_nodes)
         success = True
     except Exception:
         if debug:
@@ -265,8 +261,6 @@ class TrainDataset(Dataset):
                     field = FORMAT_INFO[format_]['name']
                     if field in df.columns:
                         self.labels[format_] = df[field].values
-        if self.labelled and args.reweight:
-            self.compute_reweight_coef()
         if args.load_graph_path:
             self.load_graph = True
             file = df.attrs['file'].split('/')[-1]
@@ -274,50 +268,49 @@ class TrainDataset(Dataset):
             self.pred_graph_df = pd.read_csv(file)
         else:
             self.load_graph = False
-        self.transform = get_transforms(args, self.labelled)
+        self.transform = get_transforms(args.input_size,
+                                        augment=(self.labelled and args.augment),
+                                        rotate=args.rotate)
         # self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
         self.dynamic_indigo = (args.dynamic_indigo and split == 'train')
         
     def __len__(self):
         return len(self.df)
 
-    def compute_reweight_coef(self):
-        if 'num_atoms' in self.df.columns:
-            num_atoms = self.df['num_atoms'].values
-        else:
-            num_atoms = get_num_atoms(self.smiles)
-        # hist, bin_edges = np.histogram(num_atoms, bins=[0, 10, 20, 30, 40, 50, 1000], density=True)
-        hist = [2., 1., 1., 1., 2., 10.]
-        bin_edges = [0, 10, 20, 30, 40, 50, 1000]
-        self.reweight_coef = {}
-        for i in range(len(hist)):
-            l, r = bin_edges[i], bin_edges[i+1]
-            for j in range(l, r):
-                self.reweight_coef[j] = hist[i]
-        return
-
     def __getitem__(self, idx):
+        begin = time.time()
         if self.dynamic_indigo:
-            begin = time.time()
             image, smiles, graph, success = generate_indigo_image(
                 self.smiles[idx],
                 mol_augment=self.args.mol_augment,
                 default_option=self.args.default_option,
                 shuffle_nodes=self.args.shuffle_nodes)
-            end = time.time()
             raw_image = image
             if not success:
                 return idx, None, {}
         else:
             file_path = self.file_paths[idx]
             image = cv2.imread(file_path)
+            graph = {}
+        end = time.time()
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # .astype(np.float32)
-        # h, w, _ = image.shape
-        # if h > w:
-        #     image = self.fix_transform(image=image)['image']
-        if self.transform:
-            augmented = self.transform(image=image)
-            image = augmented['image']
+        augmented = self.transform(image=image, keypoints=graph.get('coords', []))
+        image = augmented['image']
+        if 'coords' in graph:
+            _, height, width = image.shape
+            coords = np.array(augmented['keypoints'])
+            coords[:, 0] = coords[:, 0] / width
+            coords[:, 1] = coords[:, 1] / height
+            graph['coords'] = coords
+        # if idx < 100:
+        #     import json
+        #     with open(f'tmp/{idx}.txt', 'w') as f:
+        #         obj = {'image': image.tolist()}
+        #         for k, v in graph.items():
+        #             if type(v) is np.ndarray:
+        #                 v = v.tolist()
+        #             obj[k] = v
+        #         json.dump(obj, f)
         if self.labelled:
             ref = {}
             if self.dynamic_indigo:

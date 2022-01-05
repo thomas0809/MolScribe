@@ -74,8 +74,8 @@ def get_args():
     parser.add_argument('--multiscale', action='store_true')
     parser.add_argument('--augment', action='store_true')
     parser.add_argument('--mol_augment', action='store_true')
-    parser.add_argument('--resize_pad', action='store_true')
-    parser.add_argument('--no_crop_white', action='store_true')
+    parser.add_argument('--no_rotate', dest='rotate', action='store_false')
+    parser.set_defaults(rotate=True)
     parser.add_argument('--coord_bins', type=int, default=100)
     parser.add_argument('--sep_xy', action='store_true')
     parser.add_argument('--patch', action='store_true')
@@ -102,9 +102,8 @@ def get_args():
     parser.add_argument('--all_data', action='store_true', help='Use both train and valid data for training.')
     parser.add_argument('--init_scheduler', action='store_true')
     parser.add_argument('--trunc_train', type=int, default=None)
+    parser.add_argument('--trunc_valid', type=int, default=None)
     parser.add_argument('--label_smoothing', type=float, default=0.0)
-    parser.add_argument('--selftrain', type=str, default=None)
-    parser.add_argument('--cycada', action='store_true')
     parser.add_argument('--shuffle_nodes', action='store_true')
     parser.add_argument('--reweight', action='store_true')
     # Inference
@@ -200,15 +199,12 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
     
     start = end = time.time()
     encoder_grad_norm = decoder_grad_norm = 0
-    image_time = {}
 
     for step, (indices, images, refs) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
         images = images.to(device)
         batch_size = images.size(0)
-        for idx, t in zip(indices, refs['time']):
-            image_time[idx] = t
         with torch.cuda.amp.autocast(enabled=args.fp16):
             features, hiddens = encoder(images, refs)
             results = decoder(features, hiddens, refs)
@@ -355,6 +351,8 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     # ====================================================
     # model & optimizer
     # ====================================================
+    if args.resume and args.load_path is None:
+        args.load_path = args.save_path
     encoder, decoder = get_model(args, tokenizer, device, load_path=args.load_path)
     
     encoder_optimizer, encoder_scheduler, decoder_optimizer, decoder_scheduler = \
@@ -441,7 +439,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     
     print_rank_0("========== inference ==========")
     print_rank_0(data_df.attrs['file'])
-    
+
     if args.local_rank == 0 and not args.debug:
         os.makedirs(save_path, exist_ok=True)
     
@@ -629,16 +627,11 @@ def main():
         train_df, valid_df, test_df, tokenizer = get_bms_data(args)
     else:
         train_df, valid_df, test_df, tokenizer = get_chemdraw_data(args)
-        
-    if args.do_train and args.all_data:
-        train_df = pd.concat([train_df, valid_df])
-        print_rank_0(f'train.shape: {train_df.shape}')
-        
-    if args.trunc_train:
-        if args.do_train:
-            train_df = train_df[:args.trunc_train]
-        if args.do_valid:
-            valid_df = valid_df[:args.trunc_train]
+
+    if args.do_train and args.trunc_train:
+        train_df = train_df[:args.trunc_train]
+    if (args.do_train or args.do_valid) and args.trunc_valid:
+        valid_df = valid_df[:args.trunc_valid]
     
     if args.debug:
         args.epochs = 1
