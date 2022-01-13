@@ -18,7 +18,7 @@ torchrun \
     --data_path data/molbank \
     --train_file pubchem/train_200k.csv \
     --valid_file pubchem/valid.csv \
-    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv,zinc/test.csv \
+    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv \
     --formats atomtok_coords,edges \
     --input_size 384 \
     --encoder swin_base \

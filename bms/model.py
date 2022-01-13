@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 import timm
 
-from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID, to_device
+from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID, MASK_ID, to_device
 from bms.inference import GreedySearch, BeamSearch
 from bms.transformer import TransformerDecoder, Embeddings
 from bms.patch import ImagePatch
@@ -389,7 +389,8 @@ class TransformerDecoderAR(TransformerDecoderBase):
         logits = self.output_layer(dec_out)    # (b, t, h) -> (b, t, v)
         return logits[:, :-1], labels[:, 1:], dec_out
 
-    def decode(self, encoder_out, beam_size: int, n_best: int, min_length: int = 1, max_length: int = 256):
+    def decode(self, encoder_out, beam_size: int, n_best: int, min_length: int = 1, max_length: int = 256,
+               partial_labels=None):
         batch_size, max_len, _ = encoder_out.size()
         memory_bank = self.enc_transform(encoder_out)
 
@@ -417,6 +418,10 @@ class TransformerDecoderAR(TransformerDecoderBase):
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
             tgt = decode_strategy.current_predictions.view(-1, 1, 1)
+            if partial_labels is not None:
+                label = partial_labels[:, step].view(-1, 1, 1)
+                mask = label.eq(MASK_ID)
+                tgt = label.masked_scatter(mask, tgt)
             tgt_emb, tgt_pad_mask = self.dec_embedding(tgt)
             dec_out, dec_attn, *_ = self.decoder(tgt_emb=tgt_emb, memory_bank=memory_bank,
                                                  tgt_pad_mask=tgt_pad_mask, step=step)

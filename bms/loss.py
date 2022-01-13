@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
-from bms.tokenizer import PAD_ID
+from bms.tokenizer import PAD_ID, MASK, MASK_ID
 
 
 class LabelSmoothingLoss(nn.Module):
@@ -42,9 +42,12 @@ class LabelSmoothingLoss(nn.Module):
 
 class SequenceLoss(nn.Module):
 
-    def __init__(self, label_smoothing, vocab_size, ignore_index=-100):
+    def __init__(self, label_smoothing, vocab_size, ignore_index=-100, ignore_indices=[]):
         super(SequenceLoss, self).__init__()
+        if ignore_indices:
+            ignore_index = ignore_indices[0]
         self.ignore_index = ignore_index
+        self.ignore_indices = ignore_indices
         if label_smoothing == 0:
             self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction='mean')
         else:
@@ -59,6 +62,9 @@ class SequenceLoss(nn.Module):
         batch_size, max_len, vocab_size = output.size()
         output = output.reshape(-1, vocab_size)
         target = target.reshape(-1)
+        for idx in self.ignore_indices:
+            if idx != self.ignore_index:
+                target.masked_fill_((target == idx), self.ignore_index)
         loss = self.criterion(output, target)
         return loss
 
@@ -78,7 +84,7 @@ class GraphLoss(nn.Module):
             max_len = pred.size(1)
             target = targets['coords'][:, :max_len]
             mask = target.ge(0)
-            loss = F.mse_loss(pred, target, reduction='none')
+            loss = F.l1_loss(pred, target, reduction='none')
             results['coords'] = (loss * mask).sum() / mask.sum()
         if 'edges' in outputs:
             pred = outputs['edges']
@@ -315,7 +321,12 @@ class Criterion(nn.Module):
                 weight[PAD_ID] = 1
                 criterion['grid'] = nn.CrossEntropyLoss(weight)
             else:
-                criterion[format_] = SequenceLoss(args.label_smoothing, len(tokenizer[format_]), ignore_index=PAD_ID)
+                if MASK in tokenizer[format_].stoi:
+                    ignore_indices = [PAD_ID, MASK_ID]
+                else:
+                    ignore_indices = []
+                criterion[format_] = SequenceLoss(args.label_smoothing, len(tokenizer[format_]),
+                                                  ignore_index=PAD_ID, ignore_indices=ignore_indices)
         self.criterion = nn.ModuleDict(criterion)
 
     def forward(self, results, refs):

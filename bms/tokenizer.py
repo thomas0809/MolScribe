@@ -1,4 +1,5 @@
 import json
+import random
 import numpy as np
 from SmilesPE.pretokenizer import atomwise_tokenizer
 
@@ -6,10 +7,12 @@ PAD = '<pad>'
 SOS = '<sos>'
 EOS = '<eos>'
 UNK = '<unk>'
+MASK = '<mask>'
 PAD_ID = 0
 SOS_ID = 1
 EOS_ID = 2
 UNK_ID = 3
+MASK_ID = 4
 
 
 class Tokenizer(object):
@@ -99,7 +102,7 @@ class NodeTokenizer(Tokenizer):
         self.maxx = input_size  # height
         self.maxy = input_size  # width
         self.sep_xy = sep_xy
-        self.special_tokens = [PAD, SOS, EOS, UNK]
+        self.special_tokens = [PAD, SOS, EOS, UNK, MASK]
         self.offset = len(self.stoi)
         self.debug = debug
 
@@ -113,9 +116,14 @@ class NodeTokenizer(Tokenizer):
         return len(self.stoi)
 
     def fit_atom_symbols(self, atoms):
-        vocab = self.special_tokens + atoms
+        vocab = self.special_tokens + list(set(atoms))
         for i, s in enumerate(vocab):
             self.stoi[s] = i
+        assert self.stoi[PAD] == PAD_ID
+        assert self.stoi[SOS] == SOS_ID
+        assert self.stoi[EOS] == EOS_ID
+        assert self.stoi[UNK] == UNK_ID
+        assert self.stoi[MASK] == MASK_ID
         self.itos = {item[1]: item[0] for item in self.stoi.items()}
         self.offset = len(self.stoi)
 
@@ -216,7 +224,7 @@ class NodeTokenizer(Tokenizer):
             i += 3
         return {'coords': coords, 'symbols': symbols}
 
-    def smiles_coords_to_sequence(self, smiles, coords=None):
+    def smiles_coords_to_sequence(self, smiles, coords=None, mask_ratio=0):
         tokens = atomwise_tokenizer(smiles)
         labels = [SOS_ID]
         indices = []
@@ -230,7 +238,10 @@ class NodeTokenizer(Tokenizer):
                 labels.append(UNK_ID)
             if self.is_atom_token(token):
                 atom_idx += 1
-                if coords is not None:
+                if mask_ratio > 0 and random.random() < mask_ratio:
+                    labels.append(MASK_ID)
+                    labels.append(MASK_ID)
+                elif coords is not None:
                     # if atom_idx >= len(coords):
                     #     print(smiles, atom_idx, len(coords))
                     assert atom_idx < len(coords)

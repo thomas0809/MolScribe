@@ -21,28 +21,20 @@ torchrun \
     --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv \
     --formats atomtok \
     --input_size 384 \
-    --encoder swin_base_patch4_window12_384 \
+    --encoder swin_base \
     --decoder transformer \
     --encoder_lr 1e-3 \
     --decoder_lr 1e-3 \
     --dynamic_indigo --augment \
-    --save_path output/pubchem/swin_base_200k_dynaug \
+    --save_path output/pubchem/synthetic/swin_base_200k_dynaug --resume \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
     --warmup 0.05 \
-    --print_freq 100 \
-    --do_valid --do_test \
+    --print_freq 200 \
+    --do_train --do_valid --do_test \
+    --trunc_valid 10000 \
     --fp16
 
-
-#    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
-#    --train_steps_per_epoch 3000 \
-#    --valid_file indigo-data/valid.csv \
-#    --valid_file real-acs-evaluation/test.csv \
-#    --save_path output/indigo/swin_base_20_dynamic_aug \
-#    --no_pretrained --scheduler cosine --warmup 0.05 \
-#    --load_path output/pubchem/swin_base_10 --resume \
-#    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv \

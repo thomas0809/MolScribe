@@ -18,7 +18,7 @@ torchrun \
     --data_path data/molbank \
     --train_file pubchem/train_200k.csv \
     --valid_file pubchem/valid.csv \
-    --test_file Img2Mol/CLEF.csv,Img2Mol/staker/staker.csv \
+    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv \
     --formats atomtok \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
@@ -34,7 +34,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 100 \
-    --do_test \
+    --do_valid --do_test \
     --fp16
 
 
@@ -45,4 +45,4 @@ torchrun \
 #    --save_path output/indigo/swin_base_20_dynamic_aug \
 #    --no_pretrained --scheduler cosine --warmup 0.05 \
 #    --load_path output/pubchem/swin_base_10 --resume \
-#    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv,zinc/test.csv \
+#    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv \

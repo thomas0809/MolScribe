@@ -11,12 +11,12 @@ import pandas as pd
 import torch
 import torch.distributed as dist
 from torch.optim import Adam, AdamW, SGD
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 from transformers import get_scheduler
 
-from bms.dataset import TrainDataset, bms_collate
+from bms.dataset import TrainDataset, AuxTrainDataset, bms_collate
 from bms.model import Encoder, Decoder
 from bms.loss import Criterion
 from bms.utils import seed_torch, save_args, init_summary_writer, LossMeter, AverageMeter, asMinutes, timeSince, \
@@ -66,6 +66,8 @@ def get_args():
     parser.add_argument('--train_file', type=str, default=None)
     parser.add_argument('--valid_file', type=str, default=None)
     parser.add_argument('--test_file', type=str, default=None)
+    parser.add_argument('--aux_file', type=str, default=None)
+    parser.add_argument('--vocab_file', type=str, default=None)
     parser.add_argument('--dynamic_indigo', action='store_true')
     parser.add_argument('--default_option', action='store_true')
     parser.add_argument('--formats', type=str, default=None)
@@ -78,6 +80,7 @@ def get_args():
     parser.set_defaults(rotate=True)
     parser.add_argument('--coord_bins', type=int, default=100)
     parser.add_argument('--sep_xy', action='store_true')
+    parser.add_argument('--mask_ratio', type=float, default=0)
     parser.add_argument('--patch', action='store_true')
     parser.add_argument('--patch_size', type=int, default=5)
     parser.add_argument('--load_graph_path', type=str, default=None)
@@ -206,6 +209,16 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         images = images.to(device)
         batch_size = images.size(0)
         with torch.cuda.amp.autocast(enabled=args.fp16):
+            # if step <= 4 and args.local_rank == 0:
+            #     print('-'*10, step, '-'*10)
+            #     print(indices)
+            #     print(len(indices))
+            #     for format_, value in refs.items():
+            #         print(format_)
+            #         if type(value) is list:
+            #             print(value[0][:10])
+            #         else:
+            #             print(value[:10])
             features, hiddens = encoder(images, refs)
             results = decoder(features, hiddens, refs)
             losses = criterion(results, refs)
@@ -310,7 +323,7 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
     return predictions, beam_predictions
 
 
-def train_loop(args, train_df, valid_df, tokenizer, save_path):
+def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
     
     SUMMARY = None
     
@@ -327,8 +340,12 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
     # loader
     # ====================================================
 
-    train_dataset = TrainDataset(args, train_df, tokenizer, split='train')
-    print_rank_0(train_dataset.transform)
+    if aux_df is None:
+        train_dataset = TrainDataset(args, train_df, tokenizer, split='train', dynamic_indigo=args.dynamic_indigo)
+        print_rank_0(train_dataset.transform)
+    else:
+        train_dataset = AuxTrainDataset(args, train_df, aux_df, tokenizer)
+        print_rank_0(len(train_dataset))
     if args.local_rank != -1:
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
     else:
@@ -403,12 +420,13 @@ def train_loop(args, train_df, valid_df, tokenizer, save_path):
                     'decoder_scheduler': decoder_scheduler.state_dict(),
                     'global_step': global_step}
 
-        if 'edges' in args.formats or 'graph' in args.formats:
-            score = scores['graph']
-        elif 'nodes' in args.formats or 'grid' in args.formats:
-            score = scores['symbols']
+        if 'post_smiles' in scores:
+            score = scores['post_smiles']
+        elif 'canon_smiles' in scores:
+            score = scores['canon_smiles']
         else:
-            score = scores['canon_smiles_em']
+            print_rank_0("Score not defined!")
+            score = 0
 
         if SUMMARY:
             SUMMARY.add_scalar('train/loss', avg_loss, global_step)
@@ -510,9 +528,12 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         else:
             pred_df['graph_SMILES'] = smiles_list
 
-    if 'atomtok_coords' in args.formats:
-        smiles_list, r_success = postprocess_smiles(pred_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'],
-                                                    pred_df['edges'])
+    if 'SMILES' in pred_df.columns:
+        if 'edges' in pred_df.columns:
+            smiles_list, r_success = postprocess_smiles(pred_df['SMILES'], pred_df['node_coords'],
+                                                        pred_df['node_symbols'], pred_df['edges'])
+        else:
+            smiles_list, r_success = postprocess_smiles(pred_df['SMILES'])
         print(f'Postprocess SMILES success ratio: {r_success:.4f}')
         pred_df['post_SMILES'] = smiles_list
 
@@ -529,6 +550,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                 scores['post_smiles'] = post_scores['canon_smiles']
                 scores['post_graph'] = post_scores['graph']
                 scores['post_chiral'] = post_scores['chiral']
+                scores['post_valid'] = post_scores['pred_valid']
             if 'graph_SMILES' in pred_df.columns:
                 graph_scores = evaluator.evaluate(pred_df['graph_SMILES'])
                 scores['graph_smiles_em'] = graph_scores['canon_smiles_em']
@@ -575,11 +597,14 @@ def get_bms_data(args):
 
 
 def get_chemdraw_data(args):
-    train_df, valid_df, test_df = None, None, None
+    train_df, valid_df, test_df, aux_df = None, None, None, None
     if args.do_train:
         train_files = args.train_file.split(',')
         train_df = pd.concat([pd.read_csv(os.path.join(args.data_path, file)) for file in train_files])
         print_rank_0(f'train.shape: {train_df.shape}')
+        if args.aux_file:
+            aux_df = pd.read_csv(os.path.join(args.data_path, args.aux_file))
+            print_rank_0(f'aux.shape: {aux_df.shape}')
     if args.do_train or args.do_valid:
         valid_df = pd.read_csv(os.path.join(args.data_path, args.valid_file))
         valid_df.attrs['file'] = args.valid_file
@@ -593,16 +618,22 @@ def get_chemdraw_data(args):
     tokenizer = {}
     for format_ in args.formats:
         if format_ == 'atomtok':
-            tokenizer['atomtok'] = Tokenizer('bms/vocab.json')
+            if args.vocab_file is None:
+                args.vocab_file = 'bms/vocab.json'
+            tokenizer['atomtok'] = Tokenizer(args.vocab_file)
+            print_rank_0(f'tokenizer: {args.vocab_file}')
         elif format_ in ['nodes', 'graph', 'grid']:
             tokenizer[format_] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
             args.num_symbols = tokenizer[format_].len_symbols()
         elif format_ == "atomtok_coords":
-            tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, 'bms/vocab_rf.json', args.sep_xy)
+            if args.vocab_file is None:
+                args.vocab_file = 'bms/vocab_rf.json' if args.mol_augment else 'bms/vocab.json'
+            tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, args.vocab_file, args.sep_xy)
+            print_rank_0(f'tokenizer: {args.vocab_file}')
     if args.patch:
         tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
         args.num_symbols = tokenizer['graph'].len_symbols()
-    return train_df, valid_df, test_df, tokenizer
+    return train_df, valid_df, test_df, aux_df, tokenizer
 
 
 def main():
@@ -625,8 +656,9 @@ def main():
 
     if args.dataset == 'bms':
         train_df, valid_df, test_df, tokenizer = get_bms_data(args)
+        aux_df = None
     else:
-        train_df, valid_df, test_df, tokenizer = get_chemdraw_data(args)
+        train_df, valid_df, test_df, aux_df, tokenizer = get_chemdraw_data(args)
 
     if args.do_train and args.trunc_train:
         train_df = train_df[:args.trunc_train]
@@ -635,7 +667,7 @@ def main():
     
     if args.debug:
         args.epochs = 1
-        # args.save_path = 'output/debug'
+        args.save_path = 'output/debug'
         args.print_freq = 50
         if args.do_train:
             train_df = train_df.sample(n=2000, random_state=42).reset_index(drop=True)
@@ -645,7 +677,7 @@ def main():
             test_df = [df[:1000] for df in test_df]
     
     if args.do_train:
-        train_loop(args, train_df, valid_df, tokenizer, args.save_path)
+        train_loop(args, train_df, valid_df, aux_df, tokenizer, args.save_path)
         
     if args.do_valid:
         scores = inference(args, valid_df, tokenizer, save_path=args.save_path, split='valid')

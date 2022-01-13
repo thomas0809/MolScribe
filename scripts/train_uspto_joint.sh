@@ -16,26 +16,28 @@ torchrun \
     train.py \
     --dataset chemdraw \
     --data_path data/molbank \
-    --train_file uspto_mol/train.csv \
+    --train_file pubchem/train_200k.csv \
+    --aux_file uspto_mol/train.csv \
     --valid_file Img2Mol/USPTO.csv \
     --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \
     --vocab_file bms/vocab_uspto.json \
-    --formats atomtok \
-    --augment \
+    --formats atomtok_coords,edges \
+    --dynamic_indigo --augment --mol_augment \
+    --coord_bins 64 --sep_xy --mask_ratio 0.4 \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
     --decoder transformer \
-    --encoder_lr 1e-3 \
-    --decoder_lr 1e-3 \
-    --save_path output/uspto/swin_base_augment \
+    --encoder_lr 4e-4 \
+    --decoder_lr 4e-4 \
+    --save_path output/uspto/swin_base_aux \
     --label_smoothing 0.1 \
-    --epochs 10 \
+    --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
     --warmup 0.05 \
-    --print_freq 100 \
-    --do_train --do_valid --do_test \
+    --print_freq 200 \
+    --do_train --do_valid \
     --fp16
 
 

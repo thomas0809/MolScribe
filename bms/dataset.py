@@ -243,18 +243,20 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
 
 
 class TrainDataset(Dataset):
-    def __init__(self, args, df, tokenizer, split='train'):
+    def __init__(self, args, df, tokenizer, split='train', dynamic_indigo=False):
         super().__init__()
         self.df = df
         self.args = args
         self.tokenizer = tokenizer
         if 'file_path' in df.columns:
             self.file_paths = df['file_path'].values
+            if not self.file_paths[0].startswith(args.data_path):
+                self.file_paths = [os.path.join(args.data_path, path) for path in df['file_path']]
         self.split = split
+        self.smiles = df['SMILES'].values if 'SMILES' in df.columns else None
         self.labelled = (split == 'train')
         if self.labelled:
             self.formats = args.formats
-            self.smiles = df['SMILES'].values
             self.labels = {}
             for format_ in self.formats:
                 if format_ in ['atomtok', 'inchi']:
@@ -272,106 +274,123 @@ class TrainDataset(Dataset):
                                         augment=(self.labelled and args.augment),
                                         rotate=args.rotate)
         # self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
-        self.dynamic_indigo = (args.dynamic_indigo and split == 'train')
+        self.dynamic_indigo = (dynamic_indigo and split == 'train')
         
     def __len__(self):
         return len(self.df)
 
+    def image_transform(self, image, coords=[]):
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # .astype(np.float32)
+        augmented = self.transform(image=image, keypoints=coords)
+        image = augmented['image']
+        if coords:
+            _, height, width = image.shape
+            coords = np.array(augmented['keypoints'])
+            coords[:, 0] = coords[:, 0] / width
+            coords[:, 1] = coords[:, 1] / height
+            return image, coords
+        return image
+
     def __getitem__(self, idx):
-        begin = time.time()
+        ref = {}
         if self.dynamic_indigo:
+            begin = time.time()
             image, smiles, graph, success = generate_indigo_image(
                 self.smiles[idx],
                 mol_augment=self.args.mol_augment,
                 default_option=self.args.default_option,
                 shuffle_nodes=self.args.shuffle_nodes)
-            raw_image = image
+            # raw_image = image
+            end = time.time()
             if not success:
                 return idx, None, {}
+            image, coords = self.image_transform(image, graph['coords'])
+            graph['coords'] = coords
+            ref['time'] = end - begin
+            if 'atomtok' in self.formats:
+                max_len = FORMAT_INFO['atomtok']['max_len']
+                label = self.tokenizer['atomtok'].text_to_sequence(smiles, tokenized=False)
+                ref['atomtok'] = torch.LongTensor(label[:max_len])
+            if 'nodes' in self.formats:
+                max_len = FORMAT_INFO['nodes']['max_len']
+                label = torch.LongTensor(self.tokenizer['nodes'].nodes_to_sequence(graph))
+                ref['nodes'] = torch.LongTensor(label[:max_len])
+            if 'edges' in self.formats and 'atomtok_coords' not in self.formats:
+                ref['edges'] = torch.tensor(graph['edges'])
+            if 'graph' in self.formats or self.args.patch:
+                graph_ref = {
+                    'coords': torch.tensor(graph['coords']),
+                    'labels': torch.tensor(self.tokenizer['graph'].symbols_to_labels(graph['symbols'])),
+                    'edges': torch.tensor(graph['edges'])
+                }
+                ref['graph'] = graph_ref
+            if 'grid' in self.formats:
+                ref['grid'] = torch.tensor(self.tokenizer['grid'].nodes_to_grid(graph))
+            if 'atomtok_coords' in self.formats:
+                self._process_atomtok_coords(ref, smiles, graph['coords'], graph['edges'],
+                                             continuous_coords=self.args.continuous_coords,
+                                             mask_ratio=self.args.mask_ratio)
+            return idx, image, ref
         else:
             file_path = self.file_paths[idx]
             image = cv2.imread(file_path)
-            graph = {}
-        end = time.time()
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # .astype(np.float32)
-        augmented = self.transform(image=image, keypoints=graph.get('coords', []))
-        image = augmented['image']
-        if 'coords' in graph:
-            _, height, width = image.shape
-            coords = np.array(augmented['keypoints'])
-            coords[:, 0] = coords[:, 0] / width
-            coords[:, 1] = coords[:, 1] / height
-            graph['coords'] = coords
-        # if idx < 100:
-        #     import json
-        #     with open(f'tmp/{idx}.txt', 'w') as f:
-        #         obj = {'image': image.tolist()}
-        #         for k, v in graph.items():
-        #             if type(v) is np.ndarray:
-        #                 v = v.tolist()
-        #             obj[k] = v
-        #         json.dump(obj, f)
-        if self.labelled:
-            ref = {}
-            if self.dynamic_indigo:
-                ref['time'] = end - begin
-                if self.args.reweight:
-                    ref['reweight_coef'] = self.reweight_coef[graph['num_atoms']]
+            image = self.image_transform(image)
+            if self.labelled:
+                smiles = self.smiles[idx]
                 if 'atomtok' in self.formats:
                     max_len = FORMAT_INFO['atomtok']['max_len']
-                    label = torch.LongTensor(self.tokenizer['atomtok'].text_to_sequence(smiles, tokenized=False)[:max_len])
-                    label_length = torch.LongTensor([len(label)])
-                    ref['atomtok'] = (label, label_length)
-                if 'nodes' in self.formats:
-                    max_len = FORMAT_INFO['nodes']['max_len']
-                    label = torch.LongTensor(self.tokenizer['nodes'].nodes_to_sequence(graph)[:max_len])
-                    label_length = torch.LongTensor([len(label)])
-                    ref['nodes'] = (label, label_length)
-                if 'edges' in self.formats and 'atomtok_coords' not in self.formats:
-                    ref['edges'] = torch.tensor(graph['edges'])
-                if 'graph' in self.formats or self.args.patch:
-                    graph_ref = {
-                        'coords': torch.tensor(graph['coords']),
-                        'labels': torch.tensor(self.tokenizer['graph'].symbols_to_labels(graph['symbols'])),
-                        'edges': torch.tensor(graph['edges'])
-                    }
-                    ref['graph'] = graph_ref
-                if 'grid' in self.formats:
-                    ref['grid'] = torch.tensor(self.tokenizer['grid'].nodes_to_grid(graph))
+                    label = self.tokenizer['atomtok'].text_to_sequence(smiles, False)
+                    ref['atomtok'] = torch.LongTensor(label[:max_len])
                 if 'atomtok_coords' in self.formats:
-                    max_len = FORMAT_INFO['atomtok_coords']['max_len']
-                    if self.args.continuous_coords:
-                        ref['coords'] = torch.tensor(graph['coords'])
-                        label, indices = self.tokenizer['atomtok_coords'].smiles_coords_to_sequence(smiles)
-                    else:
-                        label, indices = \
-                            self.tokenizer['atomtok_coords'].smiles_coords_to_sequence(smiles, graph['coords'])
-                    label = torch.LongTensor(label[:max_len])
-                    label_length = torch.LongTensor([len(label)])
-                    edges = torch.tensor(graph['edges'])
-                    ref['atomtok_coords'] = (label, label_length)
-                    indices = [i for i in indices if i < max_len]
-                    ref['atom_indices'] = (torch.LongTensor(indices), torch.LongTensor([len(indices)]))
-                    ref['edges'] = edges[:len(indices), :len(indices)]
-            else:
-                for format_ in self.formats:
-                    label = self.labels[format_][idx]
-                    label = self.tokenizer[format_].text_to_sequence(label)
-                    label = torch.LongTensor(label)
-                    label_length = len(label)
-                    label_length = torch.LongTensor([label_length])
-                    ref[format_] = (label, label_length)
+                    self._process_atomtok_coords(ref, smiles, continuous_coords=self.args.continuous_coords,
+                                                 mask_ratio=1)
             return idx, image, ref
+
+    def _process_atomtok_coords(self, ref, smiles, coords=None, edges=None, continuous_coords=False, mask_ratio=0):
+        max_len = FORMAT_INFO['atomtok_coords']['max_len']
+        tokenizer = self.tokenizer['atomtok_coords']
+        if continuous_coords:
+            label, indices = tokenizer.smiles_coords_to_sequence(smiles)
         else:
-            ref = {}
-            if self.load_graph:
-                row = self.pred_graph_df.iloc[idx]
-                ref['graph'] = {
-                    'coords': torch.tensor(eval(row['node_coords'])),
-                    'labels': torch.LongTensor(self.tokenizer['graph'].symbols_to_labels(eval(row['node_symbols']))),
-                    # 'edges': torch.tensor(eval(row['edges']))
-                }
-            return idx, image, ref
+            label, indices = tokenizer.smiles_coords_to_sequence(smiles, coords, mask_ratio=self.args.mask_ratio)
+        ref['atomtok_coords'] = torch.LongTensor(label[:max_len])
+        indices = [i for i in indices if i < max_len]
+        ref['atom_indices'] = torch.LongTensor(indices)
+        if continuous_coords:
+            if coords is not None:
+                ref['coords'] = torch.tensor(coords)
+            else:
+                ref['coords'] = torch.ones(len(indices), 2) * -1.
+        if edges is not None:
+            ref['edges'] = torch.tensor(edges)[:len(indices), :len(indices)]
+        else:
+            ref['edges'] = torch.ones(len(indices), len(indices), dtype=torch.long) * (-100)
+
+
+class AuxTrainDataset(Dataset):
+
+    def __init__(self, args, train_df, aux_df, tokenizer):
+        super().__init__()
+        self.train_dataset = TrainDataset(args, train_df, tokenizer, dynamic_indigo=args.dynamic_indigo)
+        self.aux_dataset = TrainDataset(args, aux_df, tokenizer, dynamic_indigo=False)
+
+    def __len__(self):
+        return len(self.train_dataset) * 2
+
+    def __getitem__(self, idx):
+        if idx < len(self.train_dataset):
+            return self.train_dataset[idx]
+        else:
+            worker_info = torch.utils.data.get_worker_info()
+            n = len(self.aux_dataset)
+            if worker_info is None:
+                idx = (idx + random.randrange(n)) % n
+            else:
+                per_worker = int(len(self.aux_dataset) / worker_info.num_workers)
+                worker_id = worker_info.id
+                start = worker_id * per_worker
+                idx = start + (idx + random.randrange(per_worker)) % per_worker
+            return self.aux_dataset[idx]
 
 
 def pad_images(imgs):
@@ -401,16 +420,16 @@ def bms_collate(batch):
         imgs.append(ex[1])
         ref = ex[2]
         for key in seq_formats:
-            refs[key][0].append(ref[key][0])
-            refs[key][1].append(ref[key][1])
+            refs[key][0].append(ref[key])
+            refs[key][1].append(torch.LongTensor([len(ref[key])]))
     # Sequence
     for key in seq_formats:
         # this padding should work for atomtok_with_coords too, each of which has shape (length, 4)
         refs[key][0] = pad_sequence(refs[key][0], batch_first=True, padding_value=PAD_ID)
         refs[key][1] = torch.stack(refs[key][1]).reshape(-1, 1)
     # Time
-    if 'time' in formats:
-        refs['time'] = [ex[2]['time'] for ex in batch]
+    # if 'time' in formats:
+    #     refs['time'] = [ex[2]['time'] for ex in batch]
     if 'reweight_coef' in formats:
         refs['reweight_coef'] = torch.tensor([ex[2]['reweight_coef'] for ex in batch])
     # Graph

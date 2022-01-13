@@ -16,25 +16,26 @@ torchrun \
     train.py \
     --dataset chemdraw \
     --data_path data/molbank \
-    --train_file pubchem/train_200k.csv \
-    --valid_file pubchem/valid.csv \
-    --test_file Img2Mol/CLEF.csv,Img2Mol/staker/staker.csv \
+    --train_file uspto_mol/train.csv \
+    --valid_file Img2Mol/USPTO.csv \
+    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \
+    --vocab_file bms/vocab_uspto.json \
     --formats atomtok \
+    --augment \
     --input_size 384 \
     --encoder swin_base_patch4_window12_384 \
     --decoder transformer \
     --encoder_lr 1e-3 \
     --decoder_lr 1e-3 \
-    --dynamic_indigo --augment \
-    --save_path output/pubchem/swin_base_200k_dynaug1 \
+    --save_path output/uspto/swin_base_augment20 \
     --label_smoothing 0.1 \
-    --epochs 50 \
+    --epochs 20 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
     --gradient_accumulation_steps $ACCUM_STEP \
     --use_checkpoint \
     --warmup 0.05 \
-    --print_freq 100 \
-    --do_test \
+    --print_freq 200 \
+    --do_train --do_valid --do_test \
     --fp16
 
 

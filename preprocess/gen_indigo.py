@@ -24,11 +24,14 @@ def generate_image(obj):
     dirname, filename = os.path.split(path)
     os.makedirs(dirname, exist_ok=True)
     try:
-        mol = indigo.loadMolecule(row['SMILES'])
+        smiles = row['SMILES']
+        if smiles is None or type(smiles) is not str:
+            smiles = ''
+        mol = indigo.loadMolecule(smiles)
         renderer.renderToFile(mol, path)
         success = True
     except:
-        print(split, path, row['SMILES'])
+        print(path, row['SMILES'])
         success = False
         if os.path.exists(path):
             os.remove(path)
@@ -70,15 +73,28 @@ def generate_image(obj):
 
 # Generate Zinc molecules
 
-for split in ['valid', 'test']:
-    print(split)
-    df = pd.read_csv(f'data/molbank/zinc/{split}_raw.csv')
-    print('zinc', len(df))
-    # df = df[:20000]
-    df.rename(columns={'zinc_id': 'image_id'}, inplace=True)
-    df['file_path'] = [f'data/molbank/zinc/images/{id}.png' for id in df['image_id'].values]
-    with multiprocessing.Pool(16) as pool:
-        success = pool.map(generate_image, list(df.iterrows()))
-    df = df[success]
-    print('indigo', len(df))
-    df.to_csv(f'data/molbank/zinc/{split}.csv', index=False)
+# for split in ['valid', 'test']:
+#     print(split)
+#     df = pd.read_csv(f'data/molbank/zinc/{split}_raw.csv')
+#     print('zinc', len(df))
+#     # df = df[:20000]
+#     df.rename(columns={'zinc_id': 'image_id'}, inplace=True)
+#     df['file_path'] = [f'data/molbank/zinc/images/{id}.png' for id in df['image_id'].values]
+#     with multiprocessing.Pool(16) as pool:
+#         success = pool.map(generate_image, list(df.iterrows()))
+#     df = df[success]
+#     print('indigo', len(df))
+#     df.to_csv(f'data/molbank/zinc/{split}.csv', index=False)
+
+
+# Generate USPTO test
+
+df = pd.read_csv('data/molbank/uspto_test/raw.csv')
+print('uspto_test', len(df))
+df['file_path'] = [f'uspto_test/chemdraw/{id}.png' for id in df['image_id']]
+df.to_csv('data/molbank/uspto_test/uspto_chemdraw.csv', index=False)
+df['file_path'] = [f'uspto_test/indigo/{id}.png' for id in df['image_id']]
+with multiprocessing.Pool(16) as pool:
+    success = pool.map(generate_image, list(df.iterrows()))
+print('indigo', sum(success))
+df.to_csv('data/molbank/uspto_test/uspto_indigo.csv', index=False)

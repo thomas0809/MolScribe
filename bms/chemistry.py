@@ -4,7 +4,6 @@ import numpy as np
 import multiprocessing
 
 from indigo import Indigo
-from indigo.renderer import IndigoRenderer
 import rdkit
 import rdkit.Chem as Chem
 rdkit.RDLogger.DisableLog('rdApp.*')
@@ -212,6 +211,7 @@ class SmilesEvaluator(object):
         results['canon_smiles'] = (np.array(self.gold_smiles_cistrans) == np.array(pred_smiles_cistrans)).mean()
         # Evaluate on molecules with chiral centers
         chiral = np.array([[g, p] for g, p in zip(self.gold_smiles_cistrans, pred_smiles_cistrans) if '@' in g])
+        results['chiral_ratio'] = len(chiral) / len(self.gold_smiles)
         results['chiral'] = (chiral[:, 0] == chiral[:, 1]).mean() if len(chiral) > 0 else -1
         return results
 
@@ -389,8 +389,13 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
             idx = mol.AddAtom(atom)
         else:
             symbol = symbols[i]
-            atom = Chem.AtomFromSmiles(symbol)
-            idx = mol.AddAtom(atom)
+            try:
+                atom = Chem.AtomFromSmiles(symbol)
+                atom.SetChiralTag(Chem.rdchem.ChiralType.CHI_UNSPECIFIED)
+                idx = mol.AddAtom(atom)
+            except:
+                atom = Chem.Atom("*")
+                idx = mol.AddAtom(atom)
         assert idx == i
         ids.append(idx)
 
@@ -419,7 +424,7 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
 
     try:
         if has_chirality:
-            mol = _verify_chirality(mol, coords, symbols, edges)
+            mol = _verify_chirality(mol, coords, symbols, edges, debug)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         pred_smiles = _expand_functional_group(mol, mappings)
         success = True
@@ -440,15 +445,19 @@ def convert_graph_to_smiles(coords, symbols, edges, num_workers=16, simple=False
     return smiles_list, r_success
 
 
-def _postprocess_smiles(smiles, coords, symbols, edges, debug=False):
+def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, debug=False):
     if type(smiles) is not str or smiles == '':
         return '', False
     mol = None
     try:
-        pred_smiles = smiles.replace('@', '').replace('/', '').replace('\\', '')
+        pred_smiles = smiles
         pred_smiles, mappings = _replace_functional_group(pred_smiles)
-        mol = Chem.RWMol(Chem.MolFromSmiles(pred_smiles))
-        mol = _verify_chirality(mol, coords, symbols, edges, debug)
+        if coords and symbols and edges:
+            pred_smiles = pred_smiles.replace('@', '').replace('/', '').replace('\\', '')
+            mol = Chem.RWMol(Chem.MolFromSmiles(pred_smiles))
+            mol = _verify_chirality(mol, coords, symbols, edges, debug)
+        else:
+            mol = Chem.MolFromSmiles(pred_smiles)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         pred_smiles = _expand_functional_group(mol, mappings)
         success = True
@@ -462,9 +471,12 @@ def _postprocess_smiles(smiles, coords, symbols, edges, debug=False):
     return pred_smiles, success
 
 
-def postprocess_smiles(smiles, coords, symbols, edges, num_workers=16):
+def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, num_workers=16):
     with multiprocessing.Pool(num_workers) as p:
-        results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges), chunksize=128)
+        if coords is not None and symbols is not None and edges is not None:
+            results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges), chunksize=128)
+        else:
+            results = p.map(_postprocess_smiles, smiles, chunksize=128)
     smiles_list, success = zip(*results)
     r_success = np.mean(success)
     return smiles_list, r_success

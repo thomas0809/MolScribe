@@ -2,9 +2,9 @@ from typing import List
 
 
 RGROUP_SYMBOLS = ['R', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12',
-                  'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Rf', 'X', 'Y', 'Z', 'A', 'D', 'E', 'Ar']
+                  'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Rf', 'X', 'Y', 'Z', 'A', 'Ar']
 
-PLACEHOLDER_ATOMS = ["Ne", "Kr", "Rn", "Nd", "Yb", "At", "Fm", "Er"]
+PLACEHOLDER_ATOMS = ["Kr", "Xe", "Rn", "Nd", "Yb", "At", "Fm", "Er"]
 
 
 '''
