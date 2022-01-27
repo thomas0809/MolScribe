@@ -390,9 +390,10 @@ class TransformerDecoderAR(TransformerDecoderBase):
         return logits[:, :-1], labels[:, 1:], dec_out
 
     def decode(self, encoder_out, beam_size: int, n_best: int, min_length: int = 1, max_length: int = 256,
-               partial_labels=None):
+               labels=None):
         batch_size, max_len, _ = encoder_out.size()
         memory_bank = self.enc_transform(encoder_out)
+        orig_labels = labels
 
         if beam_size == 1:
             decode_strategy = GreedySearch(
@@ -418,10 +419,10 @@ class TransformerDecoderAR(TransformerDecoderBase):
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
             tgt = decode_strategy.current_predictions.view(-1, 1, 1)
-            if partial_labels is not None:
-                label = partial_labels[:, step].view(-1, 1, 1)
-                mask = label.eq(MASK_ID)
-                tgt = label.masked_scatter(mask, tgt)
+            if labels is not None:
+                label = labels[:, step].view(-1, 1, 1)
+                mask = label.eq(MASK_ID).long()
+                tgt = tgt * mask + label * (1-mask)
             tgt_emb, tgt_pad_mask = self.dec_embedding(tgt)
             dec_out, dec_attn, *_ = self.decoder(tgt_emb=tgt_emb, memory_bank=memory_bank,
                                                  tgt_pad_mask=tgt_pad_mask, step=step)
@@ -432,7 +433,13 @@ class TransformerDecoderAR(TransformerDecoderBase):
             dec_logits = dec_logits.squeeze(1)
             log_probs = F.log_softmax(dec_logits, dim=-1)
 
-            decode_strategy.advance(log_probs, attn, dec_out)
+            if self.tokenizer.output_constraint:
+                output_mask = [self.tokenizer.get_output_mask(id) for id in tgt.view(-1).tolist()]
+                output_mask = torch.tensor(output_mask, device=log_probs.device)
+                log_probs.masked_fill_(output_mask, -10000)
+
+            label = labels[:, step + 1] if labels is not None and step + 1 < labels.size(1) else None
+            decode_strategy.advance(log_probs, attn, dec_out, label)
             any_finished = decode_strategy.is_finished.any()
             if any_finished:
                 decode_strategy.update_finished()
@@ -443,13 +450,23 @@ class TransformerDecoderAR(TransformerDecoderBase):
             if any_finished:
                 # Reorder states.
                 memory_bank = memory_bank.index_select(0, select_indices)
+                if labels is not None:
+                    labels = labels.index_select(0, select_indices)
                 self.map_state(lambda state, dim: state.index_select(dim, select_indices))
 
         results["scores"] = decode_strategy.scores
         results["predictions"] = decode_strategy.predictions
         results["attention"] = decode_strategy.attention
         results["hidden"] = decode_strategy.hidden
-
+        if orig_labels is not None:
+            for i in range(batch_size):
+                pred = results["predictions"][i][0]
+                label = orig_labels[i][1:len(pred)+1]
+                mask = label.eq(MASK_ID).long()
+                pred = pred[:len(label)]
+                results["predictions"][i][0] = pred * mask + label * (1-mask)
+            #     print(results["predictions"][i][0])
+            # exit()
         return results["predictions"], results['scores'], results["hidden"]
 
     # adapted from onmt.decoders.transformer
@@ -656,8 +673,7 @@ class Decoder(nn.Module):
 
     def forward(self, encoder_out, hiddens, refs):
         results = {}
-        device = encoder_out.device
-        refs = to_device(refs, device)
+        refs = to_device(refs, encoder_out.device)
         for format_ in self.formats:
             if format_ == 'graph':
                 output = self.decoder['graph'](encoder_out)
@@ -683,10 +699,12 @@ class Decoder(nn.Module):
                 results[format_] = self.decoder[format_](encoder_out, labels, label_lengths)
         return results
 
-    def decode(self, encoder_out, hiddens, beam_size=1, n_best=1):
+    def decode(self, encoder_out, hiddens, refs=None, beam_size=1, n_best=1):
         results = {}
         predictions = {}
         beam_predictions = {}
+        if refs is not None:
+            refs = to_device(refs, encoder_out.device)
         for format_ in self.formats:
             if format_ == 'graph':
                 outputs = self.decoder['graph'].decode(encoder_out)
@@ -705,7 +723,9 @@ class Decoder(nn.Module):
             elif format_ == 'edges':
                 if 'nodes' in results:
                     dec_out = results['nodes'][2]  # batch x n_best x len x dim
-                    outputs = [[self.decoder['edges'](h.unsqueeze(0))['edges'].argmax(1).squeeze(0) for h in hs]
+                    # outputs = [[self.decoder['edges'](h.unsqueeze(0))['edges'].argmax(1).squeeze(0) for h in hs]
+                    #            for hs in dec_out]
+                    outputs = [[F.softmax(self.decoder['edges'](h.unsqueeze(0))['edges'].squeeze(0).permute(1, 2, 0), dim=2) for h in hs]
                                for hs in dec_out]
                     predictions['edges'] = [pred[0].tolist() for pred in outputs]
                 elif 'atomtok_coords' in results:
@@ -715,28 +735,33 @@ class Decoder(nn.Module):
                         hidden = dec_out[i][0].unsqueeze(0)  # 1 * len * dim
                         indices = torch.LongTensor(predictions['atomtok_coords'][i]['indices']).unsqueeze(0)  # 1 * k
                         pred = self.decoder['edges'](hidden, indices)  # k * k
-                        predictions['edges'].append(pred['edges'].argmax(1).squeeze(0).tolist())
+                        # predictions['edges'].append(pred['edges'].argmax(1).squeeze(0).tolist())
+                        predictions['edges'].append(F.softmax(pred['edges'].squeeze(0).permute(1, 2, 0), dim=2).tolist())
                         if 'coords' in pred:
                             predictions['atomtok_coords'][i]['coords'] = pred['coords'].squeeze(0).tolist()
                 else:
                     raise NotImplemented
                 # results['edges'] = outputs     # batch x n_best x len x len
             elif format_ == 'nodes':
-                results['nodes'] = self.decoder['nodes'].decode(encoder_out, beam_size, n_best)
+                max_len = FORMAT_INFO['nodes']['max_len']
+                results['nodes'] = self.decoder['nodes'].decode(encoder_out, beam_size, n_best, max_length=max_len)
                 outputs, scores, *_ = results['nodes']
-                beam_preds = [[self.tokenizer['nodes'].sequence_to_nodes(x.tolist()) for x in pred] for pred in outputs]
+                beam_preds = [[self.tokenizer['nodes'].sequence_to_smiles(x.tolist()) for x in pred] for pred in outputs]
                 beam_predictions['nodes'] = (beam_preds, scores)
                 predictions['nodes'] = [pred[0] for pred in beam_preds]
             elif format_ == 'atomtok_coords':
-                results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
+                labels = refs['atomtok_coords'][0] if self.args.predict_coords else None
+                max_len = FORMAT_INFO['atomtok_coords']['max_len']
+                results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best, max_length=max_len,
+                                                                labels=labels)
                 outputs, scores, *_ = results[format_]
-                has_coords = (not self.args.continuous_coords)
-                beam_preds = [[self.tokenizer[format_].sequence_to_smiles(x.tolist(), has_coords) for x in pred]
+                beam_preds = [[self.tokenizer[format_].sequence_to_smiles(x.tolist()) for x in pred]
                               for pred in outputs]
                 beam_predictions[format_] = (beam_preds, scores)
                 predictions[format_] = [pred[0] for pred in beam_preds]
             else:
-                results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best)
+                max_len = FORMAT_INFO[format_]['max_len']
+                results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best, max_length=max_len)
                 outputs, scores, *_ = results[format_]
                 beam_preds = [[self.tokenizer[format_].predict_caption(x.tolist()) for x in pred] for pred in outputs]
                 beam_predictions[format_] = (beam_preds, scores)

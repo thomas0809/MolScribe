@@ -7,6 +7,8 @@ import time
 import datetime
 from tensorboardX import SummaryWriter
 from bms.tokenizer import *
+import json
+from json import encoder
 
 
 FORMAT_INFO = {
@@ -134,8 +136,29 @@ def print_rank_0(message):
 
 def to_device(data, device):
     if torch.is_tensor(data):
-        return data
+        return data.to(device)
     if type(data) is list:
         return [to_device(v, device) for v in data]
     if type(data) is dict:
         return {k: to_device(v, device) for k, v in data.items()}
+
+
+def round_floats(o):
+    if isinstance(o, float):
+        return round(o, 3)
+    if isinstance(o, dict):
+        return {k: round_floats(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [round_floats(x) for x in o]
+    return o
+
+
+def format_df(df):
+    def _dumps(obj):
+        if obj is None:
+            return obj
+        return json.dumps(round_floats(obj)).replace(" ", "")
+    for field in ['node_coords', 'node_symbols', 'edges']:
+        if field in df.columns:
+            df[field] = [_dumps(obj) for obj in df[field]]
+    return df

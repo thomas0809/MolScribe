@@ -35,7 +35,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid --do_test \
+    --do_test \
     --fp16
 
 

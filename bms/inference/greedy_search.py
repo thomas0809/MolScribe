@@ -73,12 +73,15 @@ class GreedySearch(DecodeStrategy):
             log_probs, self.sampling_temp, self.keep_topk)
         return topk_ids, topk_scores
 
-    def advance(self, log_probs, attn=None, hidden=None):
+    def advance(self, log_probs, attn=None, hidden=None, label=None):
         """Select next tokens randomly from the top k possible next tokens.
         """
         self.ensure_min_length(log_probs)
         topk_ids, self.topk_scores = self._pick(log_probs)
         self.is_finished = topk_ids.eq(self.eos)
+        if label is not None:
+            label = label.view_as(self.is_finished)
+            self.is_finished = label.eq(self.eos)
         self.alive_seq = torch.cat([self.alive_seq, topk_ids], -1)
 
         if self.return_attention:

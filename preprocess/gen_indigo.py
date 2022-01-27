@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 import multiprocessing
+import rdkit.Chem as Chem
 from indigo import Indigo
 from indigo.renderer import IndigoRenderer
 
@@ -91,6 +92,15 @@ def generate_image(obj):
 
 df = pd.read_csv('data/molbank/uspto_test/raw.csv')
 print('uspto_test', len(df))
+def convert_smiles(smiles):
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        smiles = Chem.MolToSmiles(mol, kekuleSmiles=True)
+    except:
+        smiles = ""
+    return smiles
+df['SMILES'] = [convert_smiles(smiles) for smiles in df['SMILES']]
+print('valid', sum([smiles is not None and type(smiles) is str and len(smiles) > 0 for smiles in df['SMILES']]))
 df['file_path'] = [f'uspto_test/chemdraw/{id}.png' for id in df['image_id']]
 df.to_csv('data/molbank/uspto_test/uspto_chemdraw.csv', index=False)
 df['file_path'] = [f'uspto_test/indigo/{id}.png' for id in df['image_id']]

@@ -4,7 +4,7 @@ NUM_NODES=1
 NUM_GPUS_PER_NODE=4
 NODE_RANK=0
 
-BATCH_SIZE=128
+BATCH_SIZE=256
 ACCUM_STEP=1
 
 MASTER_PORT=$(shuf -n 1 -i 10000-65535)
@@ -17,8 +17,8 @@ torchrun \
     --dataset chemdraw \
     --data_path data/molbank \
     --train_file pubchem/train_200k.csv \
-    --valid_file pubchem/valid.csv \
-    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv \
+    --valid_file uspto_mol/train.csv \
+    --test_file uspto_mol/train.csv \
     --formats atomtok_coords,edges \
     --input_size 384 \
     --encoder swin_base \
@@ -35,7 +35,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_valid --do_test \
+    --do_valid --predict_coords \
     --fp16
 
 

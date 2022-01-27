@@ -17,6 +17,9 @@ from bms.utils import NodeTokenizer
 from bms.chemistry import RGROUP_SYMBOLS, SUBSTITUTIONS
 from collections import Counter
 import json
+from json import encoder
+encoder.FLOAT_REPR = lambda o: format(o, '.3f')
+import numpy as np
 
 
 BASE = '/scratch/yujieq/uspto_grant_red/'
@@ -74,18 +77,47 @@ def unzip():
 
 
 # Filter
-def get_superatom(mol_file):
+def parse_mol_file(mol_file):
     with open(mol_file) as f:
         mol_data = f.read()
-    return [(int(i)-1, symb) for i, symb in re.findall(r'A\s+(\d+)\s+(\S+)\s', mol_data)]
+        superatom = [(int(i)-1, symb) for i, symb in re.findall(r'A\s+(\d+)\s+(\S+)\s', mol_data)]
+        lines = mol_data.split('\n')
+        coords = []
+        edges = []
+        for i, line in enumerate(lines):
+            if line.endswith("V2000"):
+                tokens = line.split()
+                num_atoms = int(tokens[0])
+                num_bonds = int(tokens[1])
+                for atom_line in lines[i + 1:i + 1 + num_atoms]:
+                    atom_tokens = atom_line.strip().split()
+                    coords.append([float(atom_tokens[0]), float(atom_tokens[1])])
+                for bond_line in lines[i + 1 + num_atoms:i + 1 + num_atoms + num_bonds]:
+                    bond_tokens = bond_line.strip().split()
+                    start, end, bond_type, stereo = [int(token) for token in bond_tokens[:4]]
+                    etype = bond_type if bond_type <= 4 else 1
+                    if bond_type == 1:
+                        if stereo == 1:
+                            etype = 5
+                        if stereo == 6:
+                            etype = 6
+                    edges.append((start - 1, end - 1, etype))
+                break
+    return superatom, coords, edges
 
 def convert_mol_to_smiles(mol_file, debug=False):
     try:
         mol = Chem.MolFromMolFile(mol_file, sanitize=False)
         smiles = Chem.MolToSmiles(mol)
+        atom_order = mol.GetProp('_smilesAtomOutputOrder')
+        atom_order = eval(atom_order)  # str -> List[int], since the Prop is a str
+        reverse_map = np.argsort(atom_order)
         if mol.GetNumAtoms() < 3 or mol.GetNumAtoms() > 100:
-            return None, None
-        superatoms = get_superatom(mol_file)
+            return None, None, None, None
+        superatoms, coords, edges = parse_mol_file(mol_file)
+        coords = np.array(coords)
+        coords = coords[atom_order].tolist()
+        edges = [(int(reverse_map[start]), int(reverse_map[end]), etype) for (start, end, etype) in edges]
         pseudo_smiles = smiles
         if len(superatoms) > 0:
             mappings = []
@@ -102,11 +134,11 @@ def convert_mol_to_smiles(mol_file, debug=False):
             pseudo_smiles = Chem.MolToSmiles(mw)
             for placeholder, symb in mappings:
                 pseudo_smiles = pseudo_smiles.replace(placeholder, symb)
-        return smiles, pseudo_smiles
+        return smiles, pseudo_smiles, coords, edges
     except Exception as e:
         if debug:
             raise e
-        return None, None
+        return None, None, None, None
 
 def canonical_smiles(smiles):
     try:
@@ -123,17 +155,20 @@ def filter():
             mol_path.append(file)
             img_path.append(mol_path[-1].replace('.MOL', '.TIF'))
     print(len(mol_path))
-    # for path in mol_path[:100]:
+    # for path in mol_path[:10]:
     #     print(convert_mol_to_smiles(path, debug=True))
     with multiprocessing.Pool(32) as p:
         results = p.map(convert_mol_to_smiles, mol_path, chunksize=64)
-    smiles_list, pseudo_smiles_list = zip(*results)
+    print('Convert finish')
+    smiles_list, pseudo_smiles_list, coords_list, edges_list = zip(*results)
     img_path = ['uspto_mol/'+os.path.relpath(p, BASE_MOL) for p in img_path]
     mol_path = ['uspto_mol/'+os.path.relpath(p, BASE_MOL) for p in mol_path]
     df = pd.DataFrame({'file_path': img_path,
                        'mol_path': mol_path,
-                       'SMILES': smiles_list,
-                       'pseudo_SMILES': pseudo_smiles_list})
+                       'raw_SMILES': smiles_list,
+                       'SMILES': pseudo_smiles_list,
+                       'node_coords': [json.dumps(coords).replace(" ", "") for coords in coords_list],
+                       'edges': [json.dumps(edges).replace(" ", "") for edges in edges_list]})
     bool_list = []
     seen_set = set()
     test_df = pd.read_csv('/Mounts/rbg-storage1/users/yujieq/bms/data/molbank/Img2Mol/staker/staker.csv')
@@ -153,8 +188,10 @@ def filter():
             else:
                 bool_list.append(True)
                 seen_set.add(s)
-    df.to_csv('USPTO_full.csv', index=False)
+    # df.to_csv('USPTO_full.csv', index=False)
+    print("Save csv")
     df = df[bool_list]
+    print(len(df))
     df.to_csv('USPTO_train.csv', index=False)
     for file_path, mol_path in tqdm(zip(df['file_path'], df['mol_path'])):
         src_file_path = '/scratch/yujieq/' + file_path
@@ -165,7 +202,7 @@ def filter():
             os.makedirs(os.path.dirname(dest_file_path), exist_ok=True)
             shutil.copy(src_file_path, dest_file_path)
             shutil.copy(src_mol_path, dest_mol_path)
-    print(len(df))
+
 
 
 # Vocab

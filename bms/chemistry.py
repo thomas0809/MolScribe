@@ -127,12 +127,15 @@ def get_num_atoms(smiles, num_workers=8):
     return num_atoms
 
 
-def normalize_nodes(nodes):
+def normalize_nodes(nodes, flip_y=True):
     x, y = nodes[:, 0], nodes[:, 1]
     minx, maxx = min(x), max(x)
     miny, maxy = min(y), max(y)
     x = (x - minx) / max(maxx - minx, 1e-6)
-    y = (maxy - y) / max(maxy - miny, 1e-6)
+    if flip_y:
+        y = (maxy - y) / max(maxy - miny, 1e-6)
+    else:
+        y = (y - miny) / max(maxy - miny, 1e-6)
     return np.stack([x, y], axis=1)
 
 
@@ -193,6 +196,12 @@ class SmilesEvaluator(object):
         self.gold_canon_smiles, self.gold_valid = convert_smiles_to_canonsmiles(gold_smiles)
         self.gold_smiles_chiral, _ = convert_smiles_to_canonsmiles(gold_smiles, ignore_chiral=True)
         self.gold_smiles_cistrans, _ = convert_smiles_to_canonsmiles(gold_smiles, ignore_cistrans=True)
+        self.gold_canon_smiles = self._replace_empty(self.gold_canon_smiles)
+        self.gold_smiles_chiral = self._replace_empty(self.gold_smiles_chiral)
+        self.gold_smiles_cistrans = self._replace_empty(self.gold_smiles_cistrans)
+
+    def _replace_empty(self, smiles_list):
+        return [smiles if smiles != "" else '<empty>' for smiles in smiles_list]
 
     def evaluate(self, pred_smiles):
         results = {}
@@ -303,10 +312,14 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
 
 
 def _replace_functional_group(smiles):
+    smiles = smiles.replace('<unk>', 'C')
     for i, r in enumerate(RGROUP_SYMBOLS):
         symbol = f'[{r}]'
         if symbol in smiles:
-            smiles = smiles.replace(symbol, f'[{i}*]')
+            if r[0] == 'R' and r[1:].isdigit():
+                smiles = smiles.replace(symbol, f'[{int(r[1:])}*]')
+            else:
+                smiles = smiles.replace(symbol, '*')
     mappings = []
     i = 0
     for sub in SUBSTITUTIONS:
@@ -420,7 +433,7 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
                 mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINWEDGE)
                 has_chirality = True
 
-    pred_smiles = ''
+    pred_smiles = '<invalid>'
 
     try:
         if has_chirality:
@@ -452,12 +465,12 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, debug=Fal
     try:
         pred_smiles = smiles
         pred_smiles, mappings = _replace_functional_group(pred_smiles)
-        if coords and symbols and edges:
+        if coords is not None and symbols is not None and edges is not None:
             pred_smiles = pred_smiles.replace('@', '').replace('/', '').replace('\\', '')
-            mol = Chem.RWMol(Chem.MolFromSmiles(pred_smiles))
+            mol = Chem.RWMol(Chem.MolFromSmiles(pred_smiles, sanitize=False))
             mol = _verify_chirality(mol, coords, symbols, edges, debug)
         else:
-            mol = Chem.MolFromSmiles(pred_smiles)
+            mol = Chem.MolFromSmiles(pred_smiles, sanitize=False)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         pred_smiles = _expand_functional_group(mol, mappings)
         success = True

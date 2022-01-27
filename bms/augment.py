@@ -3,6 +3,7 @@ from albumentations.augmentations.geometric.functional import safe_rotate_enlarg
                                                               keypoint_rotate
 import cv2
 import math
+import random
 import numpy as np
 
 
@@ -143,6 +144,71 @@ class CropWhite(A.DualTransform):
     def get_transform_init_args_names(self):
         return ('value', 'pad')
 
+
+class PadWhite(A.DualTransform):
+
+    def __init__(self, pad_ratio=0.2, p=0.5, value=(255, 255, 255)):
+        super(PadWhite, self).__init__(p=p)
+        self.pad_ratio = pad_ratio
+        self.value = value
+
+    def update_params(self, params, **kwargs):
+        super().update_params(params, **kwargs)
+        assert "image" in kwargs
+        img = kwargs["image"]
+        height, width, _ = img.shape
+        side = random.randrange(4)
+        if side == 0:
+            params['pad_top'] = int(height * self.pad_ratio * random.random())
+        elif side == 1:
+            params['pad_bottom'] = int(height * self.pad_ratio * random.random())
+        elif side == 2:
+            params['pad_left'] = int(width * self.pad_ratio * random.random())
+        elif side == 3:
+            params['pad_right'] = int(width * self.pad_ratio * random.random())
+        return params
+
+    def apply(self, img, pad_top=0, pad_bottom=0, pad_left=0, pad_right=0, **params):
+        height, width, _ = img.shape
+        img = A.augmentations.pad_with_params(
+            img,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            border_mode=cv2.BORDER_CONSTANT,
+            value=self.value)
+        return img
+
+    def apply_to_keypoint(self, keypoint, pad_top=0, pad_bottom=0, pad_left=0, pad_right=0, **params):
+        x, y, angle, scale = keypoint[:4]
+        return x + pad_left, y + pad_top, angle, scale
+
+    def get_transform_init_args_names(self):
+        return ('value', 'pad_ratio')
+
+
+class SaltAndPepperNoise(A.DualTransform):
+
+    def __init__(self, num_dots, value=(0, 0, 0), p=0.5):
+        super().__init__(p)
+        self.num_dots = num_dots
+        self.value = value
+
+    def apply(self, img, **params):
+        height, width, _ = img.shape
+        num_dots = random.randrange(self.num_dots + 1)
+        for i in range(num_dots):
+            x = random.randrange(height)
+            y = random.randrange(width)
+            img[x, y] = self.value
+        return img
+
+    def apply_to_keypoint(self, keypoint, **params):
+        return keypoint
+
+    def get_transform_init_args_names(self):
+        return ('value', 'num_dots')
     
 class ResizePad(A.DualTransform):
 

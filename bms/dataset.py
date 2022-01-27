@@ -15,9 +15,9 @@ from albumentations.pytorch import ToTensorV2
 from indigo import Indigo
 from indigo.renderer import IndigoRenderer
 
-from bms.augment import SafeRotate, CropWhite, NormalizedGridDistortion
+from bms.augment import SafeRotate, CropWhite, NormalizedGridDistortion, PadWhite, SaltAndPepperNoise
 from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
-from bms.chemistry import get_num_atoms, RGROUP_SYMBOLS, SUBSTITUTIONS
+from bms.chemistry import get_num_atoms, RGROUP_SYMBOLS, SUBSTITUTIONS, normalize_nodes
 
 
 cv2.setNumThreads(1)
@@ -36,9 +36,11 @@ def get_transforms(input_size, augment=True, rotate=True, debug=False):
     if augment:
         trans_list += [
             # NormalizedGridDistortion(num_steps=10, distort_limit=0.3),
+            PadWhite(pad_ratio=0.4, p=0.2),
             A.Downscale(scale_min=0.15, scale_max=0.3, interpolation=3),
             A.Blur(),
-            A.GaussNoise()  # TODO GaussNoise applies clip [0,1]
+            A.GaussNoise(),
+            SaltAndPepperNoise(num_dots=20, p=0.5)
         ]
     trans_list.append(A.Resize(input_size, input_size))
     if not debug:
@@ -162,7 +164,7 @@ def add_comment(indigo):
         indigo.setOption('render-comment-offset', random.randint(2, 30))
 
 
-def get_graph(mol, img, shuffle_nodes=False):
+def get_graph(mol, image, shuffle_nodes=False, pseudo_coords=False):
     mol.layout()
     coords, symbols = [], []
     index_map = {}
@@ -170,10 +172,18 @@ def get_graph(mol, img, shuffle_nodes=False):
     if shuffle_nodes:
         random.shuffle(atoms)
     for i, atom in enumerate(atoms):
-        x, y = atom.coords()
+        if pseudo_coords:
+            x, y, z = atom.xyz()
+        else:
+            x, y = atom.coords()
         coords.append([x, y])
         symbols.append(atom.symbol())
         index_map[atom.index()] = i
+    if pseudo_coords:
+        coords = normalize_nodes(np.array(coords))
+        h, w, _ = image.shape
+        coords[:, 0] = coords[:, 0] * w
+        coords[:, 1] = coords[:, 1] * h
     n = len(symbols)
     edges = np.zeros((n, n), dtype=int)
     for bond in mol.iterateBonds():
@@ -194,7 +204,8 @@ def get_graph(mol, img, shuffle_nodes=False):
     return graph
 
 
-def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffle_nodes=False, debug=False):
+def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffle_nodes=False, pseudo_coords=False,
+                          debug=False):
     indigo = Indigo()
     renderer = IndigoRenderer(indigo)
     indigo.setOption('render-output-format', 'png')
@@ -231,7 +242,7 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
         buf = renderer.renderToBuffer(mol)
         img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 1)  # decode buffer to image
         # img = np.repeat(np.expand_dims(img, 2), 3, axis=2)  # expand to RGB
-        graph = get_graph(mol, img, shuffle_nodes)
+        graph = get_graph(mol, img, shuffle_nodes, pseudo_coords)
         success = True
     except Exception:
         if debug:
@@ -254,9 +265,9 @@ class TrainDataset(Dataset):
                 self.file_paths = [os.path.join(args.data_path, path) for path in df['file_path']]
         self.split = split
         self.smiles = df['SMILES'].values if 'SMILES' in df.columns else None
+        self.formats = args.formats
         self.labelled = (split == 'train')
         if self.labelled:
-            self.formats = args.formats
             self.labels = {}
             for format_ in self.formats:
                 if format_ in ['atomtok', 'inchi']:
@@ -275,19 +286,32 @@ class TrainDataset(Dataset):
                                         rotate=args.rotate)
         # self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
         self.dynamic_indigo = (dynamic_indigo and split == 'train')
+        if self.labelled and not dynamic_indigo and args.coords_file is not None:
+            if args.coords_file == 'aux_file':
+                self.coords_df = df
+                self.pseudo_coords = True
+            else:
+                self.coords_df = pd.read_csv(args.coords_file)
+                self.pseudo_coords = False
+        else:
+            self.coords_df = None
+            self.pseudo_coords = args.pseudo_coords
         
     def __len__(self):
         return len(self.df)
 
-    def image_transform(self, image, coords=[]):
+    def image_transform(self, image, coords=[], renormalize=False):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # .astype(np.float32)
         augmented = self.transform(image=image, keypoints=coords)
         image = augmented['image']
-        if coords:
-            _, height, width = image.shape
+        if len(coords) > 0:
             coords = np.array(augmented['keypoints'])
-            coords[:, 0] = coords[:, 0] / width
-            coords[:, 1] = coords[:, 1] / height
+            if renormalize:
+                coords = normalize_nodes(coords, flip_y=False)
+            else:
+                _, height, width = image.shape
+                coords[:, 0] = coords[:, 0] / width
+                coords[:, 1] = coords[:, 1] / height
             return image, coords
         return image
 
@@ -296,15 +320,13 @@ class TrainDataset(Dataset):
         if self.dynamic_indigo:
             begin = time.time()
             image, smiles, graph, success = generate_indigo_image(
-                self.smiles[idx],
-                mol_augment=self.args.mol_augment,
-                default_option=self.args.default_option,
-                shuffle_nodes=self.args.shuffle_nodes)
+                self.smiles[idx], mol_augment=self.args.mol_augment, default_option=self.args.default_option,
+                shuffle_nodes=self.args.shuffle_nodes, pseudo_coords=self.pseudo_coords)
             # raw_image = image
             end = time.time()
             if not success:
                 return idx, None, {}
-            image, coords = self.image_transform(image, graph['coords'])
+            image, coords = self.image_transform(image, graph['coords'], renormalize=self.pseudo_coords)
             graph['coords'] = coords
             ref['time'] = end - begin
             if 'atomtok' in self.formats:
@@ -313,7 +335,7 @@ class TrainDataset(Dataset):
                 ref['atomtok'] = torch.LongTensor(label[:max_len])
             if 'nodes' in self.formats:
                 max_len = FORMAT_INFO['nodes']['max_len']
-                label = torch.LongTensor(self.tokenizer['nodes'].nodes_to_sequence(graph))
+                label, indices = self.tokenizer['nodes'].smiles_to_sequence(smiles, graph['coords'], atom_only=True)
                 ref['nodes'] = torch.LongTensor(label[:max_len])
             if 'edges' in self.formats and 'atomtok_coords' not in self.formats:
                 ref['edges'] = torch.tensor(graph['edges'])
@@ -327,14 +349,23 @@ class TrainDataset(Dataset):
             if 'grid' in self.formats:
                 ref['grid'] = torch.tensor(self.tokenizer['grid'].nodes_to_grid(graph))
             if 'atomtok_coords' in self.formats:
-                self._process_atomtok_coords(ref, smiles, graph['coords'], graph['edges'],
-                                             continuous_coords=self.args.continuous_coords,
+                self._process_atomtok_coords(idx, ref, smiles, graph['coords'], graph['edges'],
                                              mask_ratio=self.args.mask_ratio)
             return idx, image, ref
         else:
             file_path = self.file_paths[idx]
             image = cv2.imread(file_path)
-            image = self.image_transform(image)
+            if self.coords_df is not None:
+                h, w, _ = image.shape
+                coords = np.array(eval(self.coords_df.loc[idx, 'node_coords']))
+                if self.pseudo_coords:
+                    coords = normalize_nodes(coords)
+                coords[:, 0] = coords[:, 0] * w
+                coords[:, 1] = coords[:, 1] * h
+                image, coords = self.image_transform(image, coords, renormalize=self.pseudo_coords)
+            else:
+                image = self.image_transform(image)
+                coords = None
             if self.labelled:
                 smiles = self.smiles[idx]
                 if 'atomtok' in self.formats:
@@ -342,21 +373,25 @@ class TrainDataset(Dataset):
                     label = self.tokenizer['atomtok'].text_to_sequence(smiles, False)
                     ref['atomtok'] = torch.LongTensor(label[:max_len])
                 if 'atomtok_coords' in self.formats:
-                    self._process_atomtok_coords(ref, smiles, continuous_coords=self.args.continuous_coords,
-                                                 mask_ratio=1)
+                    if coords is not None:
+                        self._process_atomtok_coords(idx, ref, smiles, coords, mask_ratio=0)
+                    else:
+                        self._process_atomtok_coords(idx, ref, smiles, mask_ratio=1)
+            if self.args.predict_coords and 'atomtok_coords' in self.formats:
+                smiles = self.smiles[idx]
+                self._process_atomtok_coords(idx, ref, smiles, mask_ratio=1)
             return idx, image, ref
 
-    def _process_atomtok_coords(self, ref, smiles, coords=None, edges=None, continuous_coords=False, mask_ratio=0):
+    def _process_atomtok_coords(self, idx, ref, smiles, coords=None, edges=None, mask_ratio=0):
         max_len = FORMAT_INFO['atomtok_coords']['max_len']
         tokenizer = self.tokenizer['atomtok_coords']
-        if continuous_coords:
-            label, indices = tokenizer.smiles_coords_to_sequence(smiles)
-        else:
-            label, indices = tokenizer.smiles_coords_to_sequence(smiles, coords, mask_ratio=self.args.mask_ratio)
+        if smiles is None or type(smiles) is not str:
+            smiles = ""
+        label, indices = tokenizer.smiles_to_sequence(smiles, coords, mask_ratio=mask_ratio)
         ref['atomtok_coords'] = torch.LongTensor(label[:max_len])
         indices = [i for i in indices if i < max_len]
         ref['atom_indices'] = torch.LongTensor(indices)
-        if continuous_coords:
+        if tokenizer.continuous_coords:
             if coords is not None:
                 ref['coords'] = torch.tensor(coords)
             else:
@@ -364,7 +399,21 @@ class TrainDataset(Dataset):
         if edges is not None:
             ref['edges'] = torch.tensor(edges)[:len(indices), :len(indices)]
         else:
-            ref['edges'] = torch.ones(len(indices), len(indices), dtype=torch.long) * (-100)
+            if 'edges' in self.df.columns:
+                edge_list = eval(self.df.loc[idx, 'edges'])
+                n = len(indices)
+                edges = torch.zeros((n, n), dtype=torch.long)
+                for u, v, t in edge_list:
+                    if u < n and v < n:
+                        if t <= 4:
+                            edges[u, v] = t
+                            edges[v, u] = t
+                        else:
+                            edges[u, v] = t
+                            edges[v, u] = 11 - t
+                ref['edges'] = edges
+            else:
+                ref['edges'] = torch.ones(len(indices), len(indices), dtype=torch.long) * (-100)
 
 
 class AuxTrainDataset(Dataset):

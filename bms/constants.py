@@ -4,7 +4,7 @@ from typing import List
 RGROUP_SYMBOLS = ['R', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12',
                   'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Rf', 'X', 'Y', 'Z', 'A', 'Ar']
 
-PLACEHOLDER_ATOMS = ["Kr", "Xe", "Rn", "Nd", "Yb", "At", "Fm", "Er"]
+PLACEHOLDER_ATOMS = ["Xe", "Rn", "Nd", "Yb", "At", "Fm", "Er"]
 
 
 '''
@@ -82,7 +82,7 @@ SUBSTITUTIONS: List[Substitution] = [
     Substitution(['OCF3', 'F3CO'], '[OH0;X2][CH0;D4](F)(F)F', "OC(F)(F)F", 0.5),
     Substitution(['CCl3'], '[CH0;D4](Cl)(Cl)Cl', "[C](Cl)(Cl)Cl", 0.5),
     Substitution(['CO2H', 'HO2C', 'COOH'], 'C(=O)[OH]', "[C](=O)O", 0.2),  # COOH
-    Substitution(['CN', 'NC'], 'C#[ND1]', "[C]#N", 0.1),
+    Substitution(['CN', 'NC'], 'C#[ND1]', "[C]#N", 0.3),
     Substitution(['OCH3', 'H3CO'], '[OH0;D2][CH3]', "[O]C", 0.2),
     Substitution(['SO3H'], 'S(=O)(=O)[OH]', "[S](=O)(=O)O", 0.4),
 ]

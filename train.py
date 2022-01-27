@@ -20,7 +20,7 @@ from bms.dataset import TrainDataset, AuxTrainDataset, bms_collate
 from bms.model import Encoder, Decoder
 from bms.loss import Criterion
 from bms.utils import seed_torch, save_args, init_summary_writer, LossMeter, AverageMeter, asMinutes, timeSince, \
-                      print_rank_0, FORMAT_INFO
+                      print_rank_0, format_df, FORMAT_INFO
 from bms.chemistry import SmilesEvaluator, convert_smiles_to_inchi, evaluate_nodes, convert_graph_to_smiles, \
                           postprocess_smiles
 from bms.tokenizer import Tokenizer, NodeTokenizer
@@ -67,9 +67,11 @@ def get_args():
     parser.add_argument('--valid_file', type=str, default=None)
     parser.add_argument('--test_file', type=str, default=None)
     parser.add_argument('--aux_file', type=str, default=None)
+    parser.add_argument('--coords_file', type=str, default=None)
     parser.add_argument('--vocab_file', type=str, default=None)
     parser.add_argument('--dynamic_indigo', action='store_true')
     parser.add_argument('--default_option', action='store_true')
+    parser.add_argument('--pseudo_coords', action='store_true')
     parser.add_argument('--formats', type=str, default=None)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--input_size', type=int, default=224)
@@ -92,7 +94,7 @@ def get_args():
     parser.add_argument('--decoder_lr', type=float, default=4e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-6)
     parser.add_argument('--max_grad_norm', type=float, default=5.)
-    parser.add_argument('--scheduler', type=str, choices=['cosine','constant'], default='cosine')
+    parser.add_argument('--scheduler', type=str, choices=['cosine', 'constant'], default='cosine')
     parser.add_argument('--warmup_ratio', type=float, default=0)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parser.add_argument('--load_path', type=str, default=None)
@@ -113,6 +115,7 @@ def get_args():
     parser.add_argument('--beam_size', type=int, default=1)
     parser.add_argument('--n_best', type=int, default=1)
     parser.add_argument('--check_validity', action='store_true')
+    parser.add_argument('--predict_coords', action='store_true')
     parser.add_argument('--save_attns', action='store_true')
     args = parser.parse_args()
     return args
@@ -209,16 +212,9 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         images = images.to(device)
         batch_size = images.size(0)
         with torch.cuda.amp.autocast(enabled=args.fp16):
-            # if step <= 4 and args.local_rank == 0:
-            #     print('-'*10, step, '-'*10)
-            #     print(indices)
-            #     print(len(indices))
-            #     for format_, value in refs.items():
-            #         print(format_)
-            #         if type(value) is list:
-            #             print(value[0][:10])
-            #         else:
-            #             print(value[:10])
+            # if args.local_rank == 0 and step == 0:
+            #     print(refs['nodes'][0][0])
+            #     print(refs['nodes'][0][1])
             features, hiddens = encoder(images, refs)
             results = decoder(features, hiddens, refs)
             losses = criterion(results, refs)
@@ -287,7 +283,7 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
         with torch.cuda.amp.autocast(enabled=args.fp16):
             with torch.no_grad():
                 features, hiddens = encoder(images, refs)
-                batch_preds, batch_beam_preds = decoder.decode(features, hiddens,
+                batch_preds, batch_beam_preds = decoder.decode(features, hiddens, refs,
                                                                beam_size=args.beam_size, n_best=args.n_best)
         for format_ in args.formats:
             if format_ in batch_beam_preds:
@@ -420,13 +416,10 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
                     'decoder_scheduler': decoder_scheduler.state_dict(),
                     'global_step': global_step}
 
-        if 'post_smiles' in scores:
-            score = scores['post_smiles']
-        elif 'canon_smiles' in scores:
-            score = scores['canon_smiles']
-        else:
-            print_rank_0("Score not defined!")
-            score = 0
+        for name in ['post_smiles', 'graph_smiles', 'canon_smiles']:
+            if name in scores:
+                score = scores[name]
+                break
 
         if SUMMARY:
             SUMMARY.add_scalar('train/loss', avg_loss, global_step)
@@ -494,6 +487,8 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
 
     if 'pubchem_cid' in data_df.columns:
         data_df['image_id'] = data_df['pubchem_cid']
+    if 'image_id' not in data_df.columns:
+        data_df['image_id'] = [path.split('/')[-1].split('.')[0] for path in data_df['file_path']]
     pred_df = data_df[['image_id']].copy()
     scores = {}
     
@@ -507,11 +502,11 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                 text_preds = [preds['smiles'] for preds in text_preds]
             # SMILES
             pred_df['SMILES'] = text_preds
-            print('Converting SMILES to InChI ...')
-            inchi_list, r_success = convert_smiles_to_inchi(text_preds)
-            pred_df['SMILES_InChI'] = inchi_list
-            print(f'{split} SMILES to InChI success ratio: {r_success:.4f}')
-            scores['smiles_inchi_success'] = r_success
+            # print('Converting SMILES to InChI ...')
+            # inchi_list, r_success = convert_smiles_to_inchi(text_preds)
+            # pred_df['SMILES_InChI'] = inchi_list
+            # print(f'{split} SMILES to InChI success ratio: {r_success:.4f}')
+            # scores['smiles_inchi_success'] = r_success
         if format_ in ['nodes', 'graph', 'grid', 'atomtok_coords']:
             pred_df['node_coords'] = [pred['coords'] for pred in predictions[format_]]
             pred_df['node_symbols'] = [pred['symbols'] for pred in predictions[format_]]
@@ -519,14 +514,12 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             predictions['edges'] = [pred['edges'] for pred in predictions['graph']]
 
     if 'edges' in predictions:
-        pred_df['edges'] = predictions['edges']
+        pred_df['edges_prob'] = predictions['edges']
+        pred_df['edges'] = [np.argmax(prob, axis=2).tolist() for prob in predictions['edges']]
         smiles_list, r_success = convert_graph_to_smiles(pred_df['node_coords'], pred_df['node_symbols'],
                                                          pred_df['edges'])
         print(f'Graph to SMILES success ratio: {r_success:.4f}')
-        if 'atomtok_coords' not in args.formats:
-            pred_df['SMILES'] = smiles_list
-        else:
-            pred_df['graph_SMILES'] = smiles_list
+        pred_df['graph_SMILES'] = smiles_list
 
     if 'SMILES' in pred_df.columns:
         if 'edges' in pred_df.columns:
@@ -539,29 +532,35 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
 
     # Compute scores
     if split == 'valid':
+        evaluator = SmilesEvaluator(data_df['SMILES'])
+        print('label:', data_df['SMILES'].values[:2])
         if 'SMILES' in pred_df.columns:
-            print('label:', data_df['SMILES'].values[:2])
             print('pred:', pred_df['SMILES'].values[:2])
-            evaluator = SmilesEvaluator(data_df['SMILES'])
             scores.update(evaluator.evaluate(pred_df['SMILES']))
-            if 'post_SMILES' in pred_df.columns:
-                post_scores = evaluator.evaluate(pred_df['post_SMILES'])
-                scores['post_smiles_em'] = post_scores['canon_smiles_em']
-                scores['post_smiles'] = post_scores['canon_smiles']
-                scores['post_graph'] = post_scores['graph']
-                scores['post_chiral'] = post_scores['chiral']
-                scores['post_valid'] = post_scores['pred_valid']
-            if 'graph_SMILES' in pred_df.columns:
-                graph_scores = evaluator.evaluate(pred_df['graph_SMILES'])
-                scores['graph_smiles_em'] = graph_scores['canon_smiles_em']
-                scores['graph_smiles'] = graph_scores['canon_smiles']
-                scores['graph_graph'] = graph_scores['graph']
-                scores['graph_chiral'] = graph_scores['chiral']
+        if 'post_SMILES' in pred_df.columns:
+            post_scores = evaluator.evaluate(pred_df['post_SMILES'])
+            scores['post_smiles_em'] = post_scores['canon_smiles_em']
+            scores['post_smiles'] = post_scores['canon_smiles']
+            scores['post_graph'] = post_scores['graph']
+            scores['post_chiral'] = post_scores['chiral']
+            scores['post_valid'] = post_scores['pred_valid']
+        if 'graph_SMILES' in pred_df.columns:
+            if 'SMILES' not in pred_df.columns:
+                print('graph:', pred_df['graph_SMILES'].values[:2])
+            graph_scores = evaluator.evaluate(pred_df['graph_SMILES'])
+            scores['graph_smiles_em'] = graph_scores['canon_smiles_em']
+            scores['graph_smiles'] = graph_scores['canon_smiles']
+            scores['graph_graph'] = graph_scores['graph']
+            scores['graph_chiral'] = graph_scores['chiral']
         if 'node_coords' in pred_df.columns:
             _, scores['num_nodes'], scores['symbols'] = \
                 evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])
 
+    print('Save predictions...')
     file = data_df.attrs['file'].split('/')[-1]
+    pred_df = format_df(pred_df)
+    if args.predict_coords:
+        pred_df = pred_df[['image_id', 'SMILES', 'node_coords']]
     pred_df.to_csv(os.path.join(save_path, f'prediction_{file}'), index=False)
     
     # Save predictions
@@ -623,12 +622,13 @@ def get_chemdraw_data(args):
             tokenizer['atomtok'] = Tokenizer(args.vocab_file)
             print_rank_0(f'tokenizer: {args.vocab_file}')
         elif format_ in ['nodes', 'graph', 'grid']:
-            tokenizer[format_] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
+            tokenizer[format_] = NodeTokenizer(args.coord_bins, 'bms/vocab.json', args.sep_xy)
             args.num_symbols = tokenizer[format_].len_symbols()
         elif format_ == "atomtok_coords":
             if args.vocab_file is None:
                 args.vocab_file = 'bms/vocab_rf.json' if args.mol_augment else 'bms/vocab.json'
-            tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, args.vocab_file, args.sep_xy)
+            tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
+                                                        continuous_coords=args.continuous_coords)
             print_rank_0(f'tokenizer: {args.vocab_file}')
     if args.patch:
         tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)

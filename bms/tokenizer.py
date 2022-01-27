@@ -26,6 +26,10 @@ class Tokenizer(object):
     def __len__(self):
         return len(self.stoi)
 
+    @property
+    def output_constraint(self):
+        return False
+
     def save(self, path):
         with open(path, 'w') as f:
             json.dump(self.stoi, f)
@@ -97,13 +101,13 @@ class Tokenizer(object):
 
 class NodeTokenizer(Tokenizer):
 
-    def __init__(self, input_size=100, path=None, sep_xy=False, debug=False):
+    def __init__(self, input_size=100, path=None, sep_xy=False, continuous_coords=False, debug=False):
         super().__init__(path)
         self.maxx = input_size  # height
         self.maxy = input_size  # width
         self.sep_xy = sep_xy
         self.special_tokens = [PAD, SOS, EOS, UNK, MASK]
-        self.offset = len(self.stoi)
+        self.continuous_coords = continuous_coords
         self.debug = debug
 
     def __len__(self):
@@ -111,6 +115,14 @@ class NodeTokenizer(Tokenizer):
             return self.offset + self.maxx + self.maxy
         else:
             return self.offset + max(self.maxx, self.maxy)
+
+    @property
+    def offset(self):
+        return len(self.stoi)
+
+    @property
+    def output_constraint(self):
+        return not self.continuous_coords
 
     def len_symbols(self):
         return len(self.stoi)
@@ -125,7 +137,6 @@ class NodeTokenizer(Tokenizer):
         assert self.stoi[UNK] == UNK_ID
         assert self.stoi[MASK] == MASK_ID
         self.itos = {item[1]: item[0] for item in self.stoi.items()}
-        self.offset = len(self.stoi)
 
     def is_x(self, x):
         return self.offset <= x < self.offset + self.maxx
@@ -138,8 +149,13 @@ class NodeTokenizer(Tokenizer):
     def is_symbol(self, s):
         return len(self.special_tokens) <= s < self.offset or s == UNK_ID
 
+    def is_atom(self, id):
+        if self.is_symbol(id):
+            return self.is_atom_token(self.itos[id])
+        return False
+
     def is_atom_token(self, token):
-        return token.isalpha() or token.startswith("[")
+        return token.isalpha() or token.startswith("[") or token == '*' or token == UNK
 
     def x_to_id(self, x):
         return self.offset + round(x * (self.maxx - 1))
@@ -156,6 +172,18 @@ class NodeTokenizer(Tokenizer):
         if self.sep_xy:
             return (id - self.offset - self.maxx) / (self.maxy - 1)
         return (id - self.offset) / (self.maxy - 1)
+    
+    def get_output_mask(self, id):
+        mask = [False] * len(self)
+        if self.continuous_coords:
+            return mask
+        if self.is_atom(id):
+            return [True] * self.offset + [False] * self.maxx + [True] * self.maxy
+        if self.is_x(id):
+            return [True] * (self.offset + self.maxx) + [False] * self.maxy
+        if self.is_y(id):
+            return [False] * self.offset + [True] * (self.maxx + self.maxy)
+        return mask
 
     def symbol_to_id(self, symbol):
         if symbol not in self.stoi:
@@ -224,12 +252,14 @@ class NodeTokenizer(Tokenizer):
             i += 3
         return {'coords': coords, 'symbols': symbols}
 
-    def smiles_coords_to_sequence(self, smiles, coords=None, mask_ratio=0):
+    def smiles_to_sequence(self, smiles, coords=None, mask_ratio=0, atom_only=False):
         tokens = atomwise_tokenizer(smiles)
         labels = [SOS_ID]
         indices = []
         atom_idx = -1
         for token in tokens:
+            if atom_only and not self.is_atom_token(token):
+                continue
             if token in self.stoi:
                 labels.append(self.stoi[token])
             else:
@@ -238,29 +268,32 @@ class NodeTokenizer(Tokenizer):
                 labels.append(UNK_ID)
             if self.is_atom_token(token):
                 atom_idx += 1
-                if mask_ratio > 0 and random.random() < mask_ratio:
-                    labels.append(MASK_ID)
-                    labels.append(MASK_ID)
-                elif coords is not None:
-                    # if atom_idx >= len(coords):
-                    #     print(smiles, atom_idx, len(coords))
-                    assert atom_idx < len(coords)
-                    x, y = coords[atom_idx]
-                    assert 0 <= x <= 1
-                    assert 0 <= y <= 1
-                    labels.append(self.x_to_id(x))
-                    labels.append(self.y_to_id(y))
+                if not self.continuous_coords:
+                    if mask_ratio > 0 and random.random() < mask_ratio:
+                        labels.append(MASK_ID)
+                        labels.append(MASK_ID)
+                    elif coords is not None:
+                        if atom_idx < len(coords):
+                            x, y = coords[atom_idx]
+                            assert 0 <= x <= 1
+                            assert 0 <= y <= 1
+                        else:
+                            x = random.random()
+                            y = random.random()
+                        labels.append(self.x_to_id(x))
+                        labels.append(self.y_to_id(y))
                 indices.append(len(labels) - 1)
         labels.append(EOS_ID)
         return labels, indices
 
-    def sequence_to_smiles(self, sequence, has_coords=True):
+    def sequence_to_smiles(self, sequence):
+        has_coords = not self.continuous_coords
         smiles = ''
         coords, symbols, indices = [], [], []
         for i, label in enumerate(sequence):
             if label == EOS_ID or label == PAD_ID:
                 break
-            if self.is_x(label) or self.is_y(label) or label == UNK_ID:
+            if self.is_x(label) or self.is_y(label):
                 continue
             token = self.itos[label]
             smiles += token
