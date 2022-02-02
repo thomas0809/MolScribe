@@ -339,11 +339,12 @@ def _replace_functional_group(smiles):
     return smiles, mappings
 
 
-def _expand_functional_group(mol, mappings):
+def _expand_functional_group(mol, mappings, molblock=False):
     if len(mappings) > 0:
         # m = Chem.MolFromSmiles(smiles)
-        Chem.SanitizeMol(mol)
-        AllChem.EmbedMolecule(mol)
+        if molblock:
+            Chem.SanitizeMol(mol)
+            AllChem.EmbedMolecule(mol)
         mw = Chem.RWMol(mol)
         for i, atom in enumerate(mw.GetAtoms()):  # reset radical electrons
             atom.SetNumRadicalElectrons(0)
@@ -360,12 +361,13 @@ def _expand_functional_group(mol, mappings):
                     adjacent_atom.SetNumRadicalElectrons(1)
 
                     mR = Chem.MolFromSmiles(sub_smiles)
-                    conf = Chem.Conformer(mR.GetNumAtoms())
-                    conf.Set3D(False)
-                    atom_pos = mw.GetConformer().GetAtomPosition(i)
-                    for j in range(mR.GetNumAtoms()):
-                        conf.SetAtomPosition(j, atom_pos)
-                    mR.AddConformer(conf)
+                    if molblock:
+                        conf = Chem.Conformer(mR.GetNumAtoms())
+                        conf.Set3D(False)
+                        atom_pos = mw.GetConformer().GetAtomPosition(i)
+                        for j in range(mR.GetNumAtoms()):
+                            conf.SetAtomPosition(j, atom_pos)
+                        mR.AddConformer(conf)
                     combo = Chem.CombineMols(mw, mR)  # combine two subgraphs into a single graph
 
                     bonding_atoms = []
@@ -471,7 +473,7 @@ def convert_graph_to_smiles(coords, symbols, edges, num_workers=16, simple=False
     return smiles_list, r_success
 
 
-def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, debug=False):
+def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=False, debug=False):
     if type(smiles) is not str or smiles == '':
         return '', False
     mol = None
@@ -485,7 +487,7 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, debug=Fal
         else:
             mol = Chem.MolFromSmiles(pred_smiles, sanitize=False)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-        pred_smiles, mol = _expand_functional_group(mol, mappings)
+        pred_smiles, mol = _expand_functional_group(mol, mappings, molblock=molblock)
         molblock = Chem.MolToMolBlock(mol)
         success = True
     except Exception as e:
@@ -499,10 +501,11 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, debug=Fal
     return pred_smiles, molblock, success
 
 
-def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, num_workers=16):
+def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=False, num_workers=16):
     with multiprocessing.Pool(num_workers) as p:
         if coords is not None and symbols is not None and edges is not None:
-            results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges), chunksize=128)
+            results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges, [molblock] * len(smiles)),
+                                chunksize=128)
         else:
             results = p.map(_postprocess_smiles, smiles, chunksize=128)
     smiles_list, molblock_list, success = zip(*results)

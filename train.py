@@ -517,15 +517,15 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     if 'edges' in predictions:
         pred_df['edges'] = predictions['edges']
         # pred_df['edges'] = [get_edge_prediction(prob) for prob in predictions['edges']]
-        smiles_list, r_success = convert_graph_to_smiles(pred_df['node_coords'], pred_df['node_symbols'],
-                                                         pred_df['edges'])
+        smiles_list, r_success = convert_graph_to_smiles(
+            pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
         print(f'Graph to SMILES success ratio: {r_success:.4f}')
         pred_df['graph_SMILES'] = smiles_list
 
     if 'SMILES' in pred_df.columns:
         if 'edges' in pred_df.columns:
-            smiles_list, molblock, r_success = postprocess_smiles(pred_df['SMILES'], pred_df['node_coords'],
-                                                                  pred_df['node_symbols'], pred_df['edges'])
+            smiles_list, molblock, r_success = postprocess_smiles(
+                pred_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'], args.molblock)
         else:
             smiles_list, molblock, r_success = postprocess_smiles(pred_df['SMILES'])
         print(f'Postprocess SMILES success ratio: {r_success:.4f}')
