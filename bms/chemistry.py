@@ -6,8 +6,10 @@ import multiprocessing
 from indigo import Indigo
 import rdkit
 import rdkit.Chem as Chem
+import rdkit.Chem.AllChem as AllChem
 rdkit.RDLogger.DisableLog('rdApp.*')
 import Levenshtein
+from SmilesPE.pretokenizer import atomwise_tokenizer
 
 from bms.constants import RGROUP_SYMBOLS, PLACEHOLDER_ATOMS, SUBSTITUTIONS, ABBREVIATIONS
 
@@ -119,12 +121,26 @@ def _get_num_atoms(smiles):
         return 0
 
 
-def get_num_atoms(smiles, num_workers=8):
+def get_num_atoms(smiles, num_workers=16):
     if type(smiles) is str:
         return _get_num_atoms(smiles)
     with multiprocessing.Pool(num_workers) as p:
         num_atoms = p.map(_get_num_atoms, smiles)
     return num_atoms
+
+
+def get_edge_prediction(edge_prob):
+    n = len(edge_prob)
+    for i in range(n):
+        for j in range(i+1, n):
+            for k in range(5):
+                edge_prob[i][j][k] = (edge_prob[i][j][k] + edge_prob[j][i][k]) / 2
+                edge_prob[j][i][k] = edge_prob[i][j][k]
+            edge_prob[i][j][5] = (edge_prob[i][j][5] + edge_prob[j][i][6]) / 2
+            edge_prob[i][j][6] = (edge_prob[i][j][6] + edge_prob[j][i][5]) / 2
+            edge_prob[j][i][5] = edge_prob[i][j][6]
+            edge_prob[j][i][6] = edge_prob[i][j][5]
+    return np.argmax(edge_prob, axis=2).tolist()
 
 
 def normalize_nodes(nodes, flip_y=True):
@@ -142,21 +158,9 @@ def normalize_nodes(nodes, flip_y=True):
 def convert_smiles_to_nodes(smiles):
     try:
         indigo = Indigo()
-        # renderer = IndigoRenderer(indigo)
-        # indigo.setOption('render-output-format', 'png')
-        # indigo.setOption('render-background-color', '1,1,1')
-        # indigo.setOption('render-stereo-style', 'none')
         mol = indigo.loadMolecule(smiles)
-        # mol.layout()
-        # buf = renderer.renderToBuffer(mol)
-        # img = cv2.imdecode(np.asarray(bytearray(buf), dtype=np.uint8), 1)
-        # height, width, _ = img.shape
         coords, symbols = [], []
         for atom in mol.iterateAtoms():
-            # x, y, z = atom.xyz()
-            # coords.append([x, y])
-            # x, y = atom.coords()
-            # coords.append([y / height, x / width])
             symbols.append(atom.symbol())
     except:
         return [], []
@@ -272,7 +276,7 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         conf = Chem.Conformer(n)
         conf.Set3D(False)
         for i, (x, y) in enumerate(coords):
-            conf.SetAtomPosition(i, (x, y, 0))
+            conf.SetAtomPosition(i, (x, 1 - y, 0))
         mol.AddConformer(conf)
 
         # Magic, infering chirality from coordinates and BondDir. DO NOT CHANGE.
@@ -288,13 +292,13 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
                     # assert edges[j][i] == 6
                     mol.RemoveBond(i, j)
                     mol.AddBond(i, j, Chem.BondType.SINGLE)
-                    mol.GetBondBetweenAtoms(i, j).SetBondDir(Chem.BondDir.BEGINDASH)
+                    mol.GetBondBetweenAtoms(i, j).SetBondDir(Chem.BondDir.BEGINWEDGE)
                 elif edges[i][j] == 6:
                     # print(f"6, i: {i}, j: {j}")
                     # assert edges[j][i] == 5
                     mol.RemoveBond(i, j)
                     mol.AddBond(i, j, Chem.BondType.SINGLE)
-                    mol.GetBondBetweenAtoms(i, j).SetBondDir(Chem.BondDir.BEGINWEDGE)
+                    mol.GetBondBetweenAtoms(i, j).SetBondDir(Chem.BondDir.BEGINDASH)
             Chem.AssignChiralTypesFromBondDirs(mol)
             Chem.AssignStereochemistry(mol, force=True)
 
@@ -338,6 +342,8 @@ def _replace_functional_group(smiles):
 def _expand_functional_group(mol, mappings):
     if len(mappings) > 0:
         # m = Chem.MolFromSmiles(smiles)
+        Chem.SanitizeMol(mol)
+        AllChem.EmbedMolecule(mol)
         mw = Chem.RWMol(mol)
         for i, atom in enumerate(mw.GetAtoms()):  # reset radical electrons
             atom.SetNumRadicalElectrons(0)
@@ -354,6 +360,12 @@ def _expand_functional_group(mol, mappings):
                     adjacent_atom.SetNumRadicalElectrons(1)
 
                     mR = Chem.MolFromSmiles(sub_smiles)
+                    conf = Chem.Conformer(mR.GetNumAtoms())
+                    conf.Set3D(False)
+                    atom_pos = mw.GetConformer().GetAtomPosition(i)
+                    for j in range(mR.GetNumAtoms()):
+                        conf.SetAtomPosition(j, atom_pos)
+                    mR.AddConformer(conf)
                     combo = Chem.CombineMols(mw, mR)  # combine two subgraphs into a single graph
 
                     bonding_atoms = []
@@ -369,9 +381,10 @@ def _expand_functional_group(mol, mappings):
                     mw.RemoveAtom(i)
                     break
         smiles = Chem.MolToSmiles(mw)
+        mol = mw.GetMol()
     else:
         smiles = Chem.MolToSmiles(mol)
-    return smiles
+    return smiles, mol
 
 
 def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
@@ -426,11 +439,11 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
                 mol.AddBond(ids[i], ids[j], Chem.BondType.AROMATIC)
             elif edges[i][j] == 5:
                 mol.AddBond(ids[i], ids[j], Chem.BondType.SINGLE)
-                mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINDASH)
+                mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINWEDGE)
                 has_chirality = True
             elif edges[i][j] == 6:
                 mol.AddBond(ids[i], ids[j], Chem.BondType.SINGLE)
-                mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINWEDGE)
+                mol.GetBondBetweenAtoms(ids[i], ids[j]).SetBondDir(Chem.BondDir.BEGINDASH)
                 has_chirality = True
 
     pred_smiles = '<invalid>'
@@ -439,7 +452,7 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
         if has_chirality:
             mol = _verify_chirality(mol, coords, symbols, edges, debug)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-        pred_smiles = _expand_functional_group(mol, mappings)
+        pred_smiles, mol = _expand_functional_group(mol, mappings)
         success = True
     except Exception as e:
         if debug:
@@ -466,22 +479,24 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, debug=Fal
         pred_smiles = smiles
         pred_smiles, mappings = _replace_functional_group(pred_smiles)
         if coords is not None and symbols is not None and edges is not None:
-            pred_smiles = pred_smiles.replace('@', '').replace('/', '').replace('\\', '')
+            pred_smiles = pred_smiles.replace('@', '')  #.replace('/', '').replace('\\', '')
             mol = Chem.RWMol(Chem.MolFromSmiles(pred_smiles, sanitize=False))
             mol = _verify_chirality(mol, coords, symbols, edges, debug)
         else:
             mol = Chem.MolFromSmiles(pred_smiles, sanitize=False)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-        pred_smiles = _expand_functional_group(mol, mappings)
+        pred_smiles, mol = _expand_functional_group(mol, mappings)
+        molblock = Chem.MolToMolBlock(mol)
         success = True
     except Exception as e:
         if debug:
             print(e)
         pred_smiles = smiles
+        molblock = ''
         success = False
     if debug:
         return pred_smiles, mol
-    return pred_smiles, success
+    return pred_smiles, molblock, success
 
 
 def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, num_workers=16):
@@ -490,7 +505,7 @@ def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, num_worker
             results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges), chunksize=128)
         else:
             results = p.map(_postprocess_smiles, smiles, chunksize=128)
-    smiles_list, success = zip(*results)
+    smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
-    return smiles_list, r_success
+    return smiles_list, molblock_list, r_success
 

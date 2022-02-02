@@ -10,7 +10,7 @@ ACCUM_STEP=1
 MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 DATESTR=$(date +"%m-%d-%H-%M")
-SAVE_PATH=output/uspto/swin_base_aux_molcoords1
+SAVE_PATH=output/uspto/swin_base_aux_200k
 mkdir -p ${SAVE_PATH}
 
 set -x
@@ -21,9 +21,9 @@ torchrun \
     --dataset chemdraw \
     --data_path data/molbank \
     --train_file pubchem/train_200k.csv \
-    --aux_file uspto_mol/train.csv --coords_file aux_file \
+    --aux_file uspto_mol/train_200k.csv --coords_file aux_file \
     --valid_file Img2Mol/USPTO.csv \
-    --test_file tmp/mol.csv \
+    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,real-acs-evaluation/acs.csv \
     --vocab_file bms/vocab_uspto.json \
     --formats atomtok_coords,edges \
     --dynamic_indigo --augment --mol_augment \
@@ -41,8 +41,8 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_test \
-    --fp16 2>&1 | tee $SAVE_PATH/log_${DATESTR}.txt
+    --do_train --do_valid --do_test \
+    --fp16 2>&1  | tee $SAVE_PATH/log_${DATESTR}.txt
 
 
 #    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \

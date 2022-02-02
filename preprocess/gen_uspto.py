@@ -120,20 +120,16 @@ def convert_mol_to_smiles(mol_file, debug=False):
         edges = [(int(reverse_map[start]), int(reverse_map[end]), etype) for (start, end, etype) in edges]
         pseudo_smiles = smiles
         if len(superatoms) > 0:
-            mappings = []
-            cnt = 1
-            mw = Chem.RWMol(mol)
-            for atom_idx, symb in superatoms:
-                atom = Chem.Atom("*")
-                while f"[{cnt}*]" in pseudo_smiles:
-                    cnt += 1
-                atom.SetIsotope(cnt)
-                mw.ReplaceAtom(atom_idx, atom)
-                mappings.append((f"[{cnt}*]", f"[{symb}]"))
-                cnt += 1
-            pseudo_smiles = Chem.MolToSmiles(mw)
-            for placeholder, symb in mappings:
-                pseudo_smiles = pseudo_smiles.replace(placeholder, symb)
+            superatoms = {int(reverse_map[atom_idx]): symb for atom_idx, symb in superatoms}
+            tokens = atomwise_tokenizer(smiles)
+            atom_idx = 0
+            for i, t in enumerate(tokens):
+                if t.isalpha() or t[0] == '[' or t == '*':
+                    if atom_idx in superatoms:
+                        symb = superatoms[atom_idx]
+                        tokens[i] = f"[{symb}]"
+                    atom_idx += 1
+            pseudo_smiles = ''.join(tokens)
         return smiles, pseudo_smiles, coords, edges
     except Exception as e:
         if debug:

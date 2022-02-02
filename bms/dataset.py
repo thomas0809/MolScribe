@@ -2,6 +2,7 @@ import os
 import cv2
 import time
 import random
+import re
 import string
 import numpy as np
 import pandas as pd
@@ -136,8 +137,7 @@ def generate_output_smiles(indigo, mol):
     mol = indigo.loadMolecule(smiles)
     if '*' in smiles:
         part_a, part_b = smiles.split(' ', maxsplit=1)
-        assert part_b[:2] == '|$' and part_b[-2:] == '$|'
-        part_b = part_b[2:-2].replace(' ', '')
+        part_b = re.search(r'\$.*\$', part_b).group(0)[1:-1]
         symbols = [t for t in part_b.split(';') if len(t) > 0]
         output = ''
         cnt = 0
@@ -355,6 +355,8 @@ class TrainDataset(Dataset):
         else:
             file_path = self.file_paths[idx]
             image = cv2.imread(file_path)
+            if image is None:
+                print(file_path)
             if self.coords_df is not None:
                 h, w, _ = image.shape
                 coords = np.array(eval(self.coords_df.loc[idx, 'node_coords']))

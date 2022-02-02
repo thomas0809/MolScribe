@@ -21,8 +21,8 @@ from bms.model import Encoder, Decoder
 from bms.loss import Criterion
 from bms.utils import seed_torch, save_args, init_summary_writer, LossMeter, AverageMeter, asMinutes, timeSince, \
                       print_rank_0, format_df, FORMAT_INFO
-from bms.chemistry import SmilesEvaluator, convert_smiles_to_inchi, evaluate_nodes, convert_graph_to_smiles, \
-                          postprocess_smiles
+from bms.chemistry import SmilesEvaluator, evaluate_nodes, convert_graph_to_smiles, postprocess_smiles, \
+                          get_edge_prediction
 from bms.tokenizer import Tokenizer, NodeTokenizer
 
 import warnings 
@@ -117,6 +117,7 @@ def get_args():
     parser.add_argument('--check_validity', action='store_true')
     parser.add_argument('--predict_coords', action='store_true')
     parser.add_argument('--save_attns', action='store_true')
+    parser.add_argument('--molblock', action='store_true')
     args = parser.parse_args()
     return args
 
@@ -514,8 +515,8 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             predictions['edges'] = [pred['edges'] for pred in predictions['graph']]
 
     if 'edges' in predictions:
-        pred_df['edges_prob'] = predictions['edges']
-        pred_df['edges'] = [np.argmax(prob, axis=2).tolist() for prob in predictions['edges']]
+        pred_df['edges'] = predictions['edges']
+        # pred_df['edges'] = [get_edge_prediction(prob) for prob in predictions['edges']]
         smiles_list, r_success = convert_graph_to_smiles(pred_df['node_coords'], pred_df['node_symbols'],
                                                          pred_df['edges'])
         print(f'Graph to SMILES success ratio: {r_success:.4f}')
@@ -523,12 +524,14 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
 
     if 'SMILES' in pred_df.columns:
         if 'edges' in pred_df.columns:
-            smiles_list, r_success = postprocess_smiles(pred_df['SMILES'], pred_df['node_coords'],
-                                                        pred_df['node_symbols'], pred_df['edges'])
+            smiles_list, molblock, r_success = postprocess_smiles(pred_df['SMILES'], pred_df['node_coords'],
+                                                                  pred_df['node_symbols'], pred_df['edges'])
         else:
-            smiles_list, r_success = postprocess_smiles(pred_df['SMILES'])
+            smiles_list, molblock, r_success = postprocess_smiles(pred_df['SMILES'])
         print(f'Postprocess SMILES success ratio: {r_success:.4f}')
         pred_df['post_SMILES'] = smiles_list
+        if args.molblock:
+            pred_df['molblock'] = molblock
 
     # Compute scores
     if split == 'valid':

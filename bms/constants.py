@@ -4,7 +4,8 @@ from typing import List
 RGROUP_SYMBOLS = ['R', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12',
                   'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Rf', 'X', 'Y', 'Z', 'A', 'Ar']
 
-PLACEHOLDER_ATOMS = ["Xe", "Rn", "Nd", "Yb", "At", "Fm", "Er"]
+# PLACEHOLDER_ATOMS = ["Xe", "Rn", "Nd", "Yb", "At", "Fm", "Er"]
+PLACEHOLDER_ATOMS = ["Lv", "Ts", "Lu", "Nd", "Yb", "At", "Fm", "Er"]
 
 
 '''
@@ -79,7 +80,7 @@ SUBSTITUTIONS: List[Substitution] = [
     # Other shorthands (MIGHT NOT WANT ALL OF THESE)
     Substitution(['CF3', 'F3C'], '[CH0;D4](F)(F)F', "[C](F)(F)F", 0.5),
     Substitution(['NCF3', 'F3CN'], '[N;X3][CH0;D4](F)(F)F', "[NH]C(F)(F)F", 0.5),
-    Substitution(['OCF3', 'F3CO'], '[OH0;X2][CH0;D4](F)(F)F', "OC(F)(F)F", 0.5),
+    Substitution(['OCF3', 'F3CO'], '[OH0;X2][CH0;D4](F)(F)F', "[O]C(F)(F)F", 0.5),
     Substitution(['CCl3'], '[CH0;D4](Cl)(Cl)Cl', "[C](Cl)(Cl)Cl", 0.5),
     Substitution(['CO2H', 'HO2C', 'COOH'], 'C(=O)[OH]', "[C](=O)O", 0.2),  # COOH
     Substitution(['CN', 'NC'], 'C#[ND1]', "[C]#N", 0.3),

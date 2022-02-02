@@ -10,7 +10,7 @@ from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID, MASK_ID, to_device
 from bms.inference import GreedySearch, BeamSearch
 from bms.transformer import TransformerDecoder, Embeddings
 from bms.patch import ImagePatch
-from bms.chemistry import is_valid_mol
+from bms.chemistry import is_valid_mol, get_edge_prediction
 
 
 class Encoder(nn.Module):
@@ -741,6 +741,7 @@ class Decoder(nn.Module):
                             predictions['atomtok_coords'][i]['coords'] = pred['coords'].squeeze(0).tolist()
                 else:
                     raise NotImplemented
+                predictions['edges'] = [get_edge_prediction(prob) for prob in predictions['edges']]
                 # results['edges'] = outputs     # batch x n_best x len x len
             elif format_ == 'nodes':
                 max_len = FORMAT_INFO['nodes']['max_len']
