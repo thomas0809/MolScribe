@@ -1,4 +1,4 @@
-# Robust Molecular Image Generation
+# Robust Molecular Image Recognition
 This is the codebase for robust molecular image recognition. (under review)
 
 ## Data
