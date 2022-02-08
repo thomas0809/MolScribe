@@ -10,7 +10,7 @@ ACCUM_STEP=1
 MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 DATESTR=$(date +"%m-%d-%H-%M")
-SAVE_PATH=output/uspto/swin_base_aux_200k
+SAVE_PATH=output/uspto/swin_base_aux_200k_new
 mkdir -p ${SAVE_PATH}
 
 set -x
@@ -33,7 +33,7 @@ torchrun \
     --decoder transformer \
     --encoder_lr 4e-4 \
     --decoder_lr 4e-4 \
-    --save_path $SAVE_PATH --save_mode last \
+    --save_path $SAVE_PATH --save_mode last --resume \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \

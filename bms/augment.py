@@ -124,22 +124,26 @@ class CropWhite(A.DualTransform):
         right = width
         while col_sum[right-1] == 0 and right-1 > left:
             right -= 1
-        crop_top = max(0, top - self.pad)
-        crop_bottom = max(0, height - bottom - self.pad)
-        crop_left = max(0, left - self.pad)
-        crop_right = max(0, width - right - self.pad)
-        params.update({"crop_top": crop_top, "crop_bottom": crop_bottom,
-                       "crop_left": crop_left, "crop_right": crop_right})
+        # crop_top = max(0, top - self.pad)
+        # crop_bottom = max(0, height - bottom - self.pad)
+        # crop_left = max(0, left - self.pad)
+        # crop_right = max(0, width - right - self.pad)
+        # params.update({"crop_top": crop_top, "crop_bottom": crop_bottom,
+        #                "crop_left": crop_left, "crop_right": crop_right})
+        params.update({"crop_top": top, "crop_bottom": height - bottom,
+                       "crop_left": left, "crop_right": width - right})
         return params
 
     def apply(self, img, crop_top=0, crop_bottom=0, crop_left=0, crop_right=0, **params):
         height, width, _ = img.shape
         img = img[crop_top:height - crop_bottom, crop_left:width - crop_right]
+        img = A.augmentations.pad_with_params(
+            img, self.pad, self.pad, self.pad, self.pad, border_mode=cv2.BORDER_CONSTANT, value=self.value)
         return img
 
     def apply_to_keypoint(self, keypoint, crop_top=0, crop_bottom=0, crop_left=0, crop_right=0, **params):
         x, y, angle, scale = keypoint[:4]
-        return x - crop_left, y - crop_top, angle, scale
+        return x - crop_left + self.pad, y - crop_top + self.pad, angle, scale
 
     def get_transform_init_args_names(self):
         return ('value', 'pad')
@@ -171,13 +175,7 @@ class PadWhite(A.DualTransform):
     def apply(self, img, pad_top=0, pad_bottom=0, pad_left=0, pad_right=0, **params):
         height, width, _ = img.shape
         img = A.augmentations.pad_with_params(
-            img,
-            pad_top,
-            pad_bottom,
-            pad_left,
-            pad_right,
-            border_mode=cv2.BORDER_CONSTANT,
-            value=self.value)
+            img, pad_top, pad_bottom, pad_left, pad_right, border_mode=cv2.BORDER_CONSTANT, value=self.value)
         return img
 
     def apply_to_keypoint(self, keypoint, pad_top=0, pad_bottom=0, pad_left=0, pad_right=0, **params):

@@ -10,7 +10,7 @@ ACCUM_STEP=1
 MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 DATESTR=$(date +"%m-%d-%H-%M")
-SAVE_PATH=output/uspto/swin_base_aux_1m_large
+SAVE_PATH=output/uspto/swin_base_aux_1m_small
 mkdir -p ${SAVE_PATH}
 
 set -x
@@ -20,10 +20,10 @@ torchrun \
     train.py \
     --dataset chemdraw \
     --data_path data/molbank \
-    --train_file pubchem/train_1m.csv,pubchem/train_large_50k.csv,pubchem/train_small_50k.csv \
+    --train_file pubchem/train_1m.csv,pubchem/train_small.csv \
     --aux_file uspto_mol/train.csv --coords_file aux_file \
     --valid_file Img2Mol/USPTO.csv \
-    --test_file real-acs-evaluation/acs.csv,Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv \
+    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,real-acs-evaluation/acs.csv \
     --vocab_file bms/vocab_uspto.json \
     --formats atomtok_coords,edges \
     --dynamic_indigo --augment --mol_augment \
@@ -33,7 +33,7 @@ torchrun \
     --decoder transformer \
     --encoder_lr 4e-4 \
     --decoder_lr 4e-4 \
-    --save_path $SAVE_PATH --save_mode last \
+    --save_path $SAVE_PATH --save_mode all \
     --label_smoothing 0.1 \
     --epochs 20 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -42,7 +42,7 @@ torchrun \
     --warmup 0.05 \
     --print_freq 200 \
     --do_test \
-    --fp16 2>&1 # | tee $SAVE_PATH/log_${DATESTR}.txt
+    --fp16 2>&1  #| tee $SAVE_PATH/log_${DATESTR}.txt
 
 
 #    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \

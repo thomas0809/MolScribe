@@ -23,7 +23,7 @@ torchrun \
     --train_file pubchem/train_1m.csv \
     --aux_file uspto_mol/train.csv --coords_file aux_file \
     --valid_file Img2Mol/USPTO.csv \
-    --test_file Img2Mol/valko.csv \
+    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,real-acs-evaluation/acs.csv \
     --vocab_file bms/vocab_uspto.json \
     --formats atomtok_coords,edges \
     --dynamic_indigo --augment --mol_augment \
@@ -42,7 +42,7 @@ torchrun \
     --warmup 0.05 \
     --print_freq 200 \
     --seed 2022 \
-    --do_test --molblock \
+    --do_test \
     --fp16  # 2>&1  | tee $SAVE_PATH/log_${DATESTR}.txt
 
 

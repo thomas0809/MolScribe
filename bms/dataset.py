@@ -26,7 +26,7 @@ cv2.setNumThreads(1)
 INDIGO_HYGROGEN_PROB = 0.2
 INDIGO_RGROUP_PROB = 0.5
 INDIGO_COMMENT_PROB = 0.3
-INDIGO_DEARMOTIZE_PROB = 0.5
+INDIGO_DEARMOTIZE_PROB = 0.6
 
 
 def get_transforms(input_size, augment=True, rotate=True, debug=False):
@@ -37,6 +37,7 @@ def get_transforms(input_size, augment=True, rotate=True, debug=False):
     if augment:
         trans_list += [
             # NormalizedGridDistortion(num_steps=10, distort_limit=0.3),
+            A.CropAndPad(percent=[-0.01, 0.00], keep_size=False, p=0.5),
             PadWhite(pad_ratio=0.4, p=0.2),
             A.Downscale(scale_min=0.15, scale_max=0.3, interpolation=3),
             A.Blur(),
@@ -118,11 +119,10 @@ def add_rgroup(indigo, mol, smiles):
     if len(atoms) > 0 and '*' not in smiles and random.random() < INDIGO_RGROUP_PROB:
         atom = random.choice(atoms)
         symbol = random.choice(RGROUP_SYMBOLS)
-        if symbol == 'Ar':
-            # 'Ar' has to be 'Ar ', otherwise indigo will fail later
-            r = mol.addAtom('Ar ')
-        else:
-            r = mol.addAtom(symbol)
+        # if symbol == 'Ar':
+        #     # 'Ar' has to be 'Ar ', otherwise indigo will fail later
+        #     r = mol.addAtom('Ar ')
+        r = mol.addAtom(symbol)
         r.addBond(atom, 1)
         # new_smiles = mol.canonicalSmiles()
         # assert '*' in new_smiles
@@ -312,6 +312,7 @@ class TrainDataset(Dataset):
                 _, height, width = image.shape
                 coords[:, 0] = coords[:, 0] / width
                 coords[:, 1] = coords[:, 1] / height
+            coords = np.array(coords).clip(0, 1)
             return image, coords
         return image
 
@@ -426,22 +427,24 @@ class AuxTrainDataset(Dataset):
         self.aux_dataset = TrainDataset(args, aux_df, tokenizer, dynamic_indigo=False)
 
     def __len__(self):
-        return len(self.train_dataset) * 2
+        return len(self.train_dataset) + len(self.aux_dataset)
+        # return len(self.train_dataset) * 2
 
     def __getitem__(self, idx):
         if idx < len(self.train_dataset):
             return self.train_dataset[idx]
         else:
-            worker_info = torch.utils.data.get_worker_info()
-            n = len(self.aux_dataset)
-            if worker_info is None:
-                idx = (idx + random.randrange(n)) % n
-            else:
-                per_worker = int(len(self.aux_dataset) / worker_info.num_workers)
-                worker_id = worker_info.id
-                start = worker_id * per_worker
-                idx = start + (idx + random.randrange(per_worker)) % per_worker
-            return self.aux_dataset[idx]
+            return self.aux_dataset[idx - len(self.train_dataset)]
+            # worker_info = torch.utils.data.get_worker_info()
+            # n = len(self.aux_dataset)
+            # if worker_info is None:
+            #     idx = (idx + random.randrange(n)) % n
+            # else:
+            #     per_worker = int(len(self.aux_dataset) / worker_info.num_workers)
+            #     worker_id = worker_info.id
+            #     start = worker_id * per_worker
+            #     idx = start + (idx + random.randrange(per_worker)) % per_worker
+            # return self.aux_dataset[idx]
 
 
 def pad_images(imgs):
