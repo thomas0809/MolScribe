@@ -40,7 +40,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_test \
+    --do_train --do_valid --do_test \
     --trunc_valid 10000 \
     --fp16 2>&1 | tee $SAVE_PATH/log_${DATESTR}.txt
 

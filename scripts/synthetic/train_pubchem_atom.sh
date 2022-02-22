@@ -31,7 +31,7 @@ torchrun \
     --decoder_lr 4e-4 \
     --dynamic_indigo --augment \
     --coord_bins 64 --sep_xy \
-    --save_path $SAVE_PATH --resume \
+    --save_path $SAVE_PATH \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \

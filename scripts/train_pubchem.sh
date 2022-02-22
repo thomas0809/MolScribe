@@ -26,7 +26,7 @@ torchrun \
     --encoder_lr 1e-3 \
     --decoder_lr 1e-3 \
     --dynamic_indigo --augment \
-    --save_path output/pubchem/swin_base_200k_noaug \
+    --save_path output/pubchem/swin_base_200k \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -36,13 +36,3 @@ torchrun \
     --print_freq 100 \
     --do_test \
     --fp16
-
-
-#    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
-#    --train_steps_per_epoch 3000 \
-#    --valid_file indigo-data/valid.csv \
-#    --valid_file real-acs-evaluation/test.csv \
-#    --save_path output/indigo/swin_base_20_dynamic_aug \
-#    --no_pretrained --scheduler cosine --warmup 0.05 \
-#    --load_path output/pubchem/swin_base_10 --resume \
-#    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv \

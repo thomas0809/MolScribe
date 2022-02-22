@@ -212,6 +212,7 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
     indigo.setOption('render-background-color', '1,1,1')
     indigo.setOption('render-stereo-style', 'none')
     indigo.setOption('render-label-mode', 'hetero')
+    indigo.setOption('render-font-family', 'Arial')
     if not default_option:
         thickness = random.uniform(0.5, 1.5)   # limit the sum of the following two parameters to be smaller than 4
         indigo.setOption('render-relative-thickness', thickness)
@@ -247,7 +248,7 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
     except Exception:
         if debug:
             raise Exception
-        img = None  # np.array([[[255., 255., 255.]] * 10] * 10).astype(np.float32)
+        img = np.array([[[255., 255., 255.]] * 10] * 10).astype(np.float32)
         graph = {}
         success = False
     return img, smiles, graph, success
@@ -325,6 +326,10 @@ class TrainDataset(Dataset):
                 shuffle_nodes=self.args.shuffle_nodes, pseudo_coords=self.pseudo_coords)
             # raw_image = image
             end = time.time()
+            if idx < 30 and self.args.save_image:
+                path = os.path.join(self.args.save_path, 'images')
+                os.makedirs(path, exist_ok=True)
+                cv2.imwrite(os.path.join(path, f'{idx}.png'), image)
             if not success:
                 return idx, None, {}
             image, coords = self.image_transform(image, graph['coords'], renormalize=self.pseudo_coords)

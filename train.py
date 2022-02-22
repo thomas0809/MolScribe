@@ -110,6 +110,7 @@ def get_args():
     parser.add_argument('--label_smoothing', type=float, default=0.0)
     parser.add_argument('--shuffle_nodes', action='store_true')
     parser.add_argument('--reweight', action='store_true')
+    parser.add_argument('--save_image', action='store_true')
     # Inference
     parser.add_argument('--beam_size', type=int, default=1)
     parser.add_argument('--n_best', type=int, default=1)
@@ -462,7 +463,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     else:
         sampler = SequentialSampler(dataset)
     dataloader = DataLoader(dataset, 
-                            batch_size=args.batch_size * 4,
+                            batch_size=args.batch_size * 2,
                             sampler=sampler, 
                             num_workers=args.num_workers,
                             pin_memory=True, 
@@ -573,30 +574,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     return scores
 
 
-def get_bms_data(args):
-    def get_train_file_path(image_id):
-        return "data/train/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
-    def get_test_file_path(image_id):
-        return "data/test/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
-    train_df, valid_df, test_df = None, None, None
-    if args.do_train:
-        train_df = pd.read_csv('data/train_folds.csv')
-        train_df['file_path'] = train_df['image_id'].apply(get_train_file_path)
-        print_rank_0(f'train.shape: {train_df.shape}')
-    if args.do_train or args.do_valid:
-        valid_df = pd.read_csv('data/valid_folds.csv')
-        valid_df['file_path'] = valid_df['image_id'].apply(get_train_file_path)
-        print_rank_0(f'valid.shape: {valid_df.shape}')
-    if args.do_test:
-        test_df = pd.read_csv('data/sample_submission.csv')
-        test_df['file_path'] = test_df['image_id'].apply(get_test_file_path)
-        print_rank_0(f'test.shape: {test_df.shape}')
-    tokenizer = {}
-    for format_ in args.formats:
-        tokenizer[format_] = Tokenizer('data/' + FORMAT_INFO[format_]['tokenizer'])
-    return train_df, valid_df, test_df, tokenizer
-
-
 def get_chemdraw_data(args):
     train_df, valid_df, test_df, aux_df = None, None, None, None
     if args.do_train:
@@ -631,7 +608,7 @@ def get_chemdraw_data(args):
                 args.vocab_file = 'bms/vocab_rf.json' if args.mol_augment else 'bms/vocab.json'
             tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
                                                         continuous_coords=args.continuous_coords)
-            print_rank_0(f'tokenizer: {args.vocab_file}')
+            print_rank_0(f'tokenizer: {args.vocab_file} {len(tokenizer["atomtok_coords"])}')
     if args.patch:
         tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
         args.num_symbols = tokenizer['graph'].len_symbols()
@@ -656,27 +633,12 @@ def main():
     args.edges = any([f in args.formats for f in ['edges', 'graph', 'atomtok_coords']])
     print_rank_0('Output formats: ' + ' '.join(args.formats))
 
-    if args.dataset == 'bms':
-        train_df, valid_df, test_df, tokenizer = get_bms_data(args)
-        aux_df = None
-    else:
-        train_df, valid_df, test_df, aux_df, tokenizer = get_chemdraw_data(args)
+    train_df, valid_df, test_df, aux_df, tokenizer = get_chemdraw_data(args)
 
     if args.do_train and args.trunc_train:
         train_df = train_df[:args.trunc_train]
     if (args.do_train or args.do_valid) and args.trunc_valid:
         valid_df = valid_df[:args.trunc_valid]
-    
-    if args.debug:
-        args.epochs = 1
-        args.save_path = 'output/debug'
-        args.print_freq = 50
-        if args.do_train:
-            train_df = train_df.sample(n=2000, random_state=42).reset_index(drop=True)
-        if args.do_train or args.do_valid:
-            valid_df = valid_df.sample(n=1000, random_state=42).reset_index(drop=True)
-        if args.do_test:
-            test_df = [df[:1000] for df in test_df]
     
     if args.do_train:
         train_loop(args, train_df, valid_df, aux_df, tokenizer, args.save_path)

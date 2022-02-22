@@ -26,7 +26,7 @@ torchrun \
     --encoder_lr 1e-3 \
     --decoder_lr 1e-3 \
     --dynamic_indigo --augment \
-    --save_path output/pubchem/synthetic/swin_base_200k_dynaug --resume \
+    --save_path output/pubchem/synthetic/swin_base_200k_dynaug \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -34,8 +34,6 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_test \
+    --do_train --do_valid --do_test \
     --trunc_valid 10000 \
     --fp16
-
-#pubchem/test.csv,pubchem/test_chemdraw.csv,uspto_test/uspto_indigo.csv,uspto_test/uspto_chemdraw.csv

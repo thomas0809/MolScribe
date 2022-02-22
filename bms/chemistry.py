@@ -205,7 +205,8 @@ class SmilesEvaluator(object):
         self.gold_smiles_cistrans = self._replace_empty(self.gold_smiles_cistrans)
 
     def _replace_empty(self, smiles_list):
-        return [smiles if smiles != "" else '<empty>' for smiles in smiles_list]
+        return [smiles if smiles is not None and type(smiles) is str and smiles != "" else '<empty>'
+                for smiles in smiles_list]
 
     def evaluate(self, pred_smiles):
         results = {}
