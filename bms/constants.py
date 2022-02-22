@@ -2,10 +2,10 @@ from typing import List
 
 
 RGROUP_SYMBOLS = ['R', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12',
-                  'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Rf', 'X', 'Y', 'Z', 'A', 'Ar']
+                  'Ra', 'Rb', 'Rc', 'Rd', 'X', 'Y', 'Z', 'Q', 'A', 'Ar']
 
 # PLACEHOLDER_ATOMS = ["Xe", "Rn", "Nd", "Yb", "At", "Fm", "Er"]
-PLACEHOLDER_ATOMS = ["Lv", "Ts", "Lu", "Nd", "Yb", "At", "Fm", "Er"]
+PLACEHOLDER_ATOMS = ["Lv", "Lu", "Nd", "Yb", "At", "Fm", "Er"]
 
 
 '''
@@ -66,14 +66,14 @@ SUBSTITUTIONS: List[Substitution] = [
     Substitution(['NMe', 'MeN'], '[N;X3][CH3;D1]', "[NH]C", 0.3),
     Substitution(['Me'], '[CH3;D1]', "[CH3]", 0.1),
     Substitution(['OEt', 'EtO'], '[OH0;D2][CH2;D2][CH3]', "[O]CC", 0.5),
-    Substitution(['Et'], '[CH2;D2][CH3]', "[CH2]C", 0.2),
-    Substitution(['Pr', 'nPr'], '[CH2;D2][CH2;D2][CH3]', "[CH2]CC", 0.1),
-    Substitution(['Bu', 'nBu'], '[CH2;D2][CH2;D2][CH2;D2][CH3]', "[CH2]CCC", 0.1),
+    Substitution(['Et', 'C2H5'], '[CH2;D2][CH3]', "[CH2]C", 0.3),
+    Substitution(['Pr', 'nPr'], '[CH2;D2][CH2;D2][CH3]', "[CH2]CC", 0.3),
+    Substitution(['Bu', 'nBu'], '[CH2;D2][CH2;D2][CH2;D2][CH3]', "[CH2]CCC", 0.3),
 
     # Branched
-    Substitution(['iPr'], '[CH1;D3]([CH3])[CH3]', "[CH1](C)C", 0.1),
-    Substitution(['iBu'], '[CH2;D2][CH1;D3]([CH3])[CH3]', "[CH2]C(C)C", 0.1),
-    Substitution(['OiBu'], '[OH0;D2][CH2;D2][CH1;D3]([CH3])[CH3]', "[O]CC(C)C", 0.1),
+    Substitution(['iPr'], '[CH1;D3]([CH3])[CH3]', "[CH1](C)C", 0.2),
+    Substitution(['iBu'], '[CH2;D2][CH1;D3]([CH3])[CH3]', "[CH2]C(C)C", 0.2),
+    Substitution(['OiBu'], '[OH0;D2][CH2;D2][CH1;D3]([CH3])[CH3]', "[O]CC(C)C", 0.2),
     Substitution(['OtBu'], '[OH0;D2][CH0]([CH3])([CH3])[CH3]', "[O]C(C)(C)C", 0.7),
     Substitution(['tBu'], '[CH0]([CH3])([CH3])[CH3]', "[C](C)(C)C", 0.3),
 
@@ -82,9 +82,9 @@ SUBSTITUTIONS: List[Substitution] = [
     Substitution(['NCF3', 'F3CN'], '[N;X3][CH0;D4](F)(F)F', "[NH]C(F)(F)F", 0.5),
     Substitution(['OCF3', 'F3CO'], '[OH0;X2][CH0;D4](F)(F)F', "[O]C(F)(F)F", 0.5),
     Substitution(['CCl3'], '[CH0;D4](Cl)(Cl)Cl', "[C](Cl)(Cl)Cl", 0.5),
-    Substitution(['CO2H', 'HO2C', 'COOH'], 'C(=O)[OH]', "[C](=O)O", 0.2),  # COOH
-    Substitution(['CN', 'NC'], 'C#[ND1]', "[C]#N", 0.3),
-    Substitution(['OCH3', 'H3CO'], '[OH0;D2][CH3]', "[O]C", 0.2),
+    Substitution(['CO2H', 'HO2C', 'COOH'], 'C(=O)[OH]', "[C](=O)O", 0.5),  # COOH
+    Substitution(['CN', 'NC'], 'C#[ND1]', "[C]#N", 0.5),
+    Substitution(['OCH3', 'H3CO'], '[OH0;D2][CH3]', "[O]C", 0.4),
     Substitution(['SO3H'], 'S(=O)(=O)[OH]', "[S](=O)(=O)O", 0.4),
 ]
 

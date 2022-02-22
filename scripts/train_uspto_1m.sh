@@ -23,7 +23,7 @@ torchrun \
     --train_file pubchem/train_1m.csv \
     --aux_file uspto_mol/train.csv --coords_file aux_file \
     --valid_file Img2Mol/USPTO.csv \
-    --test_file Img2Mol/valko.csv \
+    --test_file Img2Mol/CLEF_p.csv,Img2Mol/JPO_p.csv,Img2Mol/UOB_p.csv,Img2Mol/USPTO_p.csv,Img2Mol/staker_p.csv \
     --vocab_file bms/vocab_uspto.json \
     --formats atomtok_coords,edges \
     --dynamic_indigo --augment --mol_augment \
@@ -33,7 +33,7 @@ torchrun \
     --decoder transformer \
     --encoder_lr 4e-4 \
     --decoder_lr 4e-4 \
-    --save_path $SAVE_PATH --save_mode all --load_ckpt last \
+    --save_path $SAVE_PATH --save_mode all --load_ckpt last\
     --label_smoothing 0.1 \
     --epochs 20 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -41,8 +41,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --seed 2022 \
-    --do_test --molblock \
+    --do_test \
     --fp16  # 2>&1  | tee $SAVE_PATH/log_${DATESTR}.txt
 
 
@@ -53,5 +52,5 @@ torchrun \
 #    --save_path output/indigo/swin_base_20_dynamic_aug \
 #    --no_pretrained --scheduler cosine --warmup 0.05 \
 #    --load_path output/pubchem/swin_base_10 --resume \
-#--test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \
+#--test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,real-acs-evaluation/acs.csv \
 #--test_file Img2Mol/CLEF_p.csv,Img2Mol/JPO_p.csv,Img2Mol/UOB_p.csv,Img2Mol/USPTO_p.csv,Img2Mol/staker_p.csv \

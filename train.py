@@ -21,8 +21,7 @@ from bms.model import Encoder, Decoder
 from bms.loss import Criterion
 from bms.utils import seed_torch, save_args, init_summary_writer, LossMeter, AverageMeter, asMinutes, timeSince, \
                       print_rank_0, format_df, FORMAT_INFO
-from bms.chemistry import SmilesEvaluator, evaluate_nodes, convert_graph_to_smiles, postprocess_smiles, \
-                          get_edge_prediction
+from bms.chemistry import SmilesEvaluator, evaluate_nodes, convert_graph_to_smiles, postprocess_smiles
 from bms.tokenizer import Tokenizer, NodeTokenizer
 
 import warnings 
@@ -111,6 +110,7 @@ def get_args():
     parser.add_argument('--label_smoothing', type=float, default=0.0)
     parser.add_argument('--shuffle_nodes', action='store_true')
     parser.add_argument('--reweight', action='store_true')
+    parser.add_argument('--save_image', action='store_true')
     # Inference
     parser.add_argument('--beam_size', type=int, default=1)
     parser.add_argument('--n_best', type=int, default=1)
@@ -463,7 +463,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     else:
         sampler = SequentialSampler(dataset)
     dataloader = DataLoader(dataset, 
-                            batch_size=args.batch_size * 4,
+                            batch_size=args.batch_size * 2,
                             sampler=sampler, 
                             num_workers=args.num_workers,
                             pin_memory=True, 
@@ -632,7 +632,7 @@ def get_chemdraw_data(args):
                 args.vocab_file = 'bms/vocab_rf.json' if args.mol_augment else 'bms/vocab.json'
             tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
                                                         continuous_coords=args.continuous_coords)
-            print_rank_0(f'tokenizer: {args.vocab_file}')
+            print_rank_0(f'tokenizer: {args.vocab_file} {len(tokenizer["atomtok_coords"])}')
     if args.patch:
         tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
         args.num_symbols = tokenizer['graph'].len_symbols()

@@ -10,7 +10,7 @@ ACCUM_STEP=1
 MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 DATESTR=$(date +"%m-%d-%H-%M")
-SAVE_PATH=output/pubchem/synthetic/swin_base_200k_joint
+SAVE_PATH=output/pubchem/synthetic/swin_base_200k_joint_noaug
 mkdir -p ${SAVE_PATH}
 
 set -x
@@ -27,11 +27,11 @@ torchrun \
     --input_size 384 \
     --encoder swin_base \
     --decoder transformer \
-    --encoder_lr 1e-3 \
-    --decoder_lr 1e-3 \
-    --dynamic_indigo --augment \
+    --encoder_lr 4e-4 \
+    --decoder_lr 4e-4 \
+    --dynamic_indigo --default_option \
     --coord_bins 64 --sep_xy \
-    --save_path $SAVE_PATH \
+    --save_path $SAVE_PATH --save_image \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -39,7 +39,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_test \
-    --trunc_valid 10000 \
-    --fp16  2>&1  # | tee $SAVE_PATH/log_${DATESTR}.txt
+    --do_train --do_valid --do_test \
+    --trunc_valid 5000 \
+    --fp16  2>&1   | tee $SAVE_PATH/log_${DATESTR}.txt
 

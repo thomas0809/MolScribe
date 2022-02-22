@@ -23,7 +23,7 @@ torchrun \
     --train_file pubchem/train_200k.csv \
     --aux_file uspto_mol/train.csv  \
     --valid_file Img2Mol/USPTO.csv \
-    --test_file Img2Mol/CLEF.csv,real-acs-evaluation/acs.csv \
+    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv \
     --vocab_file bms/vocab_uspto.json \
     --formats atomtok \
     --dynamic_indigo --augment --mol_augment \

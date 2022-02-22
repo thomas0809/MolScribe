@@ -49,12 +49,12 @@ def canonicalize_smiles(smiles, ignore_chiral=False, ignore_cistrans=False):
         return '', False
     if ignore_cistrans:
         smiles = smiles.replace('/', '').replace('\\', '')
-    rlist = RGROUP_SYMBOLS
-    rdict = {}
-    for i, symbol in enumerate(rlist):
-        rdict[f'[{symbol}]'] = f'[*:{i}]'
-    for a, b in rdict.items():
-        smiles = smiles.replace(a, b)
+    # rlist = RGROUP_SYMBOLS
+    # rdict = {}
+    # for i, symbol in enumerate(rlist):
+    #     rdict[f'[{symbol}]'] = f'[*:{i}]'
+    # for a, b in rdict.items():
+    #     smiles = smiles.replace(a, b)
     success = False
     try:
         canon_smiles = Chem.CanonSmiles(smiles, useChiral=(not ignore_chiral))
@@ -205,7 +205,8 @@ class SmilesEvaluator(object):
         self.gold_smiles_cistrans = self._replace_empty(self.gold_smiles_cistrans)
 
     def _replace_empty(self, smiles_list):
-        return [smiles if smiles != "" else '<empty>' for smiles in smiles_list]
+        return [smiles if smiles is not None and type(smiles) is str and smiles != "" else '<empty>'
+                for smiles in smiles_list]
 
     def evaluate(self, pred_smiles):
         results = {}
@@ -325,17 +326,31 @@ def _replace_functional_group(smiles):
             else:
                 smiles = smiles.replace(symbol, '*')
     mappings = []
-    i = 0
+    i = 1
     for sub in SUBSTITUTIONS:
         for abbrv in sub.abbrvs:
             symbol = f'[{abbrv}]'
             if symbol in smiles:
-                assert i < len(PLACEHOLDER_ATOMS), "Not enough placeholders"
-                i += 1
-                placeholder = PLACEHOLDER_ATOMS[i]
+                # assert i < len(PLACEHOLDER_ATOMS), "Not enough placeholders"
+                while f'[{i}*]' in smiles:
+                    i += 1
+                # placeholder = PLACEHOLDER_ATOMS[i]
+                placeholder = f'[{i}*]'
                 while symbol in smiles:
-                    smiles = smiles.replace(symbol, f'[{placeholder}]', 1)
+                    smiles = smiles.replace(symbol, placeholder, 1)
                     mappings.append((placeholder, sub.smiles))
+    tokens = atomwise_tokenizer(smiles)
+    new_tokens = []
+    for t in tokens:
+        if t[0] == '[':
+            try:
+                atom = Chem.AtomFromSmiles(t)
+            except:
+                atom = None
+            new_tokens.append('C' if atom is None else t)
+        else:
+            new_tokens.append(t)
+    smiles = ''.join(new_tokens)
     return smiles, mappings
 
 
@@ -349,9 +364,10 @@ def _expand_functional_group(mol, mappings, molblock=False):
         for i, atom in enumerate(mw.GetAtoms()):  # reset radical electrons
             atom.SetNumRadicalElectrons(0)
         for placeholder_atom, sub_smiles in mappings:
+            isotope = int(placeholder_atom[1:-2])
             for i, atom in enumerate(mw.GetAtoms()):
                 symbol = atom.GetSymbol()
-                if symbol == placeholder_atom:
+                if symbol == '*' and atom.GetIsotope() == isotope:
                     bond = atom.GetBonds()[0]  # assuming R is singly bonded to the other atom
                     # TODO: is it true to assume singly bonded?
                     adjacent_idx = bond.GetOtherAtomIdx(i)  # getting the idx of the other atom
@@ -371,7 +387,6 @@ def _expand_functional_group(mol, mappings, molblock=False):
                     combo = Chem.CombineMols(mw, mR)  # combine two subgraphs into a single graph
 
                     bonding_atoms = []
-                    # display(combo)
                     for j, new_atom in enumerate(combo.GetAtoms()):
                         if new_atom.GetNumRadicalElectrons() == 1:
                             new_atom.SetNumRadicalElectrons(0)  # reset radical electrons
@@ -405,15 +420,17 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
             idx = mol.AddAtom(atom)
         elif symbol in ABBREVIATIONS:
             if symbol not in symbol_to_placeholder:
-                j = len(symbol_to_placeholder)
-                assert j < len(PLACEHOLDER_ATOMS), "Not enough placeholders"
-                placeholder = PLACEHOLDER_ATOMS[j]
+                j = len(symbol_to_placeholder) + 1
+                # assert j < len(PLACEHOLDER_ATOMS), "Not enough placeholders"
+                # placeholder = PLACEHOLDER_ATOMS[j]
+                placeholder = f"[{j}*]"
                 symbol_to_placeholder[symbol] = placeholder
             else:
                 placeholder = symbol_to_placeholder[symbol]
             sub = ABBREVIATIONS[symbol]
             mappings.append((placeholder, sub.smiles))
-            atom = Chem.Atom(placeholder)
+            atom = Chem.Atom("*")
+            atom.SetIsotope(int(placeholder[1:-2]))
             idx = mol.AddAtom(atom)
         else:
             symbol = symbols[i]
@@ -477,28 +494,30 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=
     if type(smiles) is not str or smiles == '':
         return '', False
     mol = None
+    pred_molblock = ''
     try:
         pred_smiles = smiles
         pred_smiles, mappings = _replace_functional_group(pred_smiles)
         if coords is not None and symbols is not None and edges is not None:
-            pred_smiles = pred_smiles.replace('@', '')  #.replace('/', '').replace('\\', '')
+            pred_smiles = pred_smiles.replace('@', '').replace('/', '').replace('\\', '')
             mol = Chem.RWMol(Chem.MolFromSmiles(pred_smiles, sanitize=False))
             mol = _verify_chirality(mol, coords, symbols, edges, debug)
         else:
             mol = Chem.MolFromSmiles(pred_smiles, sanitize=False)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-        pred_smiles, mol = _expand_functional_group(mol, mappings, molblock=molblock)
-        molblock = Chem.MolToMolBlock(mol)
+        if molblock and len(mappings) == 0:
+            pred_molblock = Chem.MolToMolBlock(mol)
+        pred_smiles, mol = _expand_functional_group(mol, mappings)
         success = True
     except Exception as e:
         if debug:
             print(e)
         pred_smiles = smiles
-        molblock = ''
+        pred_molblock = ''
         success = False
     if debug:
         return pred_smiles, mol
-    return pred_smiles, molblock, success
+    return pred_smiles, pred_molblock, success
 
 
 def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=False, num_workers=16):

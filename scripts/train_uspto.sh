@@ -18,7 +18,7 @@ torchrun \
     --data_path data/molbank \
     --train_file uspto_mol/train.csv \
     --valid_file Img2Mol/USPTO.csv \
-    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \
+    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv \
     --vocab_file bms/vocab_uspto.json \
     --formats atomtok \
     --augment \
