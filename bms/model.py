@@ -9,7 +9,6 @@ import timm
 from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID, MASK_ID, to_device
 from bms.inference import GreedySearch, BeamSearch
 from bms.transformer import TransformerDecoder, Embeddings
-from bms.patch import ImagePatch
 from bms.chemistry import is_valid_mol, get_edge_prediction
 
 
@@ -38,10 +37,6 @@ class Encoder(nn.Module):
             self.cnn.classifier = nn.Identity()
         else:
             raise NotImplemented
-        if args.patch:
-            self.image_patch = ImagePatch(args, args.patch_size, args.num_symbols)
-        else:
-            self.image_patch = None
 
     def swin_forward(self, transformer, x):
         x = transformer.patch_embed(x)
@@ -70,8 +65,6 @@ class Encoder(nn.Module):
         return x, hiddens
 
     def forward(self, x, refs=None):
-        if self.image_patch and refs and 'graph' in refs:
-            x = self.image_patch(x, refs['graph'])
         if self.model_type in ['resnet', 'efficientnet']:
             features = self.cnn(x)
             features = features.permute(0, 2, 3, 1)
