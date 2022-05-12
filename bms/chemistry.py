@@ -285,7 +285,10 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         # So we do this first, remove the conformer and add back the 2D conformer for chiral correction
 
         mol.RemoveAllConformers()
+        conf = Chem.Conformer(n)
         conf.Set3D(False)
+        for i, (x, y) in enumerate(coords):
+            conf.SetAtomPosition(i, (x, 1 - y, 0))
         mol.AddConformer(conf)
 
         # Magic, infering chirality from coordinates and BondDir. DO NOT CHANGE.
