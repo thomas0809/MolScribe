@@ -273,6 +273,11 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         # print(chiral_center_ids)
         # [print(e) for e in edges]
 
+        # correction to clear pre-condition violation (for some corner cases)
+        for bond in mol.GetBonds():
+            if bond.GetBondType() == Chem.BondType.SINGLE:
+                bond.SetBondDir(Chem.BondDir.NONE)
+
         # Create conformer from 2D coordinate
         conf = Chem.Conformer(n)
         conf.Set3D(True)
