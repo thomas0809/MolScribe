@@ -338,7 +338,7 @@ def _replace_functional_group(smiles):
                 placeholder = f'[{i}*]'
                 while symbol in smiles:
                     smiles = smiles.replace(symbol, placeholder, 1)
-                    mappings.append((placeholder, sub.smiles))
+                    mappings.append((placeholder, i, sub.smiles))
     tokens = atomwise_tokenizer(smiles)
     new_tokens = []
     for t in tokens:
@@ -363,11 +363,11 @@ def _expand_functional_group(mol, mappings, molblock=False):
         mw = Chem.RWMol(mol)
         for i, atom in enumerate(mw.GetAtoms()):  # reset radical electrons
             atom.SetNumRadicalElectrons(0)
-        for placeholder_atom, sub_smiles in mappings:
-            isotope = int(placeholder_atom[1:-2])
+        # for placeholder_atom, sub_smiles in mappings:
+        #     isotope = int(placeholder_atom[1:-2])
+        for symbol, isotope, sub_smiles in mappings:
             for i, atom in enumerate(mw.GetAtoms()):
-                symbol = atom.GetSymbol()
-                if symbol == '*' and atom.GetIsotope() == isotope:
+                if atom.GetSymbol() == '*' and (Chem.GetAtomAlias(atom) == symbol or atom.GetIsotope() == isotope):
                     bond = atom.GetBonds()[0]  # assuming R is singly bonded to the other atom
                     # TODO: is it true to assume singly bonded?
                     adjacent_idx = bond.GetOtherAtomIdx(i)  # getting the idx of the other atom
@@ -409,6 +409,7 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
     n = len(symbols)
     ids = []
     symbol_to_placeholder = {}
+    PLACEHOLDER_BASE = len(RGROUP_SYMBOLS)
     mappings = []
     for i in range(n):
         symbol = symbols[i]
@@ -416,31 +417,30 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
             symbol = symbol[1:-1]
         if symbol in RGROUP_SYMBOLS:
             atom = Chem.Atom("*")
-            atom.SetIsotope(RGROUP_SYMBOLS.index(symbol))
-            idx = mol.AddAtom(atom)
+            if symbol[0] == 'R' and symbol[1:].isdigit():
+                atom.SetIsotope(RGROUP_SYMBOLS.index(symbol))
+            Chem.SetAtomAlias(atom, symbol)
         elif symbol in ABBREVIATIONS:
             if symbol not in symbol_to_placeholder:
-                j = len(symbol_to_placeholder) + 1
-                # assert j < len(PLACEHOLDER_ATOMS), "Not enough placeholders"
-                # placeholder = PLACEHOLDER_ATOMS[j]
+                j = PLACEHOLDER_BASE + len(symbol_to_placeholder) + 1
                 placeholder = f"[{j}*]"
                 symbol_to_placeholder[symbol] = placeholder
             else:
                 placeholder = symbol_to_placeholder[symbol]
             sub = ABBREVIATIONS[symbol]
-            mappings.append((placeholder, sub.smiles))
+            mappings.append((symbol, None, sub.smiles))
             atom = Chem.Atom("*")
-            atom.SetIsotope(int(placeholder[1:-2]))
-            idx = mol.AddAtom(atom)
+            # atom.SetIsotope(int(placeholder[1:-2]))
+            Chem.SetAtomAlias(atom, symbol)
         else:
             symbol = symbols[i]
             try:
                 atom = Chem.AtomFromSmiles(symbol)
                 atom.SetChiralTag(Chem.rdchem.ChiralType.CHI_UNSPECIFIED)
-                idx = mol.AddAtom(atom)
             except:
-                atom = Chem.Atom("*")
-                idx = mol.AddAtom(atom)
+                atom = Chem.Atom("C")
+                Chem.SetAtomAlias(atom, symbol)
+        idx = mol.AddAtom(atom)
         assert idx == i
         ids.append(idx)
 
@@ -468,26 +468,30 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
     pred_smiles = '<invalid>'
 
     try:
-        if has_chirality:
-            mol = _verify_chirality(mol, coords, symbols, edges, debug)
+        # if has_chirality:
+        mol = _verify_chirality(mol, coords, symbols, edges, debug)
+        pred_molblock = Chem.MolToMolBlock(mol)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         pred_smiles, mol = _expand_functional_group(mol, mappings)
         success = True
     except Exception as e:
         if debug:
             raise e
+        pred_molblock = ''
         success = False
 
-    return pred_smiles, success
+    if debug:
+        return pred_smiles, pred_molblock, mol
+    return pred_smiles, pred_molblock, success
 
 
 def convert_graph_to_smiles(coords, symbols, edges, num_workers=16, simple=False):
     fn = _convert_graph_to_smiles_simple if simple else _convert_graph_to_smiles
     with multiprocessing.Pool(num_workers) as p:
         results = p.starmap(fn, zip(coords, symbols, edges), chunksize=128)
-    smiles_list, success = zip(*results)
+    smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
-    return smiles_list, r_success
+    return smiles_list, molblock_list, r_success
 
 
 def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=False, debug=False):
@@ -505,7 +509,7 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=
         else:
             mol = Chem.MolFromSmiles(pred_smiles, sanitize=False)
         # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-        if molblock and len(mappings) == 0:
+        if molblock:
             pred_molblock = Chem.MolToMolBlock(mol)
         pred_smiles, mol = _expand_functional_group(mol, mappings)
         success = True
@@ -516,7 +520,7 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=
         pred_molblock = ''
         success = False
     if debug:
-        return pred_smiles, mol
+        return pred_smiles, pred_molblock, mol
     return pred_smiles, pred_molblock, success
 
 
