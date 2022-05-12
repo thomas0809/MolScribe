@@ -275,9 +275,17 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
 
         # Create conformer from 2D coordinate
         conf = Chem.Conformer(n)
-        conf.Set3D(False)
+        conf.Set3D(True)
         for i, (x, y) in enumerate(coords):
             conf.SetAtomPosition(i, (x, 1 - y, 0))
+        mol.AddConformer(conf)
+        Chem.SanitizeMol(mol)
+        Chem.AssignStereochemistryFrom3D(mol)
+        # NOTE: seems that only AssignStereochemistryFrom3D can handle double bond E/Z
+        # So we do this first, remove the conformer and add back the 2D conformer for chiral correction
+
+        mol.RemoveAllConformers()
+        conf.Set3D(False)
         mol.AddConformer(conf)
 
         # Magic, infering chirality from coordinates and BondDir. DO NOT CHANGE.
