@@ -277,6 +277,8 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
     predictions = {format_: {} for format_ in args.formats}
     beam_predictions = {format_: {} for format_ in args.formats}
     start = end = time.time()
+    # Inference is distributed. The batch is divided and run independently on multiple GPUs, and the predictions
+    # are gathered afterwards.
     for step, (indices, images, refs) in enumerate(valid_loader):
         # measure data loading time
         data_time.update(time.time() - end)
@@ -305,7 +307,7 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
                 data_time=data_time,
                 sum_data_time=asMinutes(data_time.sum),
                 remain=timeSince(start, float(step+1)/len(valid_loader))))
-    # gather predictions
+    # gather predictions from different GPUs
     gathered_preds = [None for i in range(dist.get_world_size())]
     dist.all_gather_object(gathered_preds, [predictions, beam_predictions])
     n = len(valid_loader.dataset)
@@ -476,9 +478,11 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     
     predictions, beam_predictions = valid_fn(dataloader, encoder, decoder, tokenizer, device, args)
 
+    # The evaluation and saving prediction is only performed in the master process.
     if args.local_rank != 0:
         return
 
+    # Save beam search predictions. Not used.
     if args.beam_size > 1:
         for format_ in args.formats:
             with open(os.path.join(save_path, f'{split}_{format_}_beam.jsonl'), 'w') as f:
@@ -486,6 +490,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                     text, score = pred
                     f.write(json.dumps({'id': idx, 'text': text, 'score': score}) + '\n')
 
+    # Deal with discrepancies between datasets
     if 'pubchem_cid' in data_df.columns:
         data_df['image_id'] = data_df['pubchem_cid']
     if 'image_id' not in data_df.columns:
@@ -514,9 +519,9 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         if format_ == 'graph':
             predictions['edges'] = [pred['edges'] for pred in predictions['graph']]
 
+    # Construct graph from predicted atoms and bonds (including verify chirality)
     if 'edges' in predictions:
         pred_df['edges'] = predictions['edges']
-        # pred_df['edges'] = [get_edge_prediction(prob) for prob in predictions['edges']]
         smiles_list, molblock_list, r_success = convert_graph_to_smiles(
             pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
         print(f'Graph to SMILES success ratio: {r_success:.4f}')
@@ -524,10 +529,11 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         if args.molblock:
             pred_df['molblock'] = molblock_list
 
+    # Postprocess the predicted SMILES (verify chirality, expand functional groups)
     if 'SMILES' in pred_df.columns:
         if 'edges' in pred_df.columns:
             smiles_list, _, r_success = postprocess_smiles(
-                pred_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'], args.molblock)
+                pred_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
         else:
             smiles_list, _, r_success = postprocess_smiles(pred_df['SMILES'])
         print(f'Postprocess SMILES success ratio: {r_success:.4f}')
@@ -560,6 +566,8 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                 evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])
 
     print('Save predictions...')
+    # TODO (zhening)
+    #  Add scores / token scores in pred_df.
     file = data_df.attrs['file'].split('/')[-1]
     pred_df = format_df(pred_df)
     if args.predict_coords:

@@ -351,6 +351,7 @@ class TransformerDecoderBase(nn.Module):
 
 
 class TransformerDecoderAR(TransformerDecoderBase):
+    """Autoregressive Transformer Decoder"""
 
     def __init__(self, args, tokenizer):
         super().__init__(args)
@@ -372,6 +373,7 @@ class TransformerDecoderAR(TransformerDecoderBase):
         return emb, tgt_pad_mask
 
     def forward(self, encoder_out, labels, label_lengths):
+        """Training mode"""
         batch_size, max_len, _ = encoder_out.size()
         memory_bank = self.enc_transform(encoder_out)
 
@@ -384,6 +386,9 @@ class TransformerDecoderAR(TransformerDecoderBase):
 
     def decode(self, encoder_out, beam_size: int, n_best: int, min_length: int = 1, max_length: int = 256,
                labels=None):
+        """Inference mode. Autoregressively decode the sequence. Only greedy search is supported now. Beam search is
+        out-dated. The labels is used for partial prediction, i.e. part of the sequence is given. In standard decoding,
+        labels=None."""
         batch_size, max_len, _ = encoder_out.size()
         memory_bank = self.enc_transform(encoder_out)
         orig_labels = labels
@@ -447,6 +452,9 @@ class TransformerDecoderAR(TransformerDecoderBase):
                     labels = labels.index_select(0, select_indices)
                 self.map_state(lambda state, dim: state.index_select(dim, select_indices))
 
+        # TODO (zhening)
+        #  decode_strategy.scores is a single score for each sequence.
+        #  Add results['token_scores'], a list of scores for all steps.
         results["scores"] = decode_strategy.scores
         results["predictions"] = decode_strategy.predictions
         results["attention"] = decode_strategy.attention
@@ -458,8 +466,7 @@ class TransformerDecoderAR(TransformerDecoderBase):
                 mask = label.eq(MASK_ID).long()
                 pred = pred[:len(label)]
                 results["predictions"][i][0] = pred * mask + label * (1-mask)
-            #     print(results["predictions"][i][0])
-            # exit()
+
         return results["predictions"], results['scores'], results["hidden"]
 
     # adapted from onmt.decoders.transformer
@@ -637,6 +644,7 @@ class FeaturePyramidNetwork(nn.Module):
 
 
 class Decoder(nn.Module):
+    """This class is a wrapper for different decoder architectures, and support multiple decoders."""
 
     def __init__(self, args, tokenizer):
         super(Decoder, self).__init__()
@@ -665,6 +673,7 @@ class Decoder(nn.Module):
         self.decoder = nn.ModuleDict(decoder)
 
     def forward(self, encoder_out, hiddens, refs):
+        """Training mode. Compute the logits with teacher forcing."""
         results = {}
         refs = to_device(refs, encoder_out.device)
         for format_ in self.formats:
@@ -693,6 +702,8 @@ class Decoder(nn.Module):
         return results
 
     def decode(self, encoder_out, hiddens, refs=None, beam_size=1, n_best=1):
+        """Inference mode. Call each decoder's decode method (if required), convert the output format (e.g. token to
+        sequence)."""
         results = {}
         predictions = {}
         beam_predictions = {}
@@ -736,6 +747,8 @@ class Decoder(nn.Module):
                     raise NotImplemented
                 predictions['edges'] = [get_edge_prediction(prob) for prob in predictions['edges']]
                 # results['edges'] = outputs     # batch x n_best x len x len
+            # TODO (zhening)
+            #  The following all rely on TransformerDecoderAR. Try to keep compatibility.
             elif format_ == 'nodes':
                 max_len = FORMAT_INFO['nodes']['max_len']
                 results['nodes'] = self.decoder['nodes'].decode(encoder_out, beam_size, n_best, max_length=max_len)

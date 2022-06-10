@@ -484,10 +484,10 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
     pred_smiles = '<invalid>'
 
     try:
-        # if has_chirality:
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
+        # molblock is obtained before expanding functional groups. Otherwise the expanded substructure won't have
+        # coordinates.
         pred_molblock = Chem.MolToMolBlock(mol)
-        # pred_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         pred_smiles, mol = _expand_functional_group(mol, mappings)
         success = True
     except Exception as e:
