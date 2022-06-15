@@ -10,7 +10,7 @@ import torch
 
 from bms.dataset import get_transforms
 from bms.model import Encoder, Decoder
-from bms.chemistry import postprocess_smiles
+from bms.chemistry import postprocess_smiles, convert_graph_to_smiles
 from bms.tokenizer import NodeTokenizer
 
 import warnings 
@@ -93,11 +93,11 @@ def get_model(args, tokenizer, device, load_path=None):
 
 def predict_image(encoder, decoder, device, transform, image_path):
     image = cv2.imread(image_path)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # .astype(np.float32)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    input_images = [image]
     augmented = transform(image=image, keypoints=[])
-    image = augmented['image']
 
-    images = image.unsqueeze(0).to(device)
+    images = augmented['image'].unsqueeze(0).to(device)
     with torch.no_grad():
         features, hiddens = encoder(images, {})
         preds, beam_preds = decoder.decode(features, hiddens, {})
@@ -107,8 +107,8 @@ def predict_image(encoder, decoder, device, transform, image_path):
     node_symbols = [pred['symbols'] for pred in preds['atomtok_coords']]
     edges = preds['edges']
 
-    post_smiles, molblock, r_success = postprocess_smiles(smiles, node_coords, node_symbols, edges, molblock=True)
-    return post_smiles[0], molblock[0]
+    smiles, molblock, r_success = convert_graph_to_smiles(node_coords, node_symbols, edges, images=input_images)
+    return smiles[0], molblock[0]
 
 
 def main():

@@ -420,7 +420,7 @@ def _expand_functional_group(mol, mappings, molblock=False):
     return smiles, mol
 
 
-def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
+def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
     mol = Chem.RWMol()
     n = len(symbols)
     ids = []
@@ -484,6 +484,10 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
     pred_smiles = '<invalid>'
 
     try:
+        if image is not None:
+            height, width, _ = image.shape
+            ratio = width / height
+            coords = [[x * ratio * 10, y * 10] for x, y in coords]
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
         # molblock is obtained before expanding functional groups. Otherwise the expanded substructure won't have
         # coordinates.
@@ -501,10 +505,13 @@ def _convert_graph_to_smiles(coords, symbols, edges, debug=False):
     return pred_smiles, pred_molblock, success
 
 
-def convert_graph_to_smiles(coords, symbols, edges, num_workers=16, simple=False):
+def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16, simple=False):
     fn = _convert_graph_to_smiles_simple if simple else _convert_graph_to_smiles
     with multiprocessing.Pool(num_workers) as p:
-        results = p.starmap(fn, zip(coords, symbols, edges), chunksize=128)
+        if images is None:
+            results = p.starmap(fn, zip(coords, symbols, edges), chunksize=128)
+        else:
+            results = p.starmap(fn, zip(coords, symbols, edges, images), chunksize=128)
     smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
     return smiles_list, molblock_list, r_success

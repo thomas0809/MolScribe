@@ -302,7 +302,7 @@ class TrainDataset(Dataset):
         return len(self.df)
 
     def image_transform(self, image, coords=[], renormalize=False):
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # .astype(np.float32)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         augmented = self.transform(image=image, keypoints=coords)
         image = augmented['image']
         if len(coords) > 0:
