@@ -14,6 +14,7 @@ class DecodeStrategy(object):
         # result catching
         self.predictions = [[] for _ in range(batch_size)]
         self.scores = [[] for _ in range(batch_size)]
+        self.token_scores = [[] for _ in range(batch_size)]
         self.attention = [[] for _ in range(batch_size)]
         self.hidden = [[] for _ in range(batch_size)]
 
@@ -38,6 +39,9 @@ class DecodeStrategy(object):
         self.is_finished = torch.zeros(
             [self.batch_size, self.parallel_paths],
             dtype=torch.uint8, device=device)
+        self.alive_log_token_scores = torch.zeros(
+            [self.batch_size * self.parallel_paths, 0],
+            dtype=torch.float, device=device)
 
         return None, memory_bank
 

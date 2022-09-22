@@ -36,9 +36,11 @@ def process(dataset):
             # if len(superatom) > 0:
             #     continue
             try:
-                mol = Chem.MolFromMolFile(path, sanitize=False)
+                mol = Chem.MolFromMolFile(path, sanitize=False, strictParsing=False)
                 smiles = Chem.MolToSmiles(mol)
+                n_valid += 1
             except:
+                print(path)
                 smiles = ''
             data.append({
                 'image_id': name,
@@ -52,7 +54,7 @@ def process(dataset):
     df.to_csv(f'data/molbank/Img2Mol/{dataset}.csv', index=False)
 
 
-process('CLEF')
+# process('CLEF')
 # process('JPO')
 # process('UOB')
-# process('USPTO')
+process('USPTO')

@@ -9,7 +9,7 @@ import timm
 from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID, MASK_ID, to_device
 from bms.inference import GreedySearch, BeamSearch
 from bms.transformer import TransformerDecoder, Embeddings
-from bms.chemistry import is_valid_mol, get_edge_prediction
+from bms.chemistry import is_valid_mol, get_edge_prediction, get_edge_scores
 
 
 class Encoder(nn.Module):
@@ -83,6 +83,7 @@ class Attention(nn.Module):
     """
     Attention network for calculate attention value
     """
+
     def __init__(self, encoder_dim, decoder_dim, attention_dim):
         """
         :param encoder_dim: input size of encoder network
@@ -110,7 +111,8 @@ class LstmDecoder(nn.Module):
     Decoder network with attention network used for training
     """
 
-    def __init__(self, attention_dim, embed_dim, decoder_dim, max_len, tokenizer, n_layer=1, encoder_dim=512, dropout=0.5):
+    def __init__(self, attention_dim, embed_dim, decoder_dim, max_len, tokenizer, n_layer=1, encoder_dim=512,
+                 dropout=0.5):
         """
         :param attention_dim: input size of attention network
         :param embed_dim: input size of embedding network
@@ -134,7 +136,7 @@ class LstmDecoder(nn.Module):
         self.n_layer = n_layer
         if n_layer > 1:
             self.decode_layers = nn.ModuleList([
-                nn.LSTMCell(decoder_dim, decoder_dim, bias=True) for i in range(n_layer-1)
+                nn.LSTMCell(decoder_dim, decoder_dim, bias=True) for i in range(n_layer - 1)
             ])
         self.init_h = nn.Linear(encoder_dim, decoder_dim)  # linear layer to find initial hidden state of LSTMCell
         self.init_c = nn.Linear(encoder_dim, decoder_dim)  # linear layer to find initial cell state of LSTMCell
@@ -159,16 +161,16 @@ class LstmDecoder(nn.Module):
         mean_encoder_out = encoder_out.mean(dim=1)
         h = self.init_h(mean_encoder_out)  # (batch_size, decoder_dim)
         c = self.init_c(mean_encoder_out)
-        hh = [h for i in range(self.n_layer-1)]
-        cc = [c for i in range(self.n_layer-1)]
+        hh = [h for i in range(self.n_layer - 1)]
+        cc = [c for i in range(self.n_layer - 1)]
         return h, c, hh, cc
-    
+
     def lstm_step(self, x, h, c, hh, cc, batch_size=-1):
         if batch_size == -1:
             batch_size = h.size(0)
         h, c = self.decode_step(x, (h[:batch_size], c[:batch_size]))
         x = h
-        for i in range(self.n_layer-1):
+        for i in range(self.n_layer - 1):
             hh[i], cc[i] = self.decode_layers[i](x, (hh[i][:batch_size], cc[i][:batch_size]))
             x = hh[i]
         preds = self.fc(self.dropout(x))
@@ -235,13 +237,14 @@ class LstmDecoder(nn.Module):
                 break
             embeddings = self.embedding(torch.argmax(preds, -1))
         return predictions
-    
+
     def decode(self, encoder_out, beam_size=1, n_best=1):
         """An alternative to `predict`, decoding with greedy or beam search.
         """
-        memory_bank = encoder_out # rename
-        if encoder_out.dim() == 4: # for resnet encoders
-            memory_bank = memory_bank.view(encoder_out.size(0), -1, encoder_out.size(-1))  # (batch_size, memory_length, encoder_dim)
+        memory_bank = encoder_out  # rename
+        if encoder_out.dim() == 4:  # for resnet encoders
+            memory_bank = memory_bank.view(encoder_out.size(0), -1,
+                                           encoder_out.size(-1))  # (batch_size, memory_length, encoder_dim)
         batch_size, memory_length, encoder_dim = memory_bank.shape
 
         if beam_size == 1:
@@ -306,7 +309,7 @@ class LstmDecoder(nn.Module):
                 cc = [x.index_select(0, select_indices) for x in cc]
 
         return (decode_strategy.predictions, decode_strategy.scores)
-    
+
 
 class TransformerDecoderBase(nn.Module):
 
@@ -381,7 +384,7 @@ class TransformerDecoderAR(TransformerDecoderBase):
         tgt_emb, tgt_pad_mask = self.dec_embedding(tgt)
         dec_out, *_ = self.decoder(tgt_emb=tgt_emb, memory_bank=memory_bank, tgt_pad_mask=tgt_pad_mask)
 
-        logits = self.output_layer(dec_out)    # (b, t, h) -> (b, t, v)
+        logits = self.output_layer(dec_out)  # (b, t, h) -> (b, t, v)
         return logits[:, :-1], labels[:, 1:], dec_out
 
     def decode(self, encoder_out, beam_size: int, n_best: int, min_length: int = 1, max_length: int = 256,
@@ -420,14 +423,14 @@ class TransformerDecoderAR(TransformerDecoderBase):
             if labels is not None:
                 label = labels[:, step].view(-1, 1, 1)
                 mask = label.eq(MASK_ID).long()
-                tgt = tgt * mask + label * (1-mask)
+                tgt = tgt * mask + label * (1 - mask)
             tgt_emb, tgt_pad_mask = self.dec_embedding(tgt)
             dec_out, dec_attn, *_ = self.decoder(tgt_emb=tgt_emb, memory_bank=memory_bank,
                                                  tgt_pad_mask=tgt_pad_mask, step=step)
 
             attn = dec_attn.get("std", None)
 
-            dec_logits = self.output_layer(dec_out)            # [b, t, h] => [b, t, v]
+            dec_logits = self.output_layer(dec_out)  # [b, t, h] => [b, t, v]
             dec_logits = dec_logits.squeeze(1)
             log_probs = F.log_softmax(dec_logits, dim=-1)
 
@@ -455,19 +458,20 @@ class TransformerDecoderAR(TransformerDecoderBase):
         # TODO (zhening)
         #  decode_strategy.scores is a single score for each sequence.
         #  Add results['token_scores'], a list of scores for all steps.
-        results["scores"] = decode_strategy.scores
+        results["scores"] = decode_strategy.scores  # fixed to be average of token scores
+        results["token_scores"] = decode_strategy.token_scores
         results["predictions"] = decode_strategy.predictions
         results["attention"] = decode_strategy.attention
         results["hidden"] = decode_strategy.hidden
         if orig_labels is not None:
             for i in range(batch_size):
                 pred = results["predictions"][i][0]
-                label = orig_labels[i][1:len(pred)+1]
+                label = orig_labels[i][1:len(pred) + 1]
                 mask = label.eq(MASK_ID).long()
                 pred = pred[:len(label)]
-                results["predictions"][i][0] = pred * mask + label * (1-mask)
+                results["predictions"][i][0] = pred * mask + label * (1 - mask)
 
-        return results["predictions"], results['scores'], results["hidden"]
+        return results["predictions"], results['scores'], results["token_scores"], results["hidden"]
 
     # adapted from onmt.decoders.transformer
     def map_state(self, fn):
@@ -478,6 +482,7 @@ class TransformerDecoderAR(TransformerDecoderBase):
                         _recursive_map(v)
                     else:
                         struct[k] = fn(v, batch_dim)
+
         if self.decoder.state["cache"] is not None:
             _recursive_map(self.decoder.state["cache"])
 
@@ -517,7 +522,7 @@ class TransformerDecoderNAR(TransformerDecoderBase):
 
         def _get_predictions(hidden):
             coords_pred = self.coords_mlp(hidden)  # (b, t, h) -> (b, t, 2)
-            class_pred = self.class_mlp(hidden)    # (b, t, h) -> (b, t, c)
+            class_pred = self.class_mlp(hidden)  # (b, t, h) -> (b, t, c)
             x = torch.cat([hidden.unsqueeze(2).expand(b, l, l, h),
                            hidden.unsqueeze(1).expand(b, l, l, h)], dim=3)
             edges_pred = self.edges_mlp(x)
@@ -568,7 +573,7 @@ class GraphPredictor(nn.Module):
             index = [i for i in range(3, l, 3)]
             hidden = hidden[:, index]
         else:
-            batch_id = torch.arange(b).unsqueeze(1).expand_as(indices).reshape(-1)  #.to(device)
+            batch_id = torch.arange(b).unsqueeze(1).expand_as(indices).reshape(-1)
             indices = indices.view(-1)
             hidden = hidden[batch_id, indices].view(b, -1, dim)
         b, l, dim = hidden.size()
@@ -588,9 +593,9 @@ def conv3x3(in_planes, out_planes, stride=1, has_bias=False):
 
 def conv3x3_bn_relu(in_planes, out_planes, stride=1):
     return nn.Sequential(
-            conv3x3(in_planes, out_planes, stride),
-            nn.SyncBatchNorm(out_planes, eps=1e-6),
-            nn.ReLU())
+        conv3x3(in_planes, out_planes, stride),
+        nn.SyncBatchNorm(out_planes, eps=1e-6),
+        nn.ReLU())
 
 
 class FeaturePyramidNetwork(nn.Module):
@@ -690,6 +695,9 @@ class Decoder(nn.Module):
                 elif 'atomtok_coords' in results:
                     dec_out = results['atomtok_coords'][2]
                     predictions = self.decoder['edges'](dec_out, indices=refs['atom_indices'][0])
+                elif 'chartok_coords' in results:
+                    dec_out = results['chartok_coords'][2]
+                    predictions = self.decoder['edges'](dec_out, indices=refs['atom_indices'][0])
                 else:
                     raise NotImplemented
                 targets = {'edges': refs['edges']}
@@ -713,11 +721,13 @@ class Decoder(nn.Module):
             if format_ == 'graph':
                 outputs = self.decoder['graph'].decode(encoder_out)
                 results['graph'] = outputs
+
                 def _convert(x):
                     x = {k: v.tolist() for k, v in x.items()}
                     x['symbols'] = self.tokenizer['graph'].labels_to_symbols(x['labels'])
                     x.pop('labels')
                     return x
+
                 predictions['graph'] = [_convert(pred) for pred in outputs]
             elif format_ == 'grid':
                 outputs = self.decoder['grid'](hiddens)
@@ -726,52 +736,86 @@ class Decoder(nn.Module):
                                        for grid in outputs.argmax(1)]
             elif format_ == 'edges':
                 if 'nodes' in results:
-                    dec_out = results['nodes'][2]  # batch x n_best x len x dim
+                    dec_out = results['nodes'][3]  # batch x n_best x len x dim
                     # outputs = [[self.decoder['edges'](h.unsqueeze(0))['edges'].argmax(1).squeeze(0) for h in hs]
                     #            for hs in dec_out]
-                    outputs = [[F.softmax(self.decoder['edges'](h.unsqueeze(0))['edges'].squeeze(0).permute(1, 2, 0), dim=2) for h in hs]
-                               for hs in dec_out]
+                    outputs = [
+                        [F.softmax(self.decoder['edges'](h.unsqueeze(0))['edges'].squeeze(0).permute(1, 2, 0), dim=2)
+                         for h in hs]
+                        for hs in dec_out]
                     predictions['edges'] = [pred[0].tolist() for pred in outputs]
-                elif 'atomtok_coords' in results:
-                    dec_out = results['atomtok_coords'][2]  # batch x n_best x len x dim
+                elif 'atomtok_coords' in results or 'chartok_coords' in results:
+                    atom_format = 'atomtok_coords' if 'atomtok_coords' in results else 'chartok_coords'
+                    dec_out = results[atom_format][3]  # batch x n_best x len x dim
                     predictions['edges'] = []
                     for i in range(len(dec_out)):
                         hidden = dec_out[i][0].unsqueeze(0)  # 1 * len * dim
-                        indices = torch.LongTensor(predictions['atomtok_coords'][i]['indices']).unsqueeze(0)  # 1 * k
+                        indices = torch.LongTensor(predictions[atom_format][i]['indices']).unsqueeze(0)  # 1 * k
                         pred = self.decoder['edges'](hidden, indices)  # k * k
                         # predictions['edges'].append(pred['edges'].argmax(1).squeeze(0).tolist())
-                        predictions['edges'].append(F.softmax(pred['edges'].squeeze(0).permute(1, 2, 0), dim=2).tolist())
+                        predictions['edges'].append(
+                            F.softmax(pred['edges'].squeeze(0).permute(1, 2, 0), dim=2).tolist())  # (batch *) k * k * 7
                         if 'coords' in pred:
-                            predictions['atomtok_coords'][i]['coords'] = pred['coords'].squeeze(0).tolist()
+                            predictions[atom_format][i]['coords'] = pred['coords'].squeeze(0).tolist()
                 else:
                     raise NotImplemented
-                predictions['edges'] = [get_edge_prediction(prob) for prob in predictions['edges']]
+                edge_prods = [None for _ in predictions['edges']]
+                edge_token_scores = [None for _ in predictions['edges']]
+                # predictions_edges = [get_edge_prediction(prob) for prob in predictions['edges']]
+                predictions_edges = []
+                errors = {}
+                for i, prob in enumerate(predictions['edges']):
+                    # try:
+                    #     np.max(prob, axis=2)
+                    # except:
+                    #     errors[i] = prob
+                    predictions_edges.append(get_edge_prediction(prob))
+                # with open("debug.pkl", "wb") as f:
+                #     import pickle as pkl
+                #     pkl.dump(errors, f)
+                for idx, prob in enumerate(predictions['edges']):
+                    edge_prods[idx], edge_token_scores[idx] = get_edge_scores(prob)
+                    # num_edges = int(np.sum(np.array(predictions_edges[idx]).astype(bool)))
+                    # # print(num_edges)
+                    # if num_edges == 0:
+                    #     print(idx, predictions_edges[idx])
+                    #     print("WARNING: no edges")
+                    #     num_edges = 1
+                    # edge_scores[idx] **= (1 / num_edges)
+                    # if 'nodes' in results:
+                    #     edge_scores[idx] *= beam_predictions['nodes'][1][idx][0]
+                    # elif 'atomtok_coords' in results:
+                    #     edge_scores[idx] *= beam_predictions['atomtok_coords'][1][idx][0]
+                predictions['edges'] = predictions_edges
+                beam_predictions['edges'] = (predictions['edges'], edge_prods, edge_token_scores)
                 # results['edges'] = outputs     # batch x n_best x len x len
             # TODO (zhening)
             #  The following all rely on TransformerDecoderAR. Try to keep compatibility.
             elif format_ == 'nodes':
                 max_len = FORMAT_INFO['nodes']['max_len']
                 results['nodes'] = self.decoder['nodes'].decode(encoder_out, beam_size, n_best, max_length=max_len)
-                outputs, scores, *_ = results['nodes']
-                beam_preds = [[self.tokenizer['nodes'].sequence_to_smiles(x.tolist()) for x in pred] for pred in outputs]
-                beam_predictions['nodes'] = (beam_preds, scores)
+                outputs, scores, token_scores, *_ = results['nodes']
+                beam_preds = [[self.tokenizer['nodes'].sequence_to_smiles(x.tolist()) for x in pred] for pred in
+                              outputs]
+                beam_predictions['nodes'] = (beam_preds, scores, token_scores)
                 predictions['nodes'] = [pred[0] for pred in beam_preds]
-            elif format_ == 'atomtok_coords':
-                labels = refs['atomtok_coords'][0] if self.args.predict_coords else None
-                max_len = FORMAT_INFO['atomtok_coords']['max_len']
+            elif format_ == 'atomtok_coords' or format_ == 'chartok_coords':
+                labels = refs[format_][0] if self.args.predict_coords else None
+                max_len = FORMAT_INFO[format_]['max_len']
                 results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best, max_length=max_len,
                                                                 labels=labels)
-                outputs, scores, *_ = results[format_]
+                outputs, scores, token_scores, *_ = results[format_]
                 beam_preds = [[self.tokenizer[format_].sequence_to_smiles(x.tolist()) for x in pred]
                               for pred in outputs]
-                beam_predictions[format_] = (beam_preds, scores)
+                beam_predictions[format_] = (beam_preds, scores, token_scores)
                 predictions[format_] = [pred[0] for pred in beam_preds]
             else:
                 max_len = FORMAT_INFO[format_]['max_len']
                 results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best, max_length=max_len)
-                outputs, scores, *_ = results[format_]
+                outputs, scores, token_scores, *_ = results[format_]
                 beam_preds = [[self.tokenizer[format_].predict_caption(x.tolist()) for x in pred] for pred in outputs]
-                beam_predictions[format_] = (beam_preds, scores)
+                beam_predictions[format_] = (beam_preds, scores, token_scores)
+
                 def _pick_valid(preds, format_):
                     """Pick the top valid prediction from n_best outputs
                     """
@@ -782,5 +826,6 @@ class Decoder(nn.Module):
                                 best = p
                                 break
                     return best
+
                 predictions[format_] = [_pick_valid(pred, format_) for pred in beam_preds]
         return predictions, beam_predictions

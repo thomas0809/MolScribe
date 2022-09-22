@@ -77,7 +77,7 @@ class GreedySearch(DecodeStrategy):
         """Select next tokens randomly from the top k possible next tokens.
         """
         self.ensure_min_length(log_probs)
-        topk_ids, self.topk_scores = self._pick(log_probs)
+        topk_ids, self.topk_scores = self._pick(log_probs)  # log_probs: b x v; topk_ids & self.topk_scores: b x (t=1)
         # TODO (zhening)
         #  topk_scores is the log prob for the current step. We should record the scores for all steps, similar to
         #  alive_seq and alive_hidden
@@ -85,7 +85,8 @@ class GreedySearch(DecodeStrategy):
         if label is not None:
             label = label.view_as(self.is_finished)
             self.is_finished = label.eq(self.eos)
-        self.alive_seq = torch.cat([self.alive_seq, topk_ids], -1)
+        self.alive_seq = torch.cat([self.alive_seq, topk_ids], -1)  # b x (l+1) (first element is <bos>; note l = len(self)-1)
+        self.alive_log_token_scores = torch.cat([self.alive_log_token_scores, self.topk_scores], -1)
 
         if self.return_attention:
             if self.alive_attn is None:
@@ -96,7 +97,7 @@ class GreedySearch(DecodeStrategy):
             if self.alive_hidden is None:
                 self.alive_hidden = hidden
             else:
-                self.alive_hidden = torch.cat([self.alive_hidden, hidden], 1)
+                self.alive_hidden = torch.cat([self.alive_hidden, hidden], 1)  # b x l x h
         self.ensure_max_length()
 
     def update_finished(self):
@@ -111,7 +112,8 @@ class GreedySearch(DecodeStrategy):
             # TODO (zhening)
             #  It seems to be the score of the last step (as we are not using the score for greedy decoding, it doesn't
             #  matter). Change it to average/sum scores over all steps.
-            self.scores[b_orig].append(self.topk_scores[b, 0].item())
+            self.scores[b_orig].append(torch.exp(torch.mean(self.alive_log_token_scores[b])).item())
+            self.token_scores[b_orig].append(torch.exp(self.alive_log_token_scores[b]).tolist())
             self.predictions[b_orig].append(self.alive_seq[b, 1:])
             self.attention[b_orig].append(
                 self.alive_attn[b, :, :self.memory_length] if self.alive_attn is not None else [])
@@ -122,6 +124,7 @@ class GreedySearch(DecodeStrategy):
             return
         is_alive = ~self.is_finished.view(-1)
         self.alive_seq = self.alive_seq[is_alive]
+        self.alive_log_token_scores = self.alive_log_token_scores[is_alive]
         if self.alive_attn is not None:
             self.alive_attn = self.alive_attn[is_alive]
         if self.alive_hidden is not None:

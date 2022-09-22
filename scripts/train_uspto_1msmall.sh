@@ -42,6 +42,7 @@ NCCL_P2P_DISABLE=1 torchrun \
     --warmup 0.05 \
     --print_freq 200 \
     --do_test \
+    --compute_confidence \
     --fp16 --backend nccl 2>&1 # | tee $SAVE_PATH/log_${DATESTR}.txt
 
 

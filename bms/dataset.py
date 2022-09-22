@@ -20,10 +20,10 @@ from bms.augment import SafeRotate, CropWhite, NormalizedGridDistortion, PadWhit
 from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
 from bms.chemistry import get_num_atoms, RGROUP_SYMBOLS, SUBSTITUTIONS, normalize_nodes
 
-
 cv2.setNumThreads(1)
 
 INDIGO_HYGROGEN_PROB = 0.2
+INDIGO_CONDENSED_PROB = 0.5
 INDIGO_RGROUP_PROB = 0.5
 INDIGO_COMMENT_PROB = 0.3
 INDIGO_DEARMOTIZE_PROB = 0.6
@@ -107,7 +107,43 @@ def add_explicit_hydrogen(indigo, mol):
     return mol
 
 
-def add_rgroup(indigo, mol, smiles):
+def get_rand_symb():
+    symb = random.choice(string.ascii_uppercase)
+    if random.random() < 0.25:
+        symb += random.choice(string.ascii_lowercase)
+        if random.random() < 0.25:
+            symb += random.choice(string.ascii_lowercase)
+    elif random.random() < 0.2:
+        for _ in range(2):
+            symb += random.choice(string.ascii_uppercase)
+        if random.random() < 0.15:
+            symb += random.choice(string.ascii_uppercase)
+    elif random.random() < 0.2:
+        symb = f'({gen_rand_condensed()})'
+    return symb
+
+
+def get_rand_num():
+    if random.random() < 0.8:
+        if random.random() < 0.6:
+            return ''
+        else:
+            return str(random.randint(2, 9))
+    else:
+        return '1' + str(random.randint(2, 9))
+
+
+def gen_rand_condensed():
+    tokens = []
+    for i in range(5):
+        if i >= 1 and random.random() < 0.75:
+            break
+        tokens.append(get_rand_symb())
+        tokens.append(get_rand_num())
+    return ''.join(tokens)
+
+
+def add_rgroup(indigo, mol, smiles, include_condensed=True):
     atoms = []
     for atom in mol.iterateAtoms():
         try:
@@ -116,18 +152,26 @@ def add_rgroup(indigo, mol, smiles):
                 atoms.append(atom)
         except:
             continue
-    if len(atoms) > 0 and '*' not in smiles and random.random() < INDIGO_RGROUP_PROB:
-        atom = random.choice(atoms)
-        symbol = random.choice(RGROUP_SYMBOLS)
-        # if symbol == 'Ar':
-        #     # 'Ar' has to be 'Ar ', otherwise indigo will fail later
-        #     r = mol.addAtom('Ar ')
-        r = mol.addAtom(symbol)
-        r.addBond(atom, 1)
-        # new_smiles = mol.canonicalSmiles()
-        # assert '*' in new_smiles
-        # new_smiles = new_smiles.split(' ')[0].replace('*', f'[{symbol}]')
-        # smiles = new_smiles
+    if len(atoms) > 0 and '*' not in smiles:
+        if random.random() < INDIGO_RGROUP_PROB:
+            atom_idx = random.choice(range(len(atoms)))
+            atom = atoms[atom_idx]
+            atoms.pop(atom_idx)
+            symbol = random.choice(RGROUP_SYMBOLS)
+            # if symbol == 'Ar':
+            #     # 'Ar' has to be 'Ar ', otherwise indigo will fail later
+            #     r = mol.addAtom('Ar ')
+            r = mol.addAtom(symbol)
+            r.addBond(atom, 1)
+            # new_smiles = mol.canonicalSmiles()
+            # assert '*' in new_smiles
+            # new_smiles = new_smiles.split(' ')[0].replace('*', f'[{symbol}]')
+            # smiles = new_smiles
+        if len(atoms) > 0 and include_condensed and random.random() < INDIGO_CONDENSED_PROB:
+            atom = random.choice(atoms)
+            symbol = gen_rand_condensed()
+            r = mol.addAtom(symbol)
+            r.addBond(atom, 1)
     return mol
 
 
@@ -205,6 +249,7 @@ def get_graph(mol, image, shuffle_nodes=False, pseudo_coords=False):
 
 
 def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffle_nodes=False, pseudo_coords=False,
+                          include_condensed=True,
                           debug=False):
     indigo = Indigo()
     renderer = IndigoRenderer(indigo)
@@ -214,7 +259,7 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
     indigo.setOption('render-label-mode', 'hetero')
     indigo.setOption('render-font-family', 'Arial')
     if not default_option:
-        thickness = random.uniform(0.5, 1.5)   # limit the sum of the following two parameters to be smaller than 4
+        thickness = random.uniform(0.5, 1.5)  # limit the sum of the following two parameters to be smaller than 4
         indigo.setOption('render-relative-thickness', thickness)
         indigo.setOption('render-bond-line-width', random.uniform(1, 4 - thickness))
         indigo.setOption('render-font-family', random.choice(['Arial', 'Times', 'Courier', 'Helvetica']))
@@ -236,7 +281,7 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
             smiles = mol.canonicalSmiles()
             add_comment(indigo)
             mol = add_explicit_hydrogen(indigo, mol)
-            mol = add_rgroup(indigo, mol, smiles)
+            mol = add_rgroup(indigo, mol, smiles, include_condensed)
             mol = add_functional_group(indigo, mol, debug)
             mol, smiles = generate_output_smiles(indigo, mol)
 
@@ -297,12 +342,12 @@ class TrainDataset(Dataset):
         else:
             self.coords_df = None
             self.pseudo_coords = args.pseudo_coords
-        
+
     def __len__(self):
         return len(self.df)
 
     def image_transform(self, image, coords=[], renormalize=False):
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # .astype(np.float32)
         augmented = self.transform(image=image, keypoints=coords)
         image = augmented['image']
         if len(coords) > 0:
@@ -323,7 +368,8 @@ class TrainDataset(Dataset):
             begin = time.time()
             image, smiles, graph, success = generate_indigo_image(
                 self.smiles[idx], mol_augment=self.args.mol_augment, default_option=self.args.default_option,
-                shuffle_nodes=self.args.shuffle_nodes, pseudo_coords=self.pseudo_coords)
+                shuffle_nodes=self.args.shuffle_nodes, pseudo_coords=self.pseudo_coords,
+                include_condensed=self.args.include_condensed)
             # raw_image = image
             end = time.time()
             if idx < 30 and self.args.save_image:
@@ -343,7 +389,7 @@ class TrainDataset(Dataset):
                 max_len = FORMAT_INFO['nodes']['max_len']
                 label, indices = self.tokenizer['nodes'].smiles_to_sequence(smiles, graph['coords'], atom_only=True)
                 ref['nodes'] = torch.LongTensor(label[:max_len])
-            if 'edges' in self.formats and 'atomtok_coords' not in self.formats:
+            if 'edges' in self.formats and 'atomtok_coords' not in self.formats and 'chartok_coords' not in self.formats:
                 ref['edges'] = torch.tensor(graph['edges'])
             if 'graph' in self.formats or self.args.patch:
                 graph_ref = {
@@ -356,6 +402,9 @@ class TrainDataset(Dataset):
                 ref['grid'] = torch.tensor(self.tokenizer['grid'].nodes_to_grid(graph))
             if 'atomtok_coords' in self.formats:
                 self._process_atomtok_coords(idx, ref, smiles, graph['coords'], graph['edges'],
+                                             mask_ratio=self.args.mask_ratio)
+            if 'chartok_coords' in self.formats:
+                self._process_chartok_coords(idx, ref, smiles, graph['coords'], graph['edges'],
                                              mask_ratio=self.args.mask_ratio)
             return idx, image, ref
         else:
@@ -385,9 +434,17 @@ class TrainDataset(Dataset):
                         self._process_atomtok_coords(idx, ref, smiles, coords, mask_ratio=0)
                     else:
                         self._process_atomtok_coords(idx, ref, smiles, mask_ratio=1)
-            if self.args.predict_coords and 'atomtok_coords' in self.formats:
+                if 'chartok_coords' in self.formats:
+                    if coords is not None:
+                        self._process_chartok_coords(idx, ref, smiles, coords, mask_ratio=0)
+                    else:
+                        self._process_chartok_coords(idx, ref, smiles, mask_ratio=1)
+            if self.args.predict_coords and ('atomtok_coords' in self.formats or 'chartok_coords' in self.formats):
                 smiles = self.smiles[idx]
-                self._process_atomtok_coords(idx, ref, smiles, mask_ratio=1)
+                if 'atomtok_coords' in self.formats:
+                    self._process_atomtok_coords(idx, ref, smiles, mask_ratio=1)
+                if 'chartok_coords' in self.formats:
+                    self._process_chartok_coords(idx, ref, smiles, mask_ratio=1)
             return idx, image, ref
 
     def _process_atomtok_coords(self, idx, ref, smiles, coords=None, edges=None, mask_ratio=0):
@@ -397,6 +454,39 @@ class TrainDataset(Dataset):
             smiles = ""
         label, indices = tokenizer.smiles_to_sequence(smiles, coords, mask_ratio=mask_ratio)
         ref['atomtok_coords'] = torch.LongTensor(label[:max_len])
+        indices = [i for i in indices if i < max_len]
+        ref['atom_indices'] = torch.LongTensor(indices)
+        if tokenizer.continuous_coords:
+            if coords is not None:
+                ref['coords'] = torch.tensor(coords)
+            else:
+                ref['coords'] = torch.ones(len(indices), 2) * -1.
+        if edges is not None:
+            ref['edges'] = torch.tensor(edges)[:len(indices), :len(indices)]
+        else:
+            if 'edges' in self.df.columns:
+                edge_list = eval(self.df.loc[idx, 'edges'])
+                n = len(indices)
+                edges = torch.zeros((n, n), dtype=torch.long)
+                for u, v, t in edge_list:
+                    if u < n and v < n:
+                        if t <= 4:
+                            edges[u, v] = t
+                            edges[v, u] = t
+                        else:
+                            edges[u, v] = t
+                            edges[v, u] = 11 - t
+                ref['edges'] = edges
+            else:
+                ref['edges'] = torch.ones(len(indices), len(indices), dtype=torch.long) * (-100)
+
+    def _process_chartok_coords(self, idx, ref, smiles, coords=None, edges=None, mask_ratio=0):
+        max_len = FORMAT_INFO['chartok_coords']['max_len']
+        tokenizer = self.tokenizer['chartok_coords']
+        if smiles is None or type(smiles) is not str:
+            smiles = ""
+        label, indices = tokenizer.smiles_to_sequence(smiles, coords, mask_ratio=mask_ratio)
+        ref['chartok_coords'] = torch.LongTensor(label[:max_len])
         indices = [i for i in indices if i < max_len]
         ref['atom_indices'] = torch.LongTensor(indices)
         if tokenizer.continuous_coords:
@@ -457,12 +547,12 @@ def pad_images(imgs):
     max_shape = [0, 0]
     for img in imgs:
         for i in range(len(max_shape)):
-            max_shape[i] = max(max_shape[i], img.shape[-1-i])
+            max_shape[i] = max(max_shape[i], img.shape[-1 - i])
     stack = []
     for img in imgs:
         pad = []
         for i in range(len(max_shape)):
-            pad = pad + [0, max_shape[i] - img.shape[-1-i]]
+            pad = pad + [0, max_shape[i] - img.shape[-1 - i]]
         stack.append(F.pad(img, pad, value=0))
     return torch.stack(stack)
 
@@ -472,7 +562,8 @@ def bms_collate(batch):
     imgs = []
     batch = [ex for ex in batch if ex[1] is not None]
     formats = list(batch[0][2].keys())
-    seq_formats = [k for k in formats if k in ['atomtok', 'inchi', 'nodes', 'atomtok_coords', 'atom_indices']]
+    seq_formats = [k for k in formats if
+                   k in ['atomtok', 'inchi', 'nodes', 'atomtok_coords', 'chartok_coords', 'atom_indices']]
     refs = {key: [[], []] for key in seq_formats}
     for ex in batch:
         ids.append(ex[0])
@@ -505,6 +596,6 @@ def bms_collate(batch):
         edges_list = [ex[2]['edges'] for ex in batch]
         max_len = max([len(edges) for edges in edges_list])
         refs['edges'] = torch.stack(
-            [F.pad(edges, (0, max_len-len(edges), 0, max_len-len(edges)), value=-100) for edges in edges_list], dim=0)
+            [F.pad(edges, (0, max_len - len(edges), 0, max_len - len(edges)), value=-100) for edges in edges_list],
+            dim=0)
     return ids, pad_images(imgs), refs
-

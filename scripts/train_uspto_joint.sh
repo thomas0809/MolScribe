@@ -41,11 +41,11 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid --do_test \
+    --do_test \
     --fp16 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
 
 
-#    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \
+#    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,real-acs-evaluation/acs.csv \
 #    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
 #    --train_steps_per_epoch 3000 \
 #    --valid_file indigo-data/valid.csv \
