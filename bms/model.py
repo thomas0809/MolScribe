@@ -765,14 +765,7 @@ class Decoder(nn.Module):
                 predictions_edges = []
                 errors = {}
                 for i, prob in enumerate(predictions['edges']):
-                    # try:
-                    #     np.max(prob, axis=2)
-                    # except:
-                    #     errors[i] = prob
                     predictions_edges.append(get_edge_prediction(prob))
-                # with open("debug.pkl", "wb") as f:
-                #     import pickle as pkl
-                #     pkl.dump(errors, f)
                 for idx, prob in enumerate(predictions['edges']):
                     edge_prods[idx], edge_token_scores[idx] = get_edge_scores(prob)
                     # num_edges = int(np.sum(np.array(predictions_edges[idx]).astype(bool)))

@@ -135,6 +135,8 @@ def get_num_atoms(smiles, num_workers=16):
 
 
 def get_edge_prediction(edge_prob):
+    if not edge_prob:
+        return []
     n = len(edge_prob)
     for i in range(n):
         for j in range(i + 1, n):
@@ -145,16 +147,12 @@ def get_edge_prediction(edge_prob):
             edge_prob[i][j][6] = (edge_prob[i][j][6] + edge_prob[j][i][5]) / 2
             edge_prob[j][i][5] = edge_prob[i][j][6]
             edge_prob[j][i][6] = edge_prob[i][j][5]
-    try:
-        return np.argmax(edge_prob, axis=2).tolist()
-    except Exception as e:
-        import pickle as pkl
-        with open("debug.pkl", "wb") as f:
-            pkl.dump(edge_prob, f)
-        raise Exception from e
+    return np.argmax(edge_prob, axis=2).tolist()
 
 
 def get_edge_scores(edge_prob):
+    if not edge_prob:
+        return 1., []
     n = len(edge_prob)
     for i in range(n):
         for j in range(i + 1, n):
