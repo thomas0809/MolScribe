@@ -10,7 +10,7 @@ ACCUM_STEP=1
 MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 DATESTR=$(date +"%m-%d-%H-%M")
-SAVE_PATH=output/uspto/swin_base_aux_200k_new1
+SAVE_PATH=output/uspto/swin_base_aux_200k_new
 mkdir -p ${SAVE_PATH}
 
 set -x
