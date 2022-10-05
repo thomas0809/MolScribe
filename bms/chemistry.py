@@ -49,48 +49,38 @@ def convert_smiles_to_inchi(smiles_list, num_workers=16):
     return inchi_list, r_success
 
 
-def canonicalize_smiles(smiles, ignore_chiral=False, ignore_cistrans=False):
+def canonicalize_smiles(smiles, ignore_chiral=False, ignore_cistrans=False, replace_rgroup=True):
     if type(smiles) is not str or smiles == '':
         return '', False
     if ignore_cistrans:
         smiles = smiles.replace('/', '').replace('\\', '')
-    # rlist = RGROUP_SYMBOLS
-    # rdict = {}
-    # for i, symbol in enumerate(rlist):
-    #     rdict[f'[{symbol}]'] = f'[*:{i}]'
-    # for a, b in rdict.items():
-    #     smiles = smiles.replace(a, b)
-    success = False
+    if replace_rgroup:
+        tokens = atomwise_tokenizer(smiles)
+        for j, token in enumerate(tokens):
+            if token[0] == '[' and token[-1] == ']':
+                symbol = token[1:-1]
+                if symbol[0] == 'R' and symbol[1:].isdigit():
+                    tokens[j] = f'[{symbol[1:]}*]'
+                elif Chem.AtomFromSmiles(token) is None:
+                    tokens[j] = '*'
+        smiles = ''.join(tokens)
     try:
         canon_smiles = Chem.CanonSmiles(smiles, useChiral=(not ignore_chiral))
         success = True
     except:
         canon_smiles = smiles
+        success = False
     return canon_smiles, success
 
 
-def convert_smiles_to_canonsmiles(smiles_list, ignore_chiral=False, ignore_cistrans=False, num_workers=16):
+def convert_smiles_to_canonsmiles(
+        smiles_list, ignore_chiral=False, ignore_cistrans=False, replace_rgroup=True, num_workers=16):
     with multiprocessing.Pool(num_workers) as p:
         results = p.starmap(canonicalize_smiles,
-                            [(smiles, ignore_chiral, ignore_cistrans) for smiles in smiles_list],
+                            [(smiles, ignore_chiral, ignore_cistrans, replace_rgroup) for smiles in smiles_list],
                             chunksize=128)
     canon_smiles, success = zip(*results)
     return list(canon_smiles), np.mean(success)
-
-
-def get_canon_smiles_score(gold_smiles, pred_smiles, ignore_chiral=False, num_workers=16):
-    gold_canon_smiles, gold_success = convert_smiles_to_canonsmiles(gold_smiles, ignore_chiral)
-    pred_canon_smiles, pred_success = convert_smiles_to_canonsmiles(pred_smiles, ignore_chiral)
-    score = (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
-    if ignore_chiral:
-        return score
-    # ignore double bond cis/trans
-    gold_canon_smiles, _ = convert_smiles_to_canonsmiles(gold_canon_smiles, ignore_cistrans=True)
-    pred_canon_smiles, _ = convert_smiles_to_canonsmiles(pred_canon_smiles, ignore_cistrans=True)
-    score_corrected = (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
-    chiral = np.array([[g, p] for g, p in zip(gold_canon_smiles, pred_canon_smiles) if '@' in g])
-    score_chiral = (chiral[:, 0] == chiral[:, 1]).mean() if len(chiral) > 0 else -1
-    return score, score_corrected, score_chiral
 
 
 def merge_inchi(inchi1, inchi2):
@@ -136,6 +126,8 @@ def get_num_atoms(smiles, num_workers=16):
 
 def get_edge_prediction(edge_prob):
     n = len(edge_prob)
+    if n == 0:
+        return []
     for i in range(n):
         for j in range(i + 1, n):
             for k in range(5):
@@ -145,17 +137,13 @@ def get_edge_prediction(edge_prob):
             edge_prob[i][j][6] = (edge_prob[i][j][6] + edge_prob[j][i][5]) / 2
             edge_prob[j][i][5] = edge_prob[i][j][6]
             edge_prob[j][i][6] = edge_prob[i][j][5]
-    try:
-        return np.argmax(edge_prob, axis=2).tolist()
-    except Exception as e:
-        import pickle as pkl
-        with open("debug.pkl", "wb") as f:
-            pkl.dump(edge_prob, f)
-        raise Exception from e
+    return np.argmax(edge_prob, axis=2).tolist()
 
 
 def get_edge_scores(edge_prob):
     n = len(edge_prob)
+    if n == 0:
+        return 0, []
     for i in range(n):
         for j in range(i + 1, n):
             for k in range(5):
@@ -213,23 +201,6 @@ def evaluate_nodes(smiles_list, node_coords, node_symbols, num_workers=16):
     results = np.array(results)
     score, num_node_acc, symbols_em = results.mean(axis=0)
     return score, num_node_acc, symbols_em
-
-
-def _sub_condensed(smiles):
-    tokens = atomwise_tokenizer(smiles)
-    for j, token in enumerate(tokens):
-        if token[0] == '[' and token[-1] == ']':
-            symbol = token[1:-1]
-            if symbol[0] == 'R' and symbol[1:].isdigit():
-                tokens[j] = f'[{symbol[1:]}*]'
-            elif symbol in RGROUP_SYMBOLS:
-                tokens[j] = '*'
-            elif Chem.AtomFromSmiles(token) is None:
-                sub_smiles, _, _, _, success = _condensed_formula_to_smiles(token[1:-1], _get_num_bonds(tokens, j))
-                if success:
-                    # print(tokens[j], sub_smiles)
-                    tokens[j] = sub_smiles
-    return ''.join(tokens)
 
 
 class SmilesEvaluator(object):

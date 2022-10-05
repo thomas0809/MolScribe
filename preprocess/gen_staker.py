@@ -17,17 +17,17 @@ with open('data/molbank/Img2Mol/staker/smiles.txt') as f:
     for line in f:
         idx, smiles = line.strip().split(',', 1)
         tokens = atomwise_tokenizer(smiles)
-        for j, token in enumerate(tokens):
-            if token[0] == '[' and token[-1] == ']':
-                symbol = token[1:-1]
-                if symbol[0] == 'R' and symbol[1:].isdigit():
-                    tokens[j] = f'[{symbol[1:]}*]'
-                elif symbol in RGROUP_SYMBOLS:
-                    tokens[j] = '*'
-                elif Chem.AtomFromSmiles(token) is None:
-                    invalid_tokens.append(token)
-                    tokens[j] = '*'
-                # TODO: expand abbreviations in the groundtruth e.g. Et
+        # for j, token in enumerate(tokens):
+        #    if token[0] == '[' and token[-1] == ']':
+        #        symbol = token[1:-1]
+        #        if symbol[0] == 'R' and symbol[1:].isdigit():
+        #            tokens[j] = f'[{symbol[1:]}*]'
+        #        elif symbol in RGROUP_SYMBOLS:
+        #            tokens[j] = '*'
+        #        elif Chem.AtomFromSmiles(token) is None:
+        #            invalid_tokens.append(token)
+        #            tokens[j] = '*'
+        #        # TODO: expand abbreviations in the groundtruth e.g. Et
         smiles = ''.join(tokens)
         data.append({
             'image_id': idx,

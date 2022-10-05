@@ -18,7 +18,8 @@ from indigo.renderer import IndigoRenderer
 
 from bms.augment import SafeRotate, CropWhite, NormalizedGridDistortion, PadWhite, SaltAndPepperNoise
 from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
-from bms.chemistry import get_num_atoms, RGROUP_SYMBOLS, SUBSTITUTIONS, normalize_nodes
+from bms.chemistry import get_num_atoms, normalize_nodes
+from bms.constants import RGROUP_SYMBOLS, SUBSTITUTIONS, ELEMENTS
 
 cv2.setNumThreads(1)
 
@@ -108,24 +109,19 @@ def add_explicit_hydrogen(indigo, mol):
 
 
 def get_rand_symb():
-    symb = random.choice(string.ascii_uppercase)
-    if random.random() < 0.25:
+    symb = random.choice(ELEMENTS)
+    if random.random() < 0.1:
         symb += random.choice(string.ascii_lowercase)
-        if random.random() < 0.25:
-            symb += random.choice(string.ascii_lowercase)
-    elif random.random() < 0.2:
-        for _ in range(2):
-            symb += random.choice(string.ascii_uppercase)
-        if random.random() < 0.15:
-            symb += random.choice(string.ascii_uppercase)
-    elif random.random() < 0.2:
+    if random.random() < 0.1:
+        symb += random.choice(string.ascii_uppercase)
+    if random.random() < 0.1:
         symb = f'({gen_rand_condensed()})'
     return symb
 
 
 def get_rand_num():
-    if random.random() < 0.8:
-        if random.random() < 0.6:
+    if random.random() < 0.9:
+        if random.random() < 0.8:
             return ''
         else:
             return str(random.randint(2, 9))
@@ -136,14 +132,14 @@ def get_rand_num():
 def gen_rand_condensed():
     tokens = []
     for i in range(5):
-        if i >= 1 and random.random() < 0.75:
+        if i >= 1 and random.random() < 0.8:
             break
         tokens.append(get_rand_symb())
         tokens.append(get_rand_num())
     return ''.join(tokens)
 
 
-def add_rgroup(indigo, mol, smiles, include_condensed=True):
+def add_rgroup(indigo, mol, smiles):
     atoms = []
     for atom in mol.iterateAtoms():
         try:
@@ -158,20 +154,25 @@ def add_rgroup(indigo, mol, smiles, include_condensed=True):
             atom = atoms[atom_idx]
             atoms.pop(atom_idx)
             symbol = random.choice(RGROUP_SYMBOLS)
-            # if symbol == 'Ar':
-            #     # 'Ar' has to be 'Ar ', otherwise indigo will fail later
-            #     r = mol.addAtom('Ar ')
             r = mol.addAtom(symbol)
             r.addBond(atom, 1)
-            # new_smiles = mol.canonicalSmiles()
-            # assert '*' in new_smiles
-            # new_smiles = new_smiles.split(' ')[0].replace('*', f'[{symbol}]')
-            # smiles = new_smiles
-        if len(atoms) > 0 and include_condensed and random.random() < INDIGO_CONDENSED_PROB:
-            atom = random.choice(atoms)
-            symbol = gen_rand_condensed()
-            r = mol.addAtom(symbol)
-            r.addBond(atom, 1)
+    return mol
+
+
+def add_rand_condensed(indigo, mol):
+    atoms = []
+    for atom in mol.iterateAtoms():
+        try:
+            hs = atom.countImplicitHydrogens()
+            if hs > 0:
+                atoms.append(atom)
+        except:
+            continue
+    if len(atoms) > 0 and random.random() < INDIGO_CONDENSED_PROB:
+        atom = random.choice(atoms)
+        symbol = gen_rand_condensed()
+        r = mol.addAtom(symbol)
+        r.addBond(atom, 1)
     return mol
 
 
@@ -249,8 +250,7 @@ def get_graph(mol, image, shuffle_nodes=False, pseudo_coords=False):
 
 
 def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffle_nodes=False, pseudo_coords=False,
-                          include_condensed=True,
-                          debug=False):
+                          include_condensed=True, debug=False):
     indigo = Indigo()
     renderer = IndigoRenderer(indigo)
     indigo.setOption('render-output-format', 'png')
@@ -281,7 +281,9 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
             smiles = mol.canonicalSmiles()
             add_comment(indigo)
             mol = add_explicit_hydrogen(indigo, mol)
-            mol = add_rgroup(indigo, mol, smiles, include_condensed)
+            mol = add_rgroup(indigo, mol, smiles)
+            if include_condensed:
+                mol = add_rand_condensed(indigo, mol)
             mol = add_functional_group(indigo, mol, debug)
             mol, smiles = generate_output_smiles(indigo, mol)
 

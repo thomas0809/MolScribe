@@ -370,34 +370,11 @@ class CharTokenizer(NodeTokenizer):
         mask = [False] * len(self)
         if self.continuous_coords:
             return mask
-        # if self.is_atom(id):
-        #     return [True] * self.offset + [False] * self.maxx + [True] * self.maxy
         if self.is_x(id):
             return [True] * (self.offset + self.maxx) + [False] * self.maxy
         if self.is_y(id):
             return [False] * self.offset + [True] * (self.maxx + self.maxy)
         return mask
-
-    def nodes_to_grid(self, nodes):
-        coords, symbols = nodes['coords'], nodes['symbols']  # symbols: list of strings
-        grid = np.zeros((self.maxx, self.maxy), dtype=int)
-        for [x, y], symbol in zip(coords, symbols):
-            x = round(x * (self.maxx - 1))
-            y = round(y * (self.maxy - 1))
-            grid[x][y] = [self.symbol_to_id(char) for char in symbol]
-        return grid
-
-    def grid_to_nodes(self, grid):
-        coords, symbols, indices = [], [], []
-        for i in range(self.maxx):
-            for j in range(self.maxy):
-                if grid[i][j] != 0:
-                    x = i / (self.maxx - 1)
-                    y = j / (self.maxy - 1)
-                    coords.append([x, y])
-                    symbols.append(''.join(self.itos[label] for label in grid[i][j]))
-                    indices.append([i, j])
-        return {'coords': coords, 'symbols': symbols, 'indices': indices}
 
     def nodes_to_sequence(self, nodes):
         coords, symbols = nodes['coords'], nodes['symbols']
