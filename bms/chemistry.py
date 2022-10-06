@@ -607,8 +607,6 @@ def _condensed_formula_to_smiles(formula: str, start_bond: int, end_bond: int, d
     `success` (bool): whether conversion was successful
     """
     formula_list = _expand_carbon(_parse_formula(formula))  # convert condensed formula to a list of atoms
-    print(formula)
-    print(formula_list)
     smiles, success = '', False
     smiles, _, _, _, success = _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond, direction)
     if success:
@@ -625,22 +623,12 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
     Convert symbol (abbrev. or condensed formula) to smiles
     If condensed formula, determine parsing direction and num. bonds on each side using coordinates
     """
-    print(1, flush=True)
     if symbol in ABBREVIATIONS:
         return ABBREVIATIONS[symbol].smiles
 
-    # TODO (zhening): change this function; mol, atom, bonds should have all required information.
-    #  try to make sure that the smiles is (1) valid, (2) the first atom is to be bonded to the molecule,
-    #  (3) specify other missing bonds, i.e. [CH2][CH2]
-    print(2, flush=True)
     conf = mol.GetConformer()
-    print(2.1, flush=True)
-    print(mol)
-    print(conf)
     coords = conf.GetPositions()
-    print(2.2, flush=True)
     bonds_left = bonds_right = 0
-    print(3, flush=True)
     for bond in bonds:
         bond_order = int(bond.GetBondTypeAsDouble())
         other_atom = bond.GetOtherAtom(atom)
@@ -649,16 +637,12 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
             bonds_right += bond_order
         else:
             bonds_left += bond_order
-    print(4, flush=True)
     direction = -1 if not bonds_left else 1
     if bonds_left:
         start_bond, end_bond = bonds_left, bonds_right
     else:
         start_bond, end_bond = bonds_right, bonds_left
-    print(symbol, start_bond, end_bond, direction)
-    print("start get condensed", flush=True)
     smiles, success = _condensed_formula_to_smiles(symbol, start_bond, end_bond, direction)
-    print("end get condensed", smiles, success, flush=True)
     if success:
         return smiles, direction
     return None, direction
@@ -737,9 +721,7 @@ def _expand_functional_group(mol, mappings):
     
                     bonds = atom.GetBonds()
     
-                    print("start get smiles")
                     sub_smiles, direction = get_smiles_from_symbol(symbol, mol, atom, bonds)
-                    print("done get smiles", sub_smiles)
 
                     # create mol object for abbreviation/condensed formula from its SMILES
                     mol_r = convert_smiles_to_mol(sub_smiles)
@@ -831,7 +813,6 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
         assert idx == i
         ids.append(idx)
 
-    # print(type(edges), len(edges), n)
     for i in range(n):
         for j in range(i + 1, n):
             if edges[i][j] == 1:
@@ -876,20 +857,11 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
 
 def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16, simple=False):
     fn = _convert_graph_to_smiles_simple if simple else _convert_graph_to_smiles
-    results = []
-    for i, (coord, symbol, edge) in enumerate(zip(coords, symbols, edges)):
-        if i != 46:
-            continue
-        print(i, flush=True)
-        print(coord)
-        print(symbol)
-        print(edge)
-        results.append(fn(coord, symbol, edge))
-    # with multiprocessing.Pool(num_workers) as p:
-    #     if images is None:
-    #         results = p.starmap(fn, zip(coords, symbols, edges), chunksize=128)
-    #     else:
-    #         results = p.starmap(fn, zip(coords, symbols, edges, images), chunksize=128)
+    with multiprocessing.Pool(num_workers) as p:
+        if images is None:
+            results = p.starmap(fn, zip(coords, symbols, edges), chunksize=128)
+        else:
+            results = p.starmap(fn, zip(coords, symbols, edges, images), chunksize=128)
     smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
     return smiles_list, molblock_list, r_success
