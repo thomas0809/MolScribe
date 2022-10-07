@@ -1,6 +1,3 @@
-import sys
-sys.path[0] = '/Mounts/rbg-storage1/users/urop/zli11010/bms'
-
 import cv2
 import copy
 import numpy as np
@@ -49,48 +46,38 @@ def convert_smiles_to_inchi(smiles_list, num_workers=16):
     return inchi_list, r_success
 
 
-def canonicalize_smiles(smiles, ignore_chiral=False, ignore_cistrans=False):
+def canonicalize_smiles(smiles, ignore_chiral=False, ignore_cistrans=False, replace_rgroup=True):
     if type(smiles) is not str or smiles == '':
         return '', False
     if ignore_cistrans:
         smiles = smiles.replace('/', '').replace('\\', '')
-    # rlist = RGROUP_SYMBOLS
-    # rdict = {}
-    # for i, symbol in enumerate(rlist):
-    #     rdict[f'[{symbol}]'] = f'[*:{i}]'
-    # for a, b in rdict.items():
-    #     smiles = smiles.replace(a, b)
-    success = False
+    if replace_rgroup:
+        tokens = atomwise_tokenizer(smiles)
+        for j, token in enumerate(tokens):
+            if token[0] == '[' and token[-1] == ']':
+                symbol = token[1:-1]
+                if symbol[0] == 'R' and symbol[1:].isdigit():
+                    tokens[j] = f'[{symbol[1:]}*]'
+                elif Chem.AtomFromSmiles(token) is None:
+                    tokens[j] = '*'
+        smiles = ''.join(tokens)
     try:
         canon_smiles = Chem.CanonSmiles(smiles, useChiral=(not ignore_chiral))
         success = True
     except:
         canon_smiles = smiles
+        success = False
     return canon_smiles, success
 
 
-def convert_smiles_to_canonsmiles(smiles_list, ignore_chiral=False, ignore_cistrans=False, num_workers=16):
+def convert_smiles_to_canonsmiles(
+        smiles_list, ignore_chiral=False, ignore_cistrans=False, replace_rgroup=True, num_workers=16):
     with multiprocessing.Pool(num_workers) as p:
         results = p.starmap(canonicalize_smiles,
-                            [(smiles, ignore_chiral, ignore_cistrans) for smiles in smiles_list],
+                            [(smiles, ignore_chiral, ignore_cistrans, replace_rgroup) for smiles in smiles_list],
                             chunksize=128)
     canon_smiles, success = zip(*results)
     return list(canon_smiles), np.mean(success)
-
-
-def get_canon_smiles_score(gold_smiles, pred_smiles, ignore_chiral=False, num_workers=16):
-    gold_canon_smiles, gold_success = convert_smiles_to_canonsmiles(gold_smiles, ignore_chiral)
-    pred_canon_smiles, pred_success = convert_smiles_to_canonsmiles(pred_smiles, ignore_chiral)
-    score = (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
-    if ignore_chiral:
-        return score
-    # ignore double bond cis/trans
-    gold_canon_smiles, _ = convert_smiles_to_canonsmiles(gold_canon_smiles, ignore_cistrans=True)
-    pred_canon_smiles, _ = convert_smiles_to_canonsmiles(pred_canon_smiles, ignore_cistrans=True)
-    score_corrected = (np.array(gold_canon_smiles) == np.array(pred_canon_smiles)).mean()
-    chiral = np.array([[g, p] for g, p in zip(gold_canon_smiles, pred_canon_smiles) if '@' in g])
-    score_chiral = (chiral[:, 0] == chiral[:, 1]).mean() if len(chiral) > 0 else -1
-    return score, score_corrected, score_chiral
 
 
 def merge_inchi(inchi1, inchi2):
@@ -138,6 +125,8 @@ def get_edge_prediction(edge_prob):
     if not edge_prob:
         return []
     n = len(edge_prob)
+    if n == 0:
+        return []
     for i in range(n):
         for j in range(i + 1, n):
             for k in range(5):
@@ -154,6 +143,8 @@ def get_edge_scores(edge_prob):
     if not edge_prob:
         return 1., []
     n = len(edge_prob)
+    if n == 0:
+        return 0, []
     for i in range(n):
         for j in range(i + 1, n):
             for k in range(5):
@@ -213,23 +204,6 @@ def evaluate_nodes(smiles_list, node_coords, node_symbols, num_workers=16):
     return score, num_node_acc, symbols_em
 
 
-def _sub_condensed(smiles):
-    tokens = atomwise_tokenizer(smiles)
-    for j, token in enumerate(tokens):
-        if token[0] == '[' and token[-1] == ']':
-            symbol = token[1:-1]
-            if symbol[0] == 'R' and symbol[1:].isdigit():
-                tokens[j] = f'[{symbol[1:]}*]'
-            elif symbol in RGROUP_SYMBOLS:
-                tokens[j] = '*'
-            elif Chem.AtomFromSmiles(token) is None:
-                sub_smiles, _, _, _, success = _condensed_formula_to_smiles(token[1:-1], _get_num_bonds(tokens, j))
-                if success:
-                    # print(tokens[j], sub_smiles)
-                    tokens[j] = sub_smiles
-    return ''.join(tokens)
-
-
 class SmilesEvaluator(object):
 
     def __init__(self, gold_smiles):
@@ -270,36 +244,6 @@ class SmilesEvaluator(object):
         return results
 
 
-def _convert_graph_to_smiles_simple(coords, symbols, edges):
-    mol = Chem.RWMol()
-    n = len(symbols)
-    ids = []
-    for i in range(n):
-        # TODO: R-group, functional group
-        try:
-            idx = mol.AddAtom(Chem.Atom(symbols[i]))
-        except:
-            idx = mol.AddAtom(Chem.Atom('C'))
-        ids.append(idx)
-    for i in range(n):
-        for j in range(n):
-            if i < j and edges[i][j] != 0:
-                if edges[i][j] in [1, 5, 6]:
-                    mol.AddBond(ids[i], ids[j], Chem.BondType.SINGLE)
-                elif edges[i][j] == 2:
-                    mol.AddBond(ids[i], ids[j], Chem.BondType.DOUBLE)
-                elif edges[i][j] == 3:
-                    mol.AddBond(ids[i], ids[j], Chem.BondType.TRIPLE)
-                elif edges[i][j] == 4:
-                    mol.AddBond(ids[i], ids[j], Chem.BondType.AROMATIC)
-    try:
-        mol = mol.GetMol()
-        pred_smiles = Chem.MolToSmiles(mol)
-    except:
-        pred_smiles = ''
-    return pred_smiles
-
-
 def _verify_chirality(mol, coords, symbols, edges, debug=False):
     try:
         n = mol.GetNumAtoms()
@@ -310,8 +254,6 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         chiral_centers = Chem.FindMolChiralCenters(
             mol_tmp, includeUnassigned=True, includeCIP=False, useLegacyImplementation=False)
         chiral_center_ids = [idx for idx, _ in chiral_centers]  # List[Tuple[int, any]] -> List[int]
-        # print(chiral_center_ids)
-        # [print(e) for e in edges]
 
         # correction to clear pre-condition violation (for some corner cases)
         for bond in mol.GetBonds():
@@ -345,13 +287,11 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         for i in chiral_center_ids:
             for j in range(n):
                 if edges[i][j] == 5:
-                    # print(f"5, i: {i}, j: {j}")
                     # assert edges[j][i] == 6
                     mol.RemoveBond(i, j)
                     mol.AddBond(i, j, Chem.BondType.SINGLE)
                     mol.GetBondBetweenAtoms(i, j).SetBondDir(Chem.BondDir.BEGINWEDGE)
                 elif edges[i][j] == 6:
-                    # print(f"6, i: {i}, j: {j}")
                     # assert edges[j][i] == 5
                     mol.RemoveBond(i, j)
                     mol.AddBond(i, j, Chem.BondType.SINGLE)
@@ -689,7 +629,7 @@ def convert_smiles_to_mol(smiles):
     return mol
 
 
-def _expand_functional_group(mol, mappings):
+def _expand_functional_group(mol, mappings, debug=False):
 
     def _need_expand(mol, mappings):
         return any([len(Chem.GetAtomAlias(atom)) > 0 for atom in mol.GetAtoms()]) or len(mappings) > 0
@@ -699,14 +639,18 @@ def _expand_functional_group(mol, mappings):
         for i, atom in enumerate(mol_w.GetAtoms()):  # reset radical electrons
             atom.SetNumRadicalElectrons(0)
 
+        # While loop is trying to expand all the atoms that needs to be expanded.
         flag = True
         cnt = 0
         while flag:
             flag = False
             cnt += 1
-            if cnt == 20:
-                print(Chem.MolToSmiles(mol))
-                print(mappings)
+            if cnt >= 30:
+                if debug:
+                    print(Chem.MolToSmiles(mol))
+                    print(mappings)
+                break
+            # Every time an atom is expanded, mol is changed, and we have to restart the for loop.
             for i, atom in enumerate(mol_w.GetAtoms()):
                 if atom.GetSymbol() == '*':
                     symbol = Chem.GetAtomAlias(atom)
@@ -720,7 +664,6 @@ def _expand_functional_group(mol, mappings):
                         continue
     
                     bonds = atom.GetBonds()
-    
                     sub_smiles, direction = get_smiles_from_symbol(symbol, mol, atom, bonds)
 
                     # create mol object for abbreviation/condensed formula from its SMILES
@@ -842,7 +785,7 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
         # molblock is obtained before expanding func groups, otherwise the expanded group won't have coordinates.
         # TODO: make sure molblock has the abbreviation information
         pred_molblock = Chem.MolToMolBlock(mol)
-        pred_smiles, mol = _expand_functional_group(mol, {})
+        pred_smiles, mol = _expand_functional_group(mol, {}, debug)
         success = True
     except Exception as e:
         if debug:
@@ -855,13 +798,12 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
     return pred_smiles, pred_molblock, success
 
 
-def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16, simple=False):
-    fn = _convert_graph_to_smiles_simple if simple else _convert_graph_to_smiles
+def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16):
     with multiprocessing.Pool(num_workers) as p:
         if images is None:
-            results = p.starmap(fn, zip(coords, symbols, edges), chunksize=128)
+            results = p.starmap(_convert_graph_to_smiles, zip(coords, symbols, edges), chunksize=128)
         else:
-            results = p.starmap(fn, zip(coords, symbols, edges, images), chunksize=128)
+            results = p.starmap(_convert_graph_to_smiles, zip(coords, symbols, edges, images), chunksize=128)
     smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
     return smiles_list, molblock_list, r_success

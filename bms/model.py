@@ -763,22 +763,10 @@ class Decoder(nn.Module):
                 edge_token_scores = [None for _ in predictions['edges']]
                 # predictions_edges = [get_edge_prediction(prob) for prob in predictions['edges']]
                 predictions_edges = []
-                errors = {}
                 for i, prob in enumerate(predictions['edges']):
                     predictions_edges.append(get_edge_prediction(prob))
                 for idx, prob in enumerate(predictions['edges']):
                     edge_prods[idx], edge_token_scores[idx] = get_edge_scores(prob)
-                    # num_edges = int(np.sum(np.array(predictions_edges[idx]).astype(bool)))
-                    # # print(num_edges)
-                    # if num_edges == 0:
-                    #     print(idx, predictions_edges[idx])
-                    #     print("WARNING: no edges")
-                    #     num_edges = 1
-                    # edge_scores[idx] **= (1 / num_edges)
-                    # if 'nodes' in results:
-                    #     edge_scores[idx] *= beam_predictions['nodes'][1][idx][0]
-                    # elif 'atomtok_coords' in results:
-                    #     edge_scores[idx] *= beam_predictions['atomtok_coords'][1][idx][0]
                 predictions['edges'] = predictions_edges
                 beam_predictions['edges'] = (predictions['edges'], edge_prods, edge_token_scores)
                 # results['edges'] = outputs     # batch x n_best x len x len
