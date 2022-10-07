@@ -1,6 +1,3 @@
-import sys
-sys.path[0] = '/Mounts/rbg-storage1/users/urop/zli11010/bms'
-
 import cv2
 import copy
 import numpy as np
@@ -569,9 +566,6 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
     if symbol in ABBREVIATIONS:
         return ABBREVIATIONS[symbol].smiles
 
-    # TODO (zhening): change this function; mol, atom, bonds should have all required information.
-    #  try to make sure that the smiles is (1) valid, (2) the first atom is to be bonded to the molecule,
-    #  (3) specify other missing bonds, i.e. [CH2][CH2]
     conf = mol.GetConformer()
     coords = conf.GetPositions()
     bonds_left = bonds_right = 0
@@ -670,7 +664,6 @@ def _expand_functional_group(mol, mappings, debug=False):
                         continue
     
                     bonds = atom.GetBonds()
-
                     sub_smiles, direction = get_smiles_from_symbol(symbol, mol, atom, bonds)
 
                     # create mol object for abbreviation/condensed formula from its SMILES
@@ -763,7 +756,6 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
         assert idx == i
         ids.append(idx)
 
-    # print(type(edges), len(edges), n)
     for i in range(n):
         for j in range(i + 1, n):
             if edges[i][j] == 1:

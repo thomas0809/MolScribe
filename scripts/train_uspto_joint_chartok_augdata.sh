@@ -43,8 +43,14 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
+<<<<<<< HEAD
     --do_valid \
     --fp16 --backend nccl 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
+=======
+    --do_train --do_valid --do_test \
+    --resume \
+    --fp16 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
+>>>>>>> ecf562ff775c05bbf645968c1a5e205dfb2ac4a4
 
 
 #    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \

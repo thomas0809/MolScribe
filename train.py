@@ -543,12 +543,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             pred_df['atoms_with_edges_prod'] = pred_df['atoms_score'] * pred_df['edges_prod']
             pred_df['atoms_with_edges_score'] = pred_df['atoms_score'] * pred_df['edges_score']
 
-        print('Save predictions...')
-        file = data_df.attrs['file'].split('/')[-1]
-        if args.predict_coords:
-            pred_df = pred_df[['image_id', 'SMILES', 'node_coords']]
-        pred_df.to_csv(os.path.join(save_path, f'prediction_{file}_debug'), index=False)
-
         smiles_list, molblock_list, r_success = convert_graph_to_smiles(
             pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
 
