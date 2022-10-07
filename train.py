@@ -542,8 +542,16 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             pred_df['with_edges_score'] = pred_df['SMILES_score'] * pred_df['edges_score']
             pred_df['atoms_with_edges_prod'] = pred_df['atoms_score'] * pred_df['edges_prod']
             pred_df['atoms_with_edges_score'] = pred_df['atoms_score'] * pred_df['edges_score']
+
+        print('Save predictions...')
+        file = data_df.attrs['file'].split('/')[-1]
+        if args.predict_coords:
+            pred_df = pred_df[['image_id', 'SMILES', 'node_coords']]
+        pred_df.to_csv(os.path.join(save_path, f'prediction_{file}_debug'), index=False)
+
         smiles_list, molblock_list, r_success = convert_graph_to_smiles(
             pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
+
         print(f'Graph to SMILES success ratio: {r_success:.4f}')
         pred_df['graph_SMILES'] = smiles_list
         if args.molblock:
@@ -622,10 +630,10 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     pred_df = format_df(pred_df)
     if args.predict_coords:
         pred_df = pred_df[['image_id', 'SMILES', 'node_coords']]
-    pred_df.to_csv(os.path.join(save_path, f'prediction_{file}'), index=False)
+    pred_df.to_csv(os.path.join(save_path, f'prediction_{file}_refactor'), index=False)
     # Save scores
     print(scores)
-    with open(os.path.join(save_path, f'eval_scores_{os.path.splitext(file)[0]}_sub_R.json'), 'w') as f:  # sub_R refers to changing [Ri] to [i*] in Staker ground truth
+    with open(os.path.join(save_path, f'eval_scores_{os.path.splitext(file)[0]}_refactor.json'), 'w') as f:  # sub_R refers to changing [Ri] to [i*] in Staker ground truth
         json.dump(scores, f)
     
     # Save predictions

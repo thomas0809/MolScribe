@@ -11,6 +11,7 @@ MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 DATESTR=$(date +"%m-%d-%H-%M")
 SAVE_PATH=output/uspto/swin_base_aux_200k_char_aug
+SAVE_PATH=output/zli/swin_base_aux_200k_new1_augdata1
 mkdir -p ${SAVE_PATH}
 
 set -x
@@ -42,7 +43,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_test \
+    --do_valid \
     --fp16 --backend nccl 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
 
 
