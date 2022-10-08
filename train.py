@@ -21,7 +21,8 @@ from bms.model import Encoder, Decoder
 from bms.loss import Criterion
 from bms.utils import seed_torch, save_args, init_summary_writer, LossMeter, AverageMeter, asMinutes, timeSince, \
                       print_rank_0, format_df, FORMAT_INFO
-from bms.chemistry import SmilesEvaluator, evaluate_nodes, convert_graph_to_smiles, postprocess_smiles
+from bms.chemistry import evaluate_nodes, convert_graph_to_smiles, postprocess_smiles
+from bms.evaluate import SmilesEvaluator
 import bms.chemistry_old as chemistry_old  # old graph to smiles and postprocessing
 from bms.tokenizer import Tokenizer, NodeTokenizer, CharTokenizer
 
@@ -737,7 +738,7 @@ def main():
         train_df = train_df[:args.trunc_train]
     if (args.do_train or args.do_valid) and args.trunc_valid:
         valid_df = valid_df[:args.trunc_valid]
-    
+
     if args.debug:
         args.epochs = 1
         args.save_path = 'output/debug'
