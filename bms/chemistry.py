@@ -471,7 +471,7 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
     If condensed formula, determine parsing direction and num. bonds on each side using coordinates
     """
     if symbol in ABBREVIATIONS:
-        return ABBREVIATIONS[symbol].smiles
+        return ABBREVIATIONS[symbol].smiles, None
 
     conf = mol.GetConformer()
     coords = conf.GetPositions()
