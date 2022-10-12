@@ -19,15 +19,17 @@ from indigo.renderer import IndigoRenderer
 from bms.augment import SafeRotate, CropWhite, NormalizedGridDistortion, PadWhite, SaltAndPepperNoise
 from bms.utils import PAD_ID, FORMAT_INFO, print_rank_0
 from bms.chemistry import get_num_atoms, normalize_nodes
-from bms.constants import RGROUP_SYMBOLS, SUBSTITUTIONS, ELEMENTS
+from bms.constants import RGROUP_SYMBOLS, SUBSTITUTIONS, ELEMENTS, COLORS
 
 cv2.setNumThreads(1)
 
 INDIGO_HYGROGEN_PROB = 0.2
+INDIGO_FUNCTIONAL_GROUP_PROB = 0.8
 INDIGO_CONDENSED_PROB = 0.5
 INDIGO_RGROUP_PROB = 0.5
 INDIGO_COMMENT_PROB = 0.3
-INDIGO_DEARMOTIZE_PROB = 0.6
+INDIGO_DEARMOTIZE_PROB = 0.8
+INDIGO_COLOR_PROB = 0.2
 
 
 def get_transforms(input_size, augment=True, rotate=True, debug=False):
@@ -40,7 +42,7 @@ def get_transforms(input_size, augment=True, rotate=True, debug=False):
             # NormalizedGridDistortion(num_steps=10, distort_limit=0.3),
             A.CropAndPad(percent=[-0.01, 0.00], keep_size=False, p=0.5),
             PadWhite(pad_ratio=0.4, p=0.2),
-            A.Downscale(scale_min=0.15, scale_max=0.3, interpolation=3),
+            A.Downscale(scale_min=0.2, scale_max=0.5, interpolation=3),
             A.Blur(),
             A.GaussNoise(),
             SaltAndPepperNoise(num_dots=20, p=0.5)
@@ -58,6 +60,8 @@ def get_transforms(input_size, augment=True, rotate=True, debug=False):
 
 
 def add_functional_group(indigo, mol, debug=False):
+    if random.random() > INDIGO_FUNCTIONAL_GROUP_PROB:
+        return mol
     # Delete functional group and add a pseudo atom with its abbrv
     substitutions = [sub for sub in SUBSTITUTIONS]
     random.shuffle(substitutions)
@@ -108,6 +112,26 @@ def add_explicit_hydrogen(indigo, mol):
     return mol
 
 
+def add_rgroup(indigo, mol, smiles):
+    atoms = []
+    for atom in mol.iterateAtoms():
+        try:
+            hs = atom.countImplicitHydrogens()
+            if hs > 0:
+                atoms.append(atom)
+        except:
+            continue
+    if len(atoms) > 0 and '*' not in smiles:
+        if random.random() < INDIGO_RGROUP_PROB:
+            atom_idx = random.choice(range(len(atoms)))
+            atom = atoms[atom_idx]
+            atoms.pop(atom_idx)
+            symbol = random.choice(RGROUP_SYMBOLS)
+            r = mol.addAtom(symbol)
+            r.addBond(atom, 1)
+    return mol
+
+
 def get_rand_symb():
     symb = random.choice(ELEMENTS)
     if random.random() < 0.1:
@@ -137,26 +161,6 @@ def gen_rand_condensed():
         tokens.append(get_rand_symb())
         tokens.append(get_rand_num())
     return ''.join(tokens)
-
-
-def add_rgroup(indigo, mol, smiles):
-    atoms = []
-    for atom in mol.iterateAtoms():
-        try:
-            hs = atom.countImplicitHydrogens()
-            if hs > 0:
-                atoms.append(atom)
-        except:
-            continue
-    if len(atoms) > 0 and '*' not in smiles:
-        if random.random() < INDIGO_RGROUP_PROB:
-            atom_idx = random.choice(range(len(atoms)))
-            atom = atoms[atom_idx]
-            atoms.pop(atom_idx)
-            symbol = random.choice(RGROUP_SYMBOLS)
-            r = mol.addAtom(symbol)
-            r.addBond(atom, 1)
-    return mol
 
 
 def add_rand_condensed(indigo, mol):
@@ -209,6 +213,23 @@ def add_comment(indigo):
         indigo.setOption('render-comment-offset', random.randint(2, 30))
 
 
+def add_color(indigo, mol):
+    if random.random() < INDIGO_COLOR_PROB:
+        indigo.setOption('render-coloring', True)
+    if random.random() < INDIGO_COLOR_PROB:
+        indigo.setOption('render-base-color', random.choice(list(COLORS.values())))
+    if random.random() < INDIGO_COLOR_PROB:
+        if random.random() < 0.5:
+            indigo.setOption('render-highlight-color-enabled', True)
+            indigo.setOption('render-highlight-color', random.choice(list(COLORS.values())))
+        if random.random() < 0.5:
+            indigo.setOption('render-highlight-thickness-enabled', True)
+        for atom in mol.iterateAtoms():
+            if random.random() < 0.1:
+                atom.highlight()
+    return mol
+
+
 def get_graph(mol, image, shuffle_nodes=False, pseudo_coords=False):
     mol.layout()
     coords, symbols = [], []
@@ -259,20 +280,20 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
     indigo.setOption('render-label-mode', 'hetero')
     indigo.setOption('render-font-family', 'Arial')
     if not default_option:
-        thickness = random.uniform(0.5, 1.5)  # limit the sum of the following two parameters to be smaller than 4
+        thickness = random.uniform(0.8, 2)  # limit the sum of the following two parameters to be smaller than 4
         indigo.setOption('render-relative-thickness', thickness)
-        indigo.setOption('render-bond-line-width', random.uniform(1, 4 - thickness))
-        indigo.setOption('render-font-family', random.choice(['Arial', 'Times', 'Courier', 'Helvetica']))
+        indigo.setOption('render-bond-line-width', random.uniform(1, 3 - thickness))
+        if random.random() < 0.5:
+            indigo.setOption('render-font-family', random.choice(['Arial', 'Times', 'Courier', 'Helvetica']))
         indigo.setOption('render-label-mode', random.choice(['hetero', 'terminal-hetero']))
         indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
         if random.random() < 0.1:
             indigo.setOption('render-stereo-style', 'old')
-    if debug:
-        indigo.setOption('render-atom-ids-visible', True)
+    # if debug:
+    #     indigo.setOption('render-atom-ids-visible', True)
 
     try:
         mol = indigo.loadMolecule(smiles)
-        orig_smiles = smiles
         if mol_augment:
             if random.random() < INDIGO_DEARMOTIZE_PROB:
                 mol.dearomatize()
@@ -285,6 +306,7 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
             if include_condensed:
                 mol = add_rand_condensed(indigo, mol)
             mol = add_functional_group(indigo, mol, debug)
+            mol = add_color(indigo, mol)
             mol, smiles = generate_output_smiles(indigo, mol)
 
         buf = renderer.renderToBuffer(mol)
@@ -311,7 +333,6 @@ class TrainDataset(Dataset):
             self.file_paths = df['file_path'].values
             if not self.file_paths[0].startswith(args.data_path):
                 self.file_paths = [os.path.join(args.data_path, path) for path in df['file_path']]
-        self.split = split
         self.smiles = df['SMILES'].values if 'SMILES' in df.columns else None
         self.formats = args.formats
         self.labelled = (split == 'train')
@@ -365,6 +386,14 @@ class TrainDataset(Dataset):
         return image
 
     def __getitem__(self, idx):
+        try:
+            return self.getitem(idx)
+        except Exception as e:
+            with open(os.path.join(self.args.save_path, f'error_dataset_{int(time.time())}.log'), 'w') as f:
+                f.write(str(e))
+            raise e
+
+    def getitem(self, idx):
         ref = {}
         if self.dynamic_indigo:
             begin = time.time()

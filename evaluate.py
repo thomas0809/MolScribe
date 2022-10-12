@@ -2,7 +2,7 @@ import os
 import json
 import argparse
 import pandas as pd
-from bms.chemistry import SmilesEvaluator
+from bms.evaluate import SmilesEvaluator
 
 
 def get_args():

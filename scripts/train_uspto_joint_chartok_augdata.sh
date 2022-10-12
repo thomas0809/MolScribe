@@ -4,18 +4,19 @@ NUM_NODES=1
 NUM_GPUS_PER_NODE=4
 NODE_RANK=0
 
-BATCH_SIZE=128
+BATCH_SIZE=256
 ACCUM_STEP=1
 
 MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 DATESTR=$(date +"%m-%d-%H-%M")
-SAVE_PATH=output/uspto/swin_base_aux_200k_char_aug
-SAVE_PATH=output/zli/swin_base_aux_200k_new1_augdata1
+SAVE_PATH=output/uspto/swin_base_aux_200k_char_aug_b256
 mkdir -p ${SAVE_PATH}
 
 set -x
 
+#for epoch in 24 29 34 39 44 49
+#do
 torchrun \
     --nproc_per_node=$NUM_GPUS_PER_NODE --nnodes=$NUM_NODES --node_rank $NODE_RANK --master_addr localhost --master_port $MASTER_PORT \
     train.py \
@@ -24,7 +25,7 @@ torchrun \
     --train_file pubchem/train_200k.csv \
     --aux_file uspto_mol/train_200k.csv --coords_file aux_file \
     --valid_file Img2Mol/USPTO.csv \
-    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,acs/acs-331.csv \
+    --test_file acs/acs-331.csv,Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv \
     --vocab_file bms/vocab_chars.json \
     --formats chartok_coords,edges \
     --dynamic_indigo --augment --mol_augment \
@@ -43,15 +44,9 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-<<<<<<< HEAD
-    --do_valid \
+    --do_test \
     --fp16 --backend nccl 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
-=======
-    --do_train --do_valid --do_test \
-    --resume \
-    --fp16 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
->>>>>>> ecf562ff775c05bbf645968c1a5e205dfb2ac4a4
-
+#done
 
 #    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \
 #    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \

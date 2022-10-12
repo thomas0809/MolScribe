@@ -133,6 +133,7 @@ def load_states(args, load_path):
         path = os.path.join(load_path, f'{args.encoder}_{args.decoder}_best.pth')
     else:
         path = os.path.join(load_path, f'{args.encoder}_{args.decoder}_{args.load_ckpt}.pth')
+    print_rank_0('Load ' + path)
     states = torch.load(path, map_location=torch.device('cpu'))
     return states
 
@@ -161,7 +162,7 @@ def get_model(args, tokenizer, device, load_path=None):
         safe_load(encoder, states['encoder'])
         # print_rank_0('Loading decoder')
         safe_load(decoder, states['decoder'])
-        print_rank_0(f"Model loaded from {load_path}")
+        # print_rank_0(f"Model loaded from {load_path}")
     
     encoder.to(device)
     decoder.to(device)
@@ -348,7 +349,6 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
         print_rank_0(train_dataset.transform)
     else:
         train_dataset = AuxTrainDataset(args, train_df, aux_df, tokenizer)
-        print_rank_0(len(train_dataset))
     if args.local_rank != -1:
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
     else:
@@ -488,14 +488,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     if args.local_rank != 0:
         return
 
-    # Save beam search predictions. Not used.
-    if args.beam_size > 1:
-        for format_ in args.formats:
-            with open(os.path.join(save_path, f'{split}_{format_}_beam.jsonl'), 'w') as f:
-                for idx, pred in enumerate(beam_predictions[format_]):
-                    text, score = pred
-                    f.write(json.dumps({'id': idx, 'text': text, 'score': score}) + '\n')
-
     # Deal with discrepancies between datasets
     if 'pubchem_cid' in data_df.columns:
         data_df['image_id'] = data_df['pubchem_cid']
@@ -578,7 +570,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         pred_df['old_post_SMILES'] = old_smiles_list
 
     # Compute scores
-    if split == 'valid' and 'SMILES' in data_df.columns:
+    if 'SMILES' in data_df.columns:
         evaluator = SmilesEvaluator(data_df['SMILES'])
         print('label:', data_df['SMILES'].values[:2])
         if 'SMILES' in pred_df.columns:
@@ -614,7 +606,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             old_graph_scores = evaluator.evaluate(pred_df['old_graph_SMILES'])
             scores['old_graph_smiles_em'] = old_graph_scores['canon_smiles_em']
             scores['old_graph_smiles'] = old_graph_scores['canon_smiles']
-            scores['old_graph_old_graph'] = old_graph_scores['graph']
+            scores['old_graph_graph'] = old_graph_scores['graph']
             scores['old_graph_chiral'] = old_graph_scores['chiral']
         if 'node_coords' in pred_df.columns:
             _, scores['num_nodes'], scores['symbols'] = \
@@ -625,42 +617,13 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     pred_df = format_df(pred_df)
     if args.predict_coords:
         pred_df = pred_df[['image_id', 'SMILES', 'node_coords']]
-    pred_df.to_csv(os.path.join(save_path, f'prediction_{file}_refactor'), index=False)
+    pred_df.to_csv(os.path.join(save_path, f'prediction_{file}'), index=False)
     # Save scores
-    print(scores)
-    with open(os.path.join(save_path, f'eval_scores_{os.path.splitext(file)[0]}_refactor.json'), 'w') as f:  # sub_R refers to changing [Ri] to [i*] in Staker ground truth
-        json.dump(scores, f)
-    
-    # Save predictions
     if split == 'test':
-        pred_df['InChI'] = pred_df['SMILES_InChI']
-        pred_df[['image_id', 'InChI']].to_csv(os.path.join(save_path, 'submission.csv'), index=False)
+        with open(os.path.join(save_path, f'eval_scores_{os.path.splitext(file)[0]}_{args.load_ckpt}.json'), 'w') as f:
+            json.dump(scores, f)
     
     return scores
-
-
-def get_bms_data(args):
-    def get_train_file_path(image_id):
-        return "data/train/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
-    def get_test_file_path(image_id):
-        return "data/test/{}/{}/{}/{}.png".format(image_id[0], image_id[1], image_id[2], image_id)
-    train_df, valid_df, test_df = None, None, None
-    if args.do_train:
-        train_df = pd.read_csv('data/train_folds.csv')
-        train_df['file_path'] = train_df['image_id'].apply(get_train_file_path)
-        print_rank_0(f'train.shape: {train_df.shape}')
-    if args.do_train or args.do_valid:
-        valid_df = pd.read_csv('data/valid_folds.csv')
-        valid_df['file_path'] = valid_df['image_id'].apply(get_train_file_path)
-        print_rank_0(f'valid.shape: {valid_df.shape}')
-    if args.do_test:
-        test_df = pd.read_csv('data/sample_submission.csv')
-        test_df['file_path'] = test_df['image_id'].apply(get_test_file_path)
-        print_rank_0(f'test.shape: {test_df.shape}')
-    tokenizer = {}
-    for format_ in args.formats:
-        tokenizer[format_] = Tokenizer('data/' + FORMAT_INFO[format_]['tokenizer'])
-    return train_df, valid_df, test_df, tokenizer
 
 
 def get_chemdraw_data(args):
@@ -728,11 +691,7 @@ def main():
     args.edges = any([f in args.formats for f in ['edges', 'graph', 'atomtok_coords', 'chartok_coords']])
     print_rank_0('Output formats: ' + ' '.join(args.formats))
 
-    if args.dataset == 'bms':
-        train_df, valid_df, test_df, tokenizer = get_bms_data(args)
-        aux_df = None
-    else:
-        train_df, valid_df, test_df, aux_df, tokenizer = get_chemdraw_data(args)
+    train_df, valid_df, test_df, aux_df, tokenizer = get_chemdraw_data(args)
 
     if args.do_train and args.trunc_train:
         train_df = train_df[:args.trunc_train]
@@ -754,13 +713,13 @@ def main():
         train_loop(args, train_df, valid_df, aux_df, tokenizer, args.save_path)
         
     if args.do_valid:
-        scores = inference(args, valid_df, tokenizer, save_path=args.save_path, split='valid')
+        scores = inference(args, valid_df, tokenizer, save_path=args.save_path, split='test')
         print_rank_0(json.dumps(scores, indent=4))
 
     if args.do_test:
         assert type(test_df) is list
         for df in test_df:
-            scores = inference(args, df, tokenizer, save_path=args.save_path, split='valid')
+            scores = inference(args, df, tokenizer, save_path=args.save_path, split='test')
             print_rank_0(json.dumps(scores, indent=4))
 
 

@@ -1,4 +1,5 @@
 import copy
+import traceback
 import numpy as np
 import multiprocessing
 
@@ -511,7 +512,7 @@ def _replace_functional_group(smiles):
     isotope = 50
     for token in tokens:
         if token[0] == '[':
-            if Chem.AtomFromSmiles(token) is None:
+            if token[1:-1] in ABBREVIATIONS or Chem.AtomFromSmiles(token) is None:
                 while f'[{isotope}*]' in smiles or f'[{isotope}*]' in new_tokens:
                     isotope += 1
                 placeholder = f'[{isotope}*]'
@@ -543,94 +544,87 @@ def _expand_functional_group(mol, mappings, debug=False):
 
     if _need_expand(mol, mappings):
         mol_w = Chem.RWMol(mol)
+        num_atoms = mol_w.GetNumAtoms()
         for i, atom in enumerate(mol_w.GetAtoms()):  # reset radical electrons
             atom.SetNumRadicalElectrons(0)
 
-        # While loop is trying to expand all the atoms that needs to be expanded.
-        flag = True
-        cnt = 0
-        while flag:
-            flag = False
-            cnt += 1
-            if cnt >= 30:
-                if debug:
-                    print(Chem.MolToSmiles(mol))
-                    print(mappings)
-                break
-            # Every time an atom is expanded, mol is changed, and we have to restart the for loop.
-            for i, atom in enumerate(mol_w.GetAtoms()):
-                if atom.GetSymbol() == '*':
-                    symbol = Chem.GetAtomAlias(atom)
-                    isotope = atom.GetIsotope()
-                    if isotope > 0 and isotope in mappings:
-                        symbol = mappings[isotope]
-                    if not(isinstance(symbol, str) and len(symbol) > 0):
-                        continue
-                    # rgroups do not need to be expanded
-                    if symbol in RGROUP_SYMBOLS:
-                        continue
-    
-                    bonds = atom.GetBonds()
-                    sub_smiles, direction = get_smiles_from_symbol(symbol, mol, atom, bonds)
+        atoms_to_remove = []
+        for i in range(num_atoms):
+            atom = mol_w.GetAtomWithIdx(i)
+            if atom.GetSymbol() == '*' and atom.GetIsotope() > 0:
+                symbol = Chem.GetAtomAlias(atom)
+                isotope = atom.GetIsotope()
+                if isotope > 0 and isotope in mappings:
+                    symbol = mappings[isotope]
+                if not(isinstance(symbol, str) and len(symbol) > 0):
+                    continue
+                # rgroups do not need to be expanded
+                if symbol in RGROUP_SYMBOLS:
+                    continue
 
-                    # create mol object for abbreviation/condensed formula from its SMILES
-                    mol_r = convert_smiles_to_mol(sub_smiles)
+                bonds = atom.GetBonds()
+                sub_smiles, direction = get_smiles_from_symbol(symbol, mol_w, atom, bonds)
 
-                    if mol_r is None:
-                        # TODO: set this atom to C
-                        atom.SetAtomicNum(6)
-                        atom.SetIsotope(0)
-                        continue
-    
-                    # remove bonds connected to abbreviation/condensed formula
-                    adjacent_indices = [bond.GetOtherAtomIdx(i) for bond in bonds]
-                    for adjacent_idx in adjacent_indices:
-                        mol_w.RemoveBond(i, adjacent_idx)
-    
-                    adjacent_atoms = [mol_w.GetAtomWithIdx(adjacent_idx) for adjacent_idx in adjacent_indices]
-                    for adjacent_atom, bond in zip(adjacent_atoms, bonds):
-                        adjacent_atom.SetNumRadicalElectrons(int(bond.GetBondTypeAsDouble()))
+                # create mol object for abbreviation/condensed formula from its SMILES
+                mol_r = convert_smiles_to_mol(sub_smiles)
 
-                    # get indices of atoms of main body that connect to substituent
-                    bonding_atoms_w = adjacent_indices
-                    # assume indices are concated after combine mol_w and mol_r
-                    bonding_atoms_r = [mol_w.GetNumAtoms()]
-                    for atm in mol_r.GetAtoms():
-                        if atm.GetNumRadicalElectrons() and atm.GetIdx() > 0:
-                            bonding_atoms_r.append(mol_w.GetNumAtoms() + atm.GetIdx())
-    
-                    # combine main body and substituent into a single molecule object
-                    combo = Chem.CombineMols(mol_w, mol_r)
-    
-                    # connect substituent to main body with bonds
-                    mol_w = Chem.RWMol(combo)
-                    if len(bonding_atoms_r) == 1:  # substituent uses one atom to bond to main body
-                        for atm in bonding_atoms_w:
-                            bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
-                            mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
-                    else:
-                        conf = mol.GetConformer()
-                        coords = conf.GetPositions()
-                        coords_r = coords[i]
-                        for atm in bonding_atoms_w:
-                            bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
-                            rel_x, rel_y, _ = coords[atm] - coords_r
-                            on_right = _is_on_right(rel_x, rel_y)
-                            if on_right == (direction == -1):
-                                mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
-                            else:
-                                mol_w.AddBond(atm, bonding_atoms_r[1], order=BOND_TYPES[bond_order])
-    
-                    # reset radical electrons
+                if mol_r is None:
+                    # atom.SetAtomicNum(6)
+                    atom.SetIsotope(0)
+                    continue
+
+                # remove bonds connected to abbreviation/condensed formula
+                adjacent_indices = [bond.GetOtherAtomIdx(i) for bond in bonds]
+                for adjacent_idx in adjacent_indices:
+                    mol_w.RemoveBond(i, adjacent_idx)
+
+                adjacent_atoms = [mol_w.GetAtomWithIdx(adjacent_idx) for adjacent_idx in adjacent_indices]
+                for adjacent_atom, bond in zip(adjacent_atoms, bonds):
+                    adjacent_atom.SetNumRadicalElectrons(int(bond.GetBondTypeAsDouble()))
+
+                # get indices of atoms of main body that connect to substituent
+                bonding_atoms_w = adjacent_indices
+                # assume indices are concated after combine mol_w and mol_r
+                bonding_atoms_r = [mol_w.GetNumAtoms()]
+                for atm in mol_r.GetAtoms():
+                    if atm.GetNumRadicalElectrons() and atm.GetIdx() > 0:
+                        bonding_atoms_r.append(mol_w.GetNumAtoms() + atm.GetIdx())
+
+                # combine main body and substituent into a single molecule object
+                combo = Chem.CombineMols(mol_w, mol_r)
+
+                # connect substituent to main body with bonds
+                mol_w = Chem.RWMol(combo)
+                if len(bonding_atoms_r) == 1:  # substituent uses one atom to bond to main body
                     for atm in bonding_atoms_w:
-                        mol_w.GetAtomWithIdx(atm).SetNumRadicalElectrons(0)
-                    for atm in bonding_atoms_r:
-                        mol_w.GetAtomWithIdx(atm).SetNumRadicalElectrons(0)
-    
-                    mol_w.RemoveAtom(i)
-                    flag = True
-                    break
+                        bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
+                        mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
+                else:
+                    # TODO: this part is still problematic because combined mol doesn't have conf
+                    conf = mol_w.GetConformer()
+                    coords = conf.GetPositions()
+                    coords_r = coords[i]
+                    for atm in bonding_atoms_w:
+                        bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
+                        rel_x, rel_y, _ = coords[atm] - coords_r
+                        on_right = _is_on_right(rel_x, rel_y)
+                        if on_right == (direction == -1):
+                            mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
+                        else:
+                            mol_w.AddBond(atm, bonding_atoms_r[1], order=BOND_TYPES[bond_order])
 
+                # reset radical electrons
+                for atm in bonding_atoms_w:
+                    mol_w.GetAtomWithIdx(atm).SetNumRadicalElectrons(0)
+                for atm in bonding_atoms_r:
+                    mol_w.GetAtomWithIdx(atm).SetNumRadicalElectrons(0)
+                atoms_to_remove.append(i)
+
+        # Remove atom in the end, otherwise the id will change
+        # Reverse the order and remove atoms with larger id first
+        atoms_to_remove.sort(reverse=True)
+        for i in atoms_to_remove:
+            mol_w.RemoveAtom(i)
         smiles = Chem.MolToSmiles(mol_w)
         mol = mol_w.GetMol()
     else:
@@ -651,6 +645,10 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
             if symbol[0] == 'R' and symbol[1:].isdigit():
                 atom.SetIsotope(int(symbol[1:]))
             Chem.SetAtomAlias(atom, symbol)
+        elif symbol in ABBREVIATIONS:
+            atom = Chem.Atom("*")
+            Chem.SetAtomAlias(atom, symbol)
+            atom.SetIsotope(50)
         else:
             try:  # try to get SMILES of atom
                 atom = Chem.AtomFromSmiles(symbols[i])
@@ -658,6 +656,7 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
             except:  # otherwise, abbreviation or condensed formula
                 atom = Chem.Atom("*")
                 Chem.SetAtomAlias(atom, symbol)
+                atom.SetIsotope(50)
 
         idx = mol.AddAtom(atom)
         assert idx == i
@@ -696,12 +695,12 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
         success = True
     except Exception as e:
         if debug:
-            raise e
+            print(traceback.format_exc())
         pred_molblock = ''
         success = False
 
     if debug:
-        return pred_smiles, pred_molblock, mol
+        return pred_smiles, pred_molblock, mol, success
     return pred_smiles, pred_molblock, success
 
 
@@ -737,12 +736,12 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=
         success = True
     except Exception as e:
         if debug:
-            print(e)
+            print(traceback.format_exc())
         pred_smiles = smiles
         pred_molblock = ''
         success = False
     if debug:
-        return pred_smiles, pred_molblock, mol
+        return pred_smiles, pred_molblock, mol, success
     return pred_smiles, pred_molblock, success
 
 
