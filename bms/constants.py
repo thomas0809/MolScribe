@@ -96,15 +96,10 @@ SUBSTITUTIONS: List[Substitution] = [
 
 ABBREVIATIONS = {abbrv: sub for sub in SUBSTITUTIONS for abbrv in sub.abbrvs}
 
-VALENCES = {"H": [1],
-"Li": [1], "Be": [2], "B": [3], "C": [4], "N": [3,5], "O": [2], "F": [1],
-"Na": [1], "Mg": [2], "Al": [3], "Si": [4], "P": [5,3], "S": [6,2,4], "Cl": [1],
-"K": [1], "Ca": [2], "Sc": [3], "Ti": [4,3,2], "V": [5,4,3,2], "Cr": [6,3,2], "Mn": [7,6,4,3,2], "Fe": [3,2], "Co": [3,2], "Ni": [2], "Cu": [2,1], "Zn": [2], "Ga": [3], "Ge": [4,2], "As": [5,3], "Se": [6,4,2], "Br": [1], "Kr": [2,1],
-"Rb": [1], "Sr": [2], "Y": [3], "Zr": [4], "Nb": [5], "Mo": [6,4], "Tc": [7,4], "Ru": [4,3], "Rh": [3], "Pd": [4,2,0], "Ag": [1], "Cd": [2], "In": [3], "Sn": [4,2], "Sb": [5,3], "Te": [6,4,2], "I": [1], "Xe": [8,6,4,2],
-"Cs": [1], "Ba": [2], "La": [3], "Ce": [4,3], "Pr": [3], "Nd": [3], "Pm": [3], "Sm": [3], "Eu": [3,2], "Gd": [3], "Tb": [3], "Dy": [3], "Ho": [3], "Er": [3], "Tm": [3], "Yb": [3], "Lu": [3], "Hf": [4], "Ta": [5], "W": [6,4], "Re": [4], "Os": [4], "Ir": [4,3], "Pt": [4,2], "Au": [3,1], "Hg": [2,1], "Tl": [3,1], "Pb": [4,2], "Bi": [3], "Po": [4,2], "At": [1], "Rn": [2],
-"Fr": [1], "Ra": [2], "Ac": [3], "Th": [4], "Pa": [5], "U": [6,4], "Np": [5], "Pu": [4], "Am": [3], "Cm": [3], "Bk": [3], "Cf": [3], "Es": [3], "Fm": [3], "Md": [3], "No": [2], "Lr": [3], "Rf": [4], "Db": [5], "Sg": [6], "Bh": [7], "Hs": [8], "Cn": [2],
-"Ac": [1], "Bz": [1], "Bn": [1], "Boc": [1], "Cbm": [1], "Cbz": [1], "Cy": [1], "Fmoc": [1], "Mes": [1], "Ms": [1], "Ph": [1], "PMB": [1], "Py": [1], "SEM": [1], "Suc": [1], "TBS": [1], "TBZ": [1], "Tf": [1], "TFA": [1], "TMS": [1], "Ts": [1],
-"Me": [1], "Et": [1], "Pr": [1], "nPr": [1], "n-Pr": [1], "iPr": [1], "i-Pr": [1], "Bu": [1], "nBu": [1], "n-Bu": [1], "iBu": [1], "i-Bu": [1], "tBu": [1], "t-Bu": [1]
+VALENCES = {
+    "H": [1], "Li": [1], "Be": [2], "B": [3], "C": [4], "N": [3,5], "O": [2], "F": [1],
+    "Na": [1], "Mg": [2], "Al": [3], "Si": [4], "P": [5, 3], "S": [6, 2, 4], "Cl": [1], "K": [1], "Ca": [2],
+    "Br": [1], "I": [1]
 }
 
 ELEMENTS = [
@@ -128,7 +123,7 @@ COLORS = {
 }
 
 # tokens of condensed formula
-FORMULA_REGEX = re.compile('(' + '|'.join(VALENCES.keys()) + '|[0-9]+|\(|\))')
+FORMULA_REGEX = re.compile('(' + '|'.join(ELEMENTS + list(ABBREVIATIONS.keys())) + '|[0-9]+|\(|\))')
 # abbreviations that don't follow the pattern [A-Z][a-z]*
 SPECIAL_ABBREV = ["PMB", "SEM", "TBS", "TBZ", "TFA", "TMS", "n-?Pr", "i-?Pr", "n-?Bu", "i-?Bu", "t-?Bu", "R[0-9]*"]
 # tokens of condensed formula (extended)

@@ -227,7 +227,8 @@ def _parse_tokens(tokens: list):
     Used by `_parse_formula`, which does the same thing but takes a formula in string form as input
     """
     elements = []
-    i = j = 0
+    i = 0
+    j = 0
     while i < len(tokens):
         if tokens[i] == '(':
             while j < len(tokens) and tokens[j] != ')':
@@ -333,11 +334,11 @@ def _count_non_H(atoms):
     return sum(_count_non_H(atom) for atom in atoms)
 
 
-def _condensed_formula_list_to_smiles(formula: list, start_bond, end_bond=None, direction=None, R_valence=[1]):
+def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, direction=None, R_valence=[1]):
     """
     Converts condensed formula (in the form of a list of symbols) to smiles
     Input:
-    `formula`: e.g. ['C', 'H', 'H', 'N', ['C', 'H', 'H', 'H'], ['C', 'H', 'H', 'H']] for CH2N(CH3)2
+    `formula_list`: e.g. ['C', 'H', 'H', 'N', ['C', 'H', 'H', 'H'], ['C', 'H', 'H', 'H']] for CH2N(CH3)2
     `start_bond`: # bonds attached to beginning of formula
     `end_bond`: # bonds attached to end of formula (deduce automatically if None)
     `direction` (1, -1, or None): direction in which to process the list (1: left to right; -1: right to left; None: deduce automatically)
@@ -351,11 +352,11 @@ def _condensed_formula_list_to_smiles(formula: list, start_bond, end_bond=None, 
     """
     # `direction` not specified: try left to right; if fails, try right to left
     if direction is None:
-        for R_val_choice in [[1], [1, 2], [1, 2, 3]]:
-            for dir_choice in [1, -1]:
-                result = _condensed_formula_list_to_smiles(formula, start_bond, end_bond, dir_choice, R_val_choice)
-                if result[4]:
-                    return result
+        # for R_val_choice in [[1], [1, 2], [1, 2, 3]]:
+        for dir_choice in [1, -1]:
+            result = _condensed_formula_list_to_smiles(formula, start_bond, end_bond, dir_choice)
+            if result[4]:
+                return result
         return result
     assert direction == 1 or direction == -1
 
@@ -369,36 +370,36 @@ def _condensed_formula_list_to_smiles(formula: list, start_bond, end_bond=None, 
         `add_flat_idx`: index of atom to be added in list of atom tokens of SMILES so far
         Note: "atom" could refer to nested condensed formula (e.g. CH3 in CH2N(CH3)2)
         """
-
         # end of formula: return result
-        if (direction == 1 and add_idx == len(formula)) or (direction == -1 and add_idx == -1):
+        if (direction == 1 and add_idx == len(formula_list)) or (direction == -1 and add_idx == -1):
             if end_bond is not None and end_bond != bonds_left:
-                return smiles, bonds_left, cur_flat_idx, direction, False
-            return smiles, bonds_left, cur_flat_idx, direction, True
+                return smiles, bonds_left, cur_flat_idx, direction, False, 1
+            return smiles, bonds_left, cur_flat_idx, direction, True, 1
 
         # no more bonds but there are atoms remaining: conversion failed
         if bonds_left <= 0:
-            return smiles, bonds_left, cur_flat_idx, direction, False
-        to_add = formula[add_idx]  # atom to be added to current atom
+            return smiles, bonds_left, cur_flat_idx, direction, False, 1
+        to_add = formula_list[add_idx]  # atom to be added to current atom
 
         if isinstance(to_add, list):  # "atom" added is a list (i.e. nested condensed formula): assume valence of 1
             if bonds_left > 1:  # "atom" added does not use up remaining bonds of current atom
                 # get smiles of "atom" (which is itself a condensed formula)
-                add_str, _, _, _, success = _condensed_formula_list_to_smiles(to_add, 1, 0, direction)
+                add_str, _, _, _, success, num_trials = _condensed_formula_list_to_smiles(to_add, 1, 0, direction)
                 if not success:
-                    return smiles, bonds_left, cur_flat_idx, direction, False
+                    return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
                 # put smiles of "atom" in parentheses and append to smiles so far; go to next atom to add to current atom
                 return dfs(smiles + f'({add_str})', cur_idx, cur_flat_idx, bonds_left - 1, add_idx + direction,
                            add_flat_idx + _count_non_H(to_add))
             # "atom" added uses up remaining bonds of current atom
-            add_str, bonds_left, _, _, success = _condensed_formula_list_to_smiles(to_add, 1, None,
-                                                                                   direction)  # get smiles of "atom" and bonds left on it
+            # get smiles of "atom" and bonds left on it
+            add_str, bonds_left, _, _, success, num_trials = _condensed_formula_list_to_smiles(to_add, 1, None, direction)
             if not success:
-                return smiles, bonds_left, cur_flat_idx, direction, False
+                return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
             # append smiles of "atom" (without parentheses) to smiles; it becomes new current atom
             return dfs(smiles + add_str, add_idx, add_flat_idx, bonds_left, add_idx + direction,
                        add_flat_idx + _count_non_H(to_add))
 
+        num_trials = 0
         # atom added is a single symbol (as opposed to nested condensed formula)
         for val in VALENCES.get(to_add, R_valence):  # try all possible valences of atom added
             add_str = _expand_abbreviation(to_add)  # expand to smiles if symbol is abbreviation
@@ -410,10 +411,13 @@ def _condensed_formula_list_to_smiles(formula: list, start_bond, end_bond=None, 
                              val - bonds_left, add_idx + direction, add_flat_idx + _count_non_H(to_add))
             if result[4]:
                 return result
-        return smiles, bonds_left, cur_flat_idx, direction, False
+            num_trials += result[5]
+            if num_trials > 10000:
+                break
+        return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
 
-    cur_idx = -1 if direction == 1 else len(formula)
-    add_idx = 0 if direction == 1 else len(formula) - 1
+    cur_idx = -1 if direction == 1 else len(formula_list)
+    add_idx = 0 if direction == 1 else len(formula_list) - 1
     return dfs('', cur_idx, -1, start_bond, add_idx, 0)
 
 
@@ -455,8 +459,7 @@ def _condensed_formula_to_smiles(formula: str, start_bond: int, end_bond: int, d
     `success` (bool): whether conversion was successful
     """
     formula_list = _expand_carbon(_parse_formula(formula))  # convert condensed formula to a list of atoms
-    smiles, success = '', False
-    smiles, _, _, _, success = _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond, direction)
+    smiles, _, _, _, success, _ = _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond, direction)
     if success:
         return smiles, success
     return smiles, success
@@ -710,6 +713,10 @@ def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16)
             results = p.starmap(_convert_graph_to_smiles, zip(coords, symbols, edges), chunksize=128)
         else:
             results = p.starmap(_convert_graph_to_smiles, zip(coords, symbols, edges, images), chunksize=128)
+    # results = []
+    # for i, (coord, symbol, edge) in enumerate(zip(coords, symbols, edges)):
+    #     print(i, end=' ', flush=True)
+    #     results.append(_convert_graph_to_smiles(coord, symbol, edge))
     smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
     return smiles_list, molblock_list, r_success
@@ -748,10 +755,13 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=
 def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=False, num_workers=16):
     with multiprocessing.Pool(num_workers) as p:
         if coords is not None and symbols is not None and edges is not None:
-            results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges, [molblock] * len(smiles)),
-                                chunksize=128)
+            results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges), chunksize=128)
         else:
             results = p.map(_postprocess_smiles, smiles, chunksize=128)
+    # results = []
+    # for i, (s, coord, symbol, edge) in enumerate(zip(smiles, coords, symbols, edges)):
+    #     print(i, end=' ', flush=True)
+    #     results.append(_postprocess_smiles(s, coord, symbol, edge))
     smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
     return smiles_list, molblock_list, r_success

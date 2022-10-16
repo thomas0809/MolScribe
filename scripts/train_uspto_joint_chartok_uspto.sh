@@ -42,7 +42,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid --do_test \
+    --do_test \
     --fp16 --backend nccl 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
 #done
 

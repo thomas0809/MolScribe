@@ -1,7 +1,7 @@
 #!/bin/bash
 
 NUM_NODES=1
-NUM_GPUS_PER_NODE=8
+NUM_GPUS_PER_NODE=4
 NODE_RANK=0
 
 BATCH_SIZE=256
@@ -43,7 +43,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid --do_test \
+    --do_train --do_valid --do_test --resume \
     --fp16 --backend nccl 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
 #done
 

@@ -487,6 +487,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     # The evaluation and saving prediction is only performed in the master process.
     if args.local_rank != 0:
         return
+    print('Start evaluation')
 
     # Deal with discrepancies between datasets
     if 'pubchem_cid' in data_df.columns:
@@ -544,12 +545,10 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         if args.molblock:
             pred_df['molblock'] = molblock_list
         # old graph to smiles
-        old_smiles_list, old_molblock_list, old_r_success = chemistry_old.convert_graph_to_smiles(
-            pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
-        print(f'Old graph to SMILES success ratio: {old_r_success:.4f}')
-        pred_df['old_graph_SMILES'] = old_smiles_list
-        if args.molblock:
-            pred_df['old_molblock'] = old_molblock_list
+        # old_smiles_list, old_molblock_list, old_r_success = chemistry_old.convert_graph_to_smiles(
+        #     pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
+        # print(f'Old graph to SMILES success ratio: {old_r_success:.4f}')
+        # pred_df['old_graph_SMILES'] = old_smiles_list
 
     # Postprocess the predicted SMILES (verify chirality, expand functional groups)
     if 'SMILES' in pred_df.columns:
@@ -561,13 +560,13 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         print(f'Postprocess SMILES success ratio: {r_success:.4f}')
         pred_df['post_SMILES'] = smiles_list
         # old postprocessing
-        if 'edges' in pred_df.columns:
-            old_smiles_list, _, old_r_success = chemistry_old.postprocess_smiles(
-                pred_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
-        else:
-            old_smiles_list, _, old_r_success = chemistry_old.postprocess_smiles(pred_df['SMILES'])
-        print(f'Old postprocess SMILES success ratio: {old_r_success:.4f}')
-        pred_df['old_post_SMILES'] = old_smiles_list
+        # if 'edges' in pred_df.columns:
+        #     old_smiles_list, _, old_r_success = chemistry_old.postprocess_smiles(
+        #         pred_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
+        # else:
+        #     old_smiles_list, _, old_r_success = chemistry_old.postprocess_smiles(pred_df['SMILES'])
+        # print(f'Old postprocess SMILES success ratio: {old_r_success:.4f}')
+        # pred_df['old_post_SMILES'] = old_smiles_list
 
     # Compute scores
     if 'SMILES' in data_df.columns:
