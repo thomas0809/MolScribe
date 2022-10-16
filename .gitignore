@@ -1,6 +1,7 @@
 **/.ipynb_checkpoints/
 data/
 output/
+notebook/
 *.log
 **/__pycache__
 *.csv
