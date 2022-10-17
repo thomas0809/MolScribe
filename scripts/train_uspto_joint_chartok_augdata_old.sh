@@ -48,7 +48,7 @@ torchrun \
     --fp16 --backend nccl 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
 #done
 
-#    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \
+#    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv,acs/acs-331.csv,uspto_test/uspto_indigo.csv,uspto_test/uspto_chemdraw.csv \
 #    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
 #    --train_steps_per_epoch 3000 \
 #    --valid_file indigo-data/valid.csv \

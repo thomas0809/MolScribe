@@ -6,6 +6,7 @@ import multiprocessing
 from indigo import Indigo
 import rdkit
 import rdkit.Chem as Chem
+
 rdkit.RDLogger.DisableLog('rdApp.*')
 
 from SmilesPE.pretokenizer import atomwise_tokenizer
@@ -354,7 +355,7 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
     if direction is None:
         # for R_val_choice in [[1], [1, 2], [1, 2, 3]]:
         for dir_choice in [1, -1]:
-            result = _condensed_formula_list_to_smiles(formula, start_bond, end_bond, dir_choice)
+            result = _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond, dir_choice)
             if result[4]:
                 return result
         return result
@@ -370,36 +371,43 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
         `add_flat_idx`: index of atom to be added in list of atom tokens of SMILES so far
         Note: "atom" could refer to nested condensed formula (e.g. CH3 in CH2N(CH3)2)
         """
+        num_trials = 1
         # end of formula: return result
         if (direction == 1 and add_idx == len(formula_list)) or (direction == -1 and add_idx == -1):
             if end_bond is not None and end_bond != bonds_left:
-                return smiles, bonds_left, cur_flat_idx, direction, False, 1
-            return smiles, bonds_left, cur_flat_idx, direction, True, 1
+                return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
+            return smiles, bonds_left, cur_flat_idx, direction, True, num_trials
 
         # no more bonds but there are atoms remaining: conversion failed
         if bonds_left <= 0:
-            return smiles, bonds_left, cur_flat_idx, direction, False, 1
+            return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
         to_add = formula_list[add_idx]  # atom to be added to current atom
 
         if isinstance(to_add, list):  # "atom" added is a list (i.e. nested condensed formula): assume valence of 1
-            if bonds_left > 1:  # "atom" added does not use up remaining bonds of current atom
+            if bonds_left > 1:
+                # "atom" added does not use up remaining bonds of current atom
                 # get smiles of "atom" (which is itself a condensed formula)
-                add_str, _, _, _, success, num_trials = _condensed_formula_list_to_smiles(to_add, 1, 0, direction)
+                add_str, _, _, _, success, trials = _condensed_formula_list_to_smiles(to_add, 1, 0, direction)
+                num_trials += trials
                 if not success:
                     return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
-                # put smiles of "atom" in parentheses and append to smiles so far; go to next atom to add to current atom
-                return dfs(smiles + f'({add_str})', cur_idx, cur_flat_idx, bonds_left - 1, add_idx + direction,
-                           add_flat_idx + _count_non_H(to_add))
-            # "atom" added uses up remaining bonds of current atom
-            # get smiles of "atom" and bonds left on it
-            add_str, bonds_left, _, _, success, num_trials = _condensed_formula_list_to_smiles(to_add, 1, None, direction)
-            if not success:
-                return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
-            # append smiles of "atom" (without parentheses) to smiles; it becomes new current atom
-            return dfs(smiles + add_str, add_idx, add_flat_idx, bonds_left, add_idx + direction,
-                       add_flat_idx + _count_non_H(to_add))
+                # put smiles of "atom" in parentheses and append to smiles; go to next atom to add to current atom
+                result = dfs(smiles + f'({add_str})', cur_idx, cur_flat_idx, bonds_left - 1, add_idx + direction,
+                             add_flat_idx + _count_non_H(to_add))
+            else:
+                # "atom" added uses up remaining bonds of current atom
+                # get smiles of "atom" and bonds left on it
+                add_str, bonds_left, _, _, success, trials = _condensed_formula_list_to_smiles(to_add, 1, None,
+                                                                                               direction)
+                num_trials += trials
+                if not success:
+                    return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
+                # append smiles of "atom" (without parentheses) to smiles; it becomes new current atom
+                result = dfs(smiles + add_str, add_idx, add_flat_idx, bonds_left, add_idx + direction,
+                             add_flat_idx + _count_non_H(to_add))
+            num_trials += result[5]
+            return (*result[:4], num_trials)
 
-        num_trials = 0
         # atom added is a single symbol (as opposed to nested condensed formula)
         for val in VALENCES.get(to_add, R_valence):  # try all possible valences of atom added
             add_str = _expand_abbreviation(to_add)  # expand to smiles if symbol is abbreviation
@@ -409,9 +417,9 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
             else:  # atom added uses up remaining bonds of current atom; it becomes new current atom
                 result = dfs(smiles + _get_bond_symb(bonds_left) + add_str, add_idx, add_flat_idx,
                              val - bonds_left, add_idx + direction, add_flat_idx + _count_non_H(to_add))
-            if result[4]:
-                return result
             num_trials += result[5]
+            if result[4]:
+                return (*result[:4], num_trials)
             if num_trials > 10000:
                 break
         return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
@@ -476,6 +484,8 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
     """
     if symbol in ABBREVIATIONS:
         return ABBREVIATIONS[symbol].smiles, None
+    if len(symbol) > 20:
+        return None, None
 
     conf = mol.GetConformer()
     coords = conf.GetPositions()
@@ -541,7 +551,6 @@ def convert_smiles_to_mol(smiles):
 
 
 def _expand_functional_group(mol, mappings, debug=False):
-
     def _need_expand(mol, mappings):
         return any([len(Chem.GetAtomAlias(atom)) > 0 for atom in mol.GetAtoms()]) or len(mappings) > 0
 
@@ -559,7 +568,7 @@ def _expand_functional_group(mol, mappings, debug=False):
                 isotope = atom.GetIsotope()
                 if isotope > 0 and isotope in mappings:
                     symbol = mappings[isotope]
-                if not(isinstance(symbol, str) and len(symbol) > 0):
+                if not (isinstance(symbol, str) and len(symbol) > 0):
                     continue
                 # rgroups do not need to be expanded
                 if symbol in RGROUP_SYMBOLS:
@@ -803,4 +812,3 @@ if __name__ == "__main__":
             res = _convert_graph_to_smiles(eval(pred_row['node_coords']), eval(pred_row['node_symbols']),
                                            eval(pred_row['edges']))
             print(res)
-

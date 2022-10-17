@@ -40,7 +40,7 @@ def get_transforms(input_size, augment=True, rotate=True, debug=False):
     if augment:
         trans_list += [
             # NormalizedGridDistortion(num_steps=10, distort_limit=0.3),
-            A.CropAndPad(percent=[-0.01, 0.00], keep_size=False, p=0.5),
+            A.CropAndPad(percent=[-0.01, 0.00], keep_size=False, p=0.2),
             PadWhite(pad_ratio=0.4, p=0.2),
             A.Downscale(scale_min=0.2, scale_max=0.5, interpolation=3),
             A.Blur(),
