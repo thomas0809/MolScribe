@@ -36,7 +36,7 @@ torchrun \
     --decoder transformer \
     --encoder_lr 4e-4 \
     --decoder_lr 4e-4 \
-    --save_path $SAVE_PATH --save_mode all \
+    --save_path $SAVE_PATH --save_mode all --load_ckpt ep49 \
     --label_smoothing 0.1 \
     --epochs 50 \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE / ACCUM_STEP)) \
@@ -44,7 +44,7 @@ torchrun \
     --use_checkpoint \
     --warmup 0.05 \
     --print_freq 200 \
-    --do_train --do_valid --do_test \
+    --do_test \
     --fp16 --backend nccl 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
 #done
 

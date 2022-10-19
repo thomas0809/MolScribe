@@ -25,7 +25,7 @@ torchrun \
     --train_file pubchem/train_200k.csv \
     --aux_file uspto_mol/train_200k.csv --coords_file aux_file \
     --valid_file Img2Mol/USPTO.csv \
-    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv,acs/acs-331.csv,uspto_test/uspto_indigo.csv,uspto_test/uspto_chemdraw.csv \
+    --test_file acs/acs-331.csv,Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv,uspto_test/uspto_indigo.csv,uspto_test/uspto_chemdraw.csv \
     --vocab_file bms/vocab_chars.json \
     --formats chartok_coords,edges \
     --dynamic_indigo --augment --mol_augment \

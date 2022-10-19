@@ -406,7 +406,7 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
                 result = dfs(smiles + add_str, add_idx, add_flat_idx, bonds_left, add_idx + direction,
                              add_flat_idx + _count_non_H(to_add))
             num_trials += result[5]
-            return (*result[:4], num_trials)
+            return (*result[:5], num_trials)
 
         # atom added is a single symbol (as opposed to nested condensed formula)
         for val in VALENCES.get(to_add, R_valence):  # try all possible valences of atom added
@@ -419,7 +419,7 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
                              val - bonds_left, add_idx + direction, add_flat_idx + _count_non_H(to_add))
             num_trials += result[5]
             if result[4]:
-                return (*result[:4], num_trials)
+                return (*result[:5], num_trials)
             if num_trials > 10000:
                 break
         return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
