@@ -442,6 +442,7 @@ class TrainDataset(Dataset):
             file_path = self.file_paths[idx]
             image = cv2.imread(file_path)
             if image is None:
+                image = np.array([[[255., 255., 255.]] * 10] * 10).astype(np.float32)
                 print(file_path)
             if self.coords_df is not None:
                 h, w, _ = image.shape

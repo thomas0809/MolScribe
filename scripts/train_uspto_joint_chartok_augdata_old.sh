@@ -25,7 +25,7 @@ torchrun \
     --train_file pubchem/train_200k.csv \
     --aux_file uspto_mol/train_200k.csv --coords_file aux_file \
     --valid_file Img2Mol/USPTO.csv \
-    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv,acs/acs-331.csv,uspto_test/uspto_indigo.csv,uspto_test/uspto_chemdraw.csv \
+    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,acs/acs-331.csv,uspto_test/uspto_indigo.csv,uspto_test/uspto_chemdraw.csv \
     --vocab_file bms/vocab_chars.json \
     --formats chartok_coords,edges \
     --dynamic_indigo --augment --mol_augment \
@@ -48,11 +48,11 @@ torchrun \
     --fp16 --backend nccl 2>&1  #  | tee $SAVE_PATH/log_${DATESTR}.txt
 #done
 
-#    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker/staker.csv \
+#    --test_file Img2Mol/CLEF_p.csv,Img2Mol/JPO_p.csv,Img2Mol/UOB_p.csv,Img2Mol/USPTO_p.csv,Img2Mol/staker_p.csv \
 #    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
 #    --train_steps_per_epoch 3000 \
 #    --valid_file indigo-data/valid.csv \
 #    --valid_file real-acs-evaluation/test.csv \
 #    --save_path output/indigo/swin_base_20_dynamic_aug \
 #    --no_pretrained --scheduler cosine --warmup 0.05 \
-#    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,indigo-data/test_uspto.csv,chemdraw-data/test_uspto.csv,zinc/test.csv \
+#    --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,acs/acs-331.csv,uspto_test/uspto_indigo.csv,uspto_test/uspto_chemdraw.csv \
