@@ -412,10 +412,14 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
         for val in VALENCES.get(to_add, R_valence):  # try all possible valences of atom added
             add_str = _expand_abbreviation(to_add)  # expand to smiles if symbol is abbreviation
             if bonds_left > val:  # atom added does not use up remaining bonds of current atom; go to next atom to add to current atom
-                result = dfs(smiles + f'({_get_bond_symb(val)}{add_str})', cur_idx, cur_flat_idx,
+                if cur_idx >= 0:
+                    add_str = _get_bond_symb(val) + add_str
+                result = dfs(smiles + f'({add_str})', cur_idx, cur_flat_idx,
                              bonds_left - val, add_idx + direction, add_flat_idx + _count_non_H(to_add))
             else:  # atom added uses up remaining bonds of current atom; it becomes new current atom
-                result = dfs(smiles + _get_bond_symb(bonds_left) + add_str, add_idx, add_flat_idx,
+                if cur_idx >= 0:
+                    add_str = _get_bond_symb(bonds_left) + add_str
+                result = dfs(smiles + add_str, add_idx, add_flat_idx,
                              val - bonds_left, add_idx + direction, add_flat_idx + _count_non_H(to_add))
             num_trials += result[5]
             if result[4]:
@@ -485,9 +489,9 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
     If condensed formula, determine parsing direction and num. bonds on each side using coordinates
     """
     if symbol in ABBREVIATIONS:
-        return ABBREVIATIONS[symbol].smiles, None
+        return ABBREVIATIONS[symbol].smiles, None, None
     if len(symbol) > 20:
-        return None, None
+        return None, None, None
 
     conf = mol.GetConformer()
     coords = conf.GetPositions()
@@ -512,7 +516,7 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
                 smiles, success = _condensed_formula_to_smiles(symbol, start_bond, end_bond, direction)
                 if success:
                     return smiles, direction, start_bond
-    return None, 0, 0
+    return None, None, None
 
 
 def _replace_functional_group(smiles):
@@ -561,7 +565,6 @@ def _expand_functional_group(mol, mappings, debug=False):
         return any([len(Chem.GetAtomAlias(atom)) > 0 for atom in mol.GetAtoms()]) or len(mappings) > 0
 
     if _need_expand(mol, mappings):
-        print(mappings)
         mol_w = Chem.RWMol(mol)
         num_atoms = mol_w.GetNumAtoms()
         for i, atom in enumerate(mol_w.GetAtoms()):  # reset radical electrons
@@ -585,9 +588,6 @@ def _expand_functional_group(mol, mappings, debug=False):
 
                 bonds = atom.GetBonds()
                 sub_smiles, direction, start_bond = get_smiles_from_symbol(symbol, mol_w, atom, bonds)
-                if sub_smiles[0] in '.=#':
-                    sub_smiles = sub_smiles[1:]
-                print(sub_smiles)
 
                 # create mol object for abbreviation/condensed formula from its SMILES
                 mol_r = convert_smiles_to_mol(sub_smiles)
