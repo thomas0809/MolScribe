@@ -6,7 +6,6 @@ Install the required packages
 ```
 pip install -r requirements.txt
 ```
-
 Please use the modified Indigo toolkit is included in ``indigo/``.
 
 ## Data

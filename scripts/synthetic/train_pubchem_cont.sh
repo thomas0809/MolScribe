@@ -22,7 +22,7 @@ torchrun \
     --data_path data/molbank \
     --train_file pubchem/train_200k.csv \
     --valid_file pubchem/valid.csv \
-    --test_file pubchem/test.csv,pubchem/test_chemdraw.csv,uspto_test/uspto_indigo.csv,uspto_test/uspto_chemdraw.csv \
+    --test_file pubchem/test_5k.csv,pubchem/test_chemdraw_5k.csv,uspto_test/uspto_indigo.csv,uspto_test/uspto_chemdraw.csv \
     --formats atomtok_coords,edges \
     --input_size 384 \
     --encoder swin_base \
@@ -42,7 +42,7 @@ torchrun \
     --print_freq 200 \
     --do_train --do_valid --do_test \
     --trunc_valid 10000 \
-    --fp16 2>&1 | tee $SAVE_PATH/log_${DATESTR}.txt
+    --fp16  #2>&1 | tee $SAVE_PATH/log_${DATESTR}.txt
 
 
 #    --decoder_dim 1024 --embed_dim 512 --attention_dim 512 \
