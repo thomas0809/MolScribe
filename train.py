@@ -62,7 +62,7 @@ def get_args():
     group.add_argument("--attn_dropout", help="Attention dropout", type=float, default=0.1)
     group.add_argument("--max_relative_positions", help="Max relative positions", type=int, default=0)
     # Data
-    parser.add_argument('--dataset', type=str, default='bms', choices=['bms', 'chemdraw'])
+    parser.add_argument('--dataset', type=str, default='molscribe', choices=['molscribe', 'chemdraw'])
     parser.add_argument('--data_path', type=str, default=None)
     parser.add_argument('--train_file', type=str, default=None)
     parser.add_argument('--valid_file', type=str, default=None)
@@ -648,26 +648,26 @@ def get_chemdraw_data(args):
     for format_ in args.formats:
         if format_ == 'atomtok':
             if args.vocab_file is None:
-                args.vocab_file = 'bms/vocab.json'
+                args.vocab_file = 'vocab/vocab.json'
             tokenizer['atomtok'] = Tokenizer(args.vocab_file)
             print_rank_0(f'tokenizer: {args.vocab_file}')
         elif format_ in ['nodes', 'graph', 'grid']:
-            tokenizer[format_] = NodeTokenizer(args.coord_bins, 'bms/vocab.json', args.sep_xy)
+            tokenizer[format_] = NodeTokenizer(args.coord_bins, 'vocab/vocab.json', args.sep_xy)
             args.num_symbols = tokenizer[format_].len_symbols()
         elif format_ == "atomtok_coords":
             if args.vocab_file is None:
-                args.vocab_file = 'bms/vocab_rf.json' if args.mol_augment else 'bms/vocab.json'
+                args.vocab_file = 'molscribe/vocab_rf.json' if args.mol_augment else 'molscribe/vocab.json'
             tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
                                                         continuous_coords=args.continuous_coords)
             print_rank_0(f'tokenizer: {args.vocab_file} {len(tokenizer["atomtok_coords"])}')
         elif format_ == "chartok_coords":
             if args.vocab_file is None:
-                args.vocab_file = 'bms/vocab_chars.json'
+                args.vocab_file = 'vocab/vocab_chars.json'
             tokenizer["chartok_coords"] = CharTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
                                                         continuous_coords=args.continuous_coords)
 
     if args.patch:
-        tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'bms/node_vocab.json', args.sep_xy)
+        tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'vocab/node_vocab.json', args.sep_xy)
         args.num_symbols = tokenizer['graph'].len_symbols()
     return train_df, valid_df, test_df, aux_df, tokenizer
 

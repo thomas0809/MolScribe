@@ -167,11 +167,11 @@ def filter():
                        'edges': [json.dumps(edges).replace(" ", "") for edges in edges_list]})
     bool_list = []
     seen_set = set()
-    test_df = pd.read_csv('/Mounts/rbg-storage1/users/yujieq/bms/data/molbank/Img2Mol/staker/staker.csv')
+    test_df = pd.read_csv('/Mounts/rbg-storage1/users/yujieq/molscribe/data/molbank/Img2Mol/staker/staker.csv')
     with multiprocessing.Pool(32) as p:
         test_smiles = p.map(canonical_smiles, test_df['SMILES'], chunksize=64)
     seen_set.update(test_smiles)
-    test_df = pd.read_csv('/Mounts/rbg-storage1/users/yujieq/bms/data/molbank/Img2Mol/USPTO.csv')
+    test_df = pd.read_csv('/Mounts/rbg-storage1/users/yujieq/molscribe/data/molbank/Img2Mol/USPTO.csv')
     with multiprocessing.Pool(32) as p:
         test_smiles = p.map(canonical_smiles, test_df['SMILES'], chunksize=64)
     seen_set.update(test_smiles)
@@ -192,8 +192,8 @@ def filter():
     for file_path, mol_path in tqdm(zip(df['file_path'], df['mol_path'])):
         src_file_path = '/scratch/yujieq/' + file_path
         src_mol_path = '/scratch/yujieq/' + mol_path
-        dest_file_path = '/Mounts/rbg-storage1/users/yujieq/bms/data/molbank/' + file_path
-        dest_mol_path = '/Mounts/rbg-storage1/users/yujieq/bms/data/molbank/' + mol_path
+        dest_file_path = '/Mounts/rbg-storage1/users/yujieq/molscribe/data/molbank/' + file_path
+        dest_mol_path = '/Mounts/rbg-storage1/users/yujieq/molscribe/data/molbank/' + mol_path
         if not os.path.exists(dest_file_path):
             os.makedirs(os.path.dirname(dest_file_path), exist_ok=True)
             shutil.copy(src_file_path, dest_file_path)

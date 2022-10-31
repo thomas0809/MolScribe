@@ -26,7 +26,7 @@ torchrun \
     --aux_file uspto_mol/train_200k.csv --coords_file aux_file \
     --valid_file Img2Mol/USPTO.csv \
     --test_file Img2Mol/Img2Mol.csv,Img2Mol/CLEF_p.csv,Img2Mol/JPO_p.csv,Img2Mol/UOB_p.csv,Img2Mol/USPTO_p.csv,Img2Mol/staker_p.csv \
-    --vocab_file bms/vocab_chars.json \
+    --vocab_file vocab/vocab_chars.json \
     --formats chartok_coords,edges \
     --dynamic_indigo --augment --mol_augment \
     --include_condensed \

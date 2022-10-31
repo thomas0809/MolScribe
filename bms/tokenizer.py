@@ -510,7 +510,7 @@ if __name__ == "__main__":
             "OC[C@@H](O1)[C@@H](O)[C@H](O)[C@@H]2[C@@H]1c3c(O)c(OC)c(O)cc3C(=O)O2", "CC(=O)OCCC(/C)=C\C[C@H](C(C)=C)CCC=C",
             "CC[C@H](O1)CC[C@@]12CCCO2", "CC(C)[C@@]12C[C@@H]1[C@@H](C)C(=O)C2", "OCCc1c(C)[n+](cs1)Cc2cnc(C)nc2N",
             "CC(C)(O1)C[C@@H](O)[C@@]1(O2)[C@@H](C)[C@@H]3CC=C4[C@]3(C2)C(=O)C[C@H]5[C@H]4CC[C@@H](C6)[C@]5(C)Cc(n7)c6nc(C[C@@]89(C))c7C[C@@H]8CC[C@@H]%10[C@@H]9C[C@@H](O)[C@@]%11(C)C%10=C[C@H](O%12)[C@]%11(O)[C@H](C)[C@]%12(O%13)[C@H](O)C[C@@]%13(C)CO"]
-    for tokenizer in [NodeTokenizer(path="bms/vocab_uspto_new.json"), CharTokenizer(path="bms/vocab_chars.json")]:
+    for tokenizer in [NodeTokenizer(path="molscribe/vocab_uspto_new.json"), CharTokenizer(path="molscribe/vocab_chars.json")]:
         for smiles in smiles_list:
             # print("SMILES:", smiles)
             labels, indices = tokenizer.smiles_to_sequence(smiles, coords=[])

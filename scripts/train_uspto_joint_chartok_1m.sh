@@ -24,7 +24,7 @@ torchrun \
     --aux_file uspto_mol/train_1m.csv --coords_file aux_file \
     --valid_file Img2Mol/UOB.csv \
     --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,acs/acs-331.csv \
-    --vocab_file bms/vocab_chars.json \
+    --vocab_file vocab/vocab_chars.json \
     --formats chartok_coords,edges \
     --dynamic_indigo --augment --mol_augment \
     --coord_bins 192 --sep_xy \

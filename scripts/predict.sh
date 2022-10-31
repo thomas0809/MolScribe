@@ -21,7 +21,7 @@ NCCL_P2P_DISABLE=1 torchrun \
     --dataset chemdraw \
     --data_path ../reaction/preprocess \
     --test_file acsmol.csv \
-    --vocab_file bms/vocab_uspto_new.json \
+    --vocab_file vocab/vocab_uspto_new.json \
     --formats atomtok_coords,edges \
     --dynamic_indigo --augment --mol_augment \
     --coord_bins 64 --sep_xy \

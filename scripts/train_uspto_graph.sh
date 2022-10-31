@@ -19,7 +19,7 @@ torchrun \
     --train_file uspto_mol/train_200k.csv --coords_file aux_file \
     --valid_file Img2Mol/USPTO.csv \
     --test_file Img2Mol/CLEF.csv,Img2Mol/JPO.csv,Img2Mol/UOB.csv,Img2Mol/USPTO.csv,Img2Mol/staker.csv,real-acs-evaluation/acs.csv \
-    --vocab_file bms/vocab_uspto.json \
+    --vocab_file vocab/vocab_uspto.json \
     --formats atomtok_coords,edges \
     --augment \
     --coord_bins 64 --sep_xy \

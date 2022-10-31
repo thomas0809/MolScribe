@@ -117,7 +117,7 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    tokenizer = {"atomtok_coords": NodeTokenizer(64, 'bms/vocab_uspto_new.json', True)}
+    tokenizer = {"atomtok_coords": NodeTokenizer(64, 'vocab/vocab_uspto_new.json', True)}
     encoder, decoder = get_model(args, tokenizer, device, args.save_path)
     encoder.eval()
     decoder.eval()
