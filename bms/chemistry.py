@@ -70,39 +70,6 @@ def get_num_atoms(smiles, num_workers=16):
     return num_atoms
 
 
-def get_edge_prediction(edge_prob):
-    if not edge_prob:
-        return []
-    n = len(edge_prob)
-    if n == 0:
-        return []
-    for i in range(n):
-        for j in range(i + 1, n):
-            for k in range(5):
-                edge_prob[i][j][k] = (edge_prob[i][j][k] + edge_prob[j][i][k]) / 2
-                edge_prob[j][i][k] = edge_prob[i][j][k]
-            edge_prob[i][j][5] = (edge_prob[i][j][5] + edge_prob[j][i][6]) / 2
-            edge_prob[i][j][6] = (edge_prob[i][j][6] + edge_prob[j][i][5]) / 2
-            edge_prob[j][i][5] = edge_prob[i][j][6]
-            edge_prob[j][i][6] = edge_prob[i][j][5]
-    return np.argmax(edge_prob, axis=2).tolist()
-
-
-def get_edge_scores(edge_prob):
-    if not edge_prob:
-        return 1., []
-    n = len(edge_prob)
-    if n == 0:
-        return 0, []
-    for i in range(n):
-        for j in range(i + 1, n):
-            for k in range(5):
-                assert edge_prob[j][i][k] == edge_prob[i][j][k]
-            assert edge_prob[j][i][5] == edge_prob[i][j][6] and edge_prob[j][i][6] == edge_prob[i][j][5]
-    max_prob = np.max(edge_prob, axis=2)
-    return np.prod(max_prob).item(), max_prob.tolist()
-
-
 def normalize_nodes(nodes, flip_y=True):
     x, y = nodes[:, 0], nodes[:, 1]
     minx, maxx = min(x), max(x)
@@ -325,17 +292,7 @@ def _get_bond_symb(bond_num):
     return ''
 
 
-def _count_non_H(atoms):
-    """
-    Count non-H atoms among `atoms` (symbol or list of symbols/lists)
-    Used in `_condensed_formula_list_to_smiles` to determine index of last atom token in SMILES
-    """
-    if isinstance(atoms, str):
-        return int(atoms != 'H')
-    return sum(_count_non_H(atom) for atom in atoms)
-
-
-def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, direction=None, R_valence=[1]):
+def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, direction=None):
     """
     Converts condensed formula (in the form of a list of symbols) to smiles
     Input:
@@ -343,25 +300,22 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
     `start_bond`: # bonds attached to beginning of formula
     `end_bond`: # bonds attached to end of formula (deduce automatically if None)
     `direction` (1, -1, or None): direction in which to process the list (1: left to right; -1: right to left; None: deduce automatically)
-    `R_valence`: The list of possible valences of an R-group (default: [1])
     Returns:
     `smiles`: smiles corresponding to input condensed formula
     `bonds_left`: bonds remaining at the end of the formula (for connecting back to main molecule); should equal `end_bond` if specified
-    `last_flat_idx`: index of last atom in list of atom tokens of output SMILES
-    `direction` (1 or -1): direction in which processing the formula was successful; should equal input `direction` if specified
+    `num_trials`: number of trials
     `success` (bool): whether conversion was successful
     """
     # `direction` not specified: try left to right; if fails, try right to left
     if direction is None:
-        # for R_val_choice in [[1], [1, 2], [1, 2, 3]]:
         for dir_choice in [1, -1]:
-            result = _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond, dir_choice)
-            if result[4]:
-                return result
-        return result
+            smiles, bonds_left, trials, success = _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond, dir_choice)
+            if success:
+                return smiles, bonds_left, trials, success
+        return None, None, 0, False
     assert direction == 1 or direction == -1
 
-    def dfs(smiles, cur_idx, cur_flat_idx, bonds_left, add_idx, add_flat_idx):
+    def dfs(smiles, bonds_left, cur_idx, add_idx):
         """
         `smiles`: SMILES string so far
         `cur_idx`: index (in list `formula`) of current atom (i.e. atom to which subsequent atoms are being attached)
@@ -375,112 +329,59 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
         # end of formula: return result
         if (direction == 1 and add_idx == len(formula_list)) or (direction == -1 and add_idx == -1):
             if end_bond is not None and end_bond != bonds_left:
-                return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
-            return smiles, bonds_left, cur_flat_idx, direction, True, num_trials
+                return smiles, bonds_left, num_trials, False
+            return smiles, bonds_left, num_trials, True
 
         # no more bonds but there are atoms remaining: conversion failed
         if bonds_left <= 0:
-            return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
+            return smiles, bonds_left, num_trials, False
         to_add = formula_list[add_idx]  # atom to be added to current atom
 
         if isinstance(to_add, list):  # "atom" added is a list (i.e. nested condensed formula): assume valence of 1
             if bonds_left > 1:
                 # "atom" added does not use up remaining bonds of current atom
                 # get smiles of "atom" (which is itself a condensed formula)
-                add_str, _, _, _, success, trials = _condensed_formula_list_to_smiles(to_add, 1, 0, direction)
+                add_str, _, trials, success = _condensed_formula_list_to_smiles(to_add, 1, 0, direction)
                 num_trials += trials
                 if not success:
-                    return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
+                    return smiles, bonds_left, num_trials, False
                 # put smiles of "atom" in parentheses and append to smiles; go to next atom to add to current atom
-                result = dfs(smiles + f'({add_str})', cur_idx, cur_flat_idx, bonds_left - 1, add_idx + direction,
-                             add_flat_idx + _count_non_H(to_add))
+                result = dfs(smiles + f'({add_str})', bonds_left - 1, cur_idx, add_idx + direction)
             else:
                 # "atom" added uses up remaining bonds of current atom
                 # get smiles of "atom" and bonds left on it
-                add_str, bonds_left, _, _, success, trials = _condensed_formula_list_to_smiles(to_add, 1, None,
-                                                                                               direction)
+                add_str, bonds_left, trials, success = _condensed_formula_list_to_smiles(to_add, 1, None, direction)
                 num_trials += trials
                 if not success:
-                    return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
+                    return smiles, bonds_left, num_trials, False
                 # append smiles of "atom" (without parentheses) to smiles; it becomes new current atom
-                result = dfs(smiles + add_str, add_idx, add_flat_idx, bonds_left, add_idx + direction,
-                             add_flat_idx + _count_non_H(to_add))
-            num_trials += result[5]
-            return (*result[:5], num_trials)
+                result = dfs(smiles + add_str, bonds_left, add_idx, add_idx + direction)
+            smiles, bonds_left, trials, success = result
+            num_trials += trials
+            return smiles, bonds_left, num_trials, success
 
         # atom added is a single symbol (as opposed to nested condensed formula)
-        for val in VALENCES.get(to_add, R_valence):  # try all possible valences of atom added
+        for val in VALENCES.get(to_add, [1]):  # try all possible valences of atom added
             add_str = _expand_abbreviation(to_add)  # expand to smiles if symbol is abbreviation
             if bonds_left > val:  # atom added does not use up remaining bonds of current atom; go to next atom to add to current atom
                 if cur_idx >= 0:
                     add_str = _get_bond_symb(val) + add_str
-                result = dfs(smiles + f'({add_str})', cur_idx, cur_flat_idx,
-                             bonds_left - val, add_idx + direction, add_flat_idx + _count_non_H(to_add))
+                result = dfs(smiles + f'({add_str})', bonds_left - val, cur_idx, add_idx + direction)
             else:  # atom added uses up remaining bonds of current atom; it becomes new current atom
                 if cur_idx >= 0:
                     add_str = _get_bond_symb(bonds_left) + add_str
-                result = dfs(smiles + add_str, add_idx, add_flat_idx,
-                             val - bonds_left, add_idx + direction, add_flat_idx + _count_non_H(to_add))
-            num_trials += result[5]
-            if result[4]:
-                return (*result[:5], num_trials)
+                result = dfs(smiles + add_str, val - bonds_left, add_idx, add_idx + direction)
+            trials, success = result[2:]
+            num_trials += trials
+            if success:
+                return result[0], result[1], num_trials, success
             if num_trials > 10000:
                 break
-        return smiles, bonds_left, cur_flat_idx, direction, False, num_trials
+        return smiles, bonds_left, num_trials, False
 
     cur_idx = -1 if direction == 1 else len(formula_list)
     add_idx = 0 if direction == 1 else len(formula_list) - 1
-    return dfs('', cur_idx, -1, start_bond, add_idx, 0)
-
-
-def _condensed_formula_to_smiles_guess_connections(formula: str, total_bonds: int):
-    """
-    Converts condensed formula (in the form of a string) to smiles given total num. connections.
-    Direction of parsing formula and which side connections are on are guessed.
-    Input:
-    `formula`: condensed formula (e.g. "CH2N(CH3)2")
-    `total_bonds`: total number of bonds used to attach to main body of molecule
-    Returns:
-    `smiles`: smiles corresponding to input condensed formula
-    `bonds_left`: bonds remaining at the end of the formula (for connecting back to main molecule)
-    `cur_flat_idx`:
-    `direction` (1 or -1): direction in which processing the formula was successful
-    `success` (bool): whether conversion was successful
-    """
-    formula_list = _expand_carbon(_parse_formula(formula))  # convert condensed formula to a list of atoms
-    result = '', 0, 0, 1, False
-    for start_bond, end_bond in zip(range(1, total_bonds + 1),
-                                    range(total_bonds - 1, -1, -1)):  # try all pairs of (start_bonds, end_bond)
-        result = _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond)
-        if result[4]:
-            return result
-    return result
-
-
-def _condensed_formula_to_smiles(formula: str, start_bond: int, end_bond: int, direction: int):
-    """
-    Converts condensed formula (in the form of a string) to smiles, given connections on each side
-    and direction of parsing
-    Input:
-    `formula`: condensed formula (e.g. "CH2N(CH3)2")
-    `start_bond`: # bonds attached to beginning of formula
-    `end_bond`: # bonds attached to end of formula (deduce automatically if None)
-    `direction` (1, -1, or None): direction in which to process the list (1: left to right; -1: right to left; None: deduce automatically)
-    Returns:
-    `smiles`: smiles corresponding to input condensed formula
-    `success` (bool): whether conversion was successful
-    """
-    formula_list = _expand_carbon(_parse_formula(formula))  # convert condensed formula to a list of atoms
-    smiles, _, _, _, success, _ = _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond, direction)
-    return smiles, success
-
-
-def _get_rel_horizontal_pos(rel_x, rel_y):
-    if rel_x > 0.2 * abs(rel_y):
-        return 2
-    if rel_x < -0.2 * abs(rel_y):
-        return 0
-    return 1
+    return dfs('', start_bond, cur_idx, add_idx)
 
 
 def get_smiles_from_symbol(symbol, mol, atom, bonds):
@@ -489,34 +390,16 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
     If condensed formula, determine parsing direction and num. bonds on each side using coordinates
     """
     if symbol in ABBREVIATIONS:
-        return ABBREVIATIONS[symbol].smiles, None, None
+        return ABBREVIATIONS[symbol].smiles
     if len(symbol) > 20:
-        return None, None, None
+        return None
 
-    conf = mol.GetConformer()
-    coords = conf.GetPositions()
-    attached_bonds = [0, 0, 0]  # left, middle, right
-    for bond in bonds:
-        bond_order = int(bond.GetBondTypeAsDouble())
-        other_atom = bond.GetOtherAtom(atom)
-        rel_x, rel_y, _ = coords[other_atom.GetIdx()] - coords[atom.GetIdx()]
-        rel_horizontal_pos = _get_rel_horizontal_pos(rel_x, rel_y)
-        attached_bonds[rel_horizontal_pos] += bond_order
-    for direction in [1, -1]:
-        for mid_start in [True, False]:
-            if direction == 1:
-                start_bond, end_bond = attached_bonds[0], attached_bonds[2]
-            else:
-                start_bond, end_bond = attached_bonds[2], attached_bonds[0]
-            if mid_start:
-                start_bond += attached_bonds[1]
-            else:
-                end_bond += attached_bonds[1]
-            if start_bond:
-                smiles, success = _condensed_formula_to_smiles(symbol, start_bond, end_bond, direction)
-                if success:
-                    return smiles, direction, start_bond
-    return None, None, None
+    total_bonds = int(sum([bond.GetBondTypeAsDouble() for bond in bonds]))
+    formula_list = _expand_carbon(_parse_formula(symbol))
+    smiles, bonds_left, num_trails, success = _condensed_formula_list_to_smiles(formula_list, total_bonds, None)
+    if success:
+        return smiles
+    return None
 
 
 def _replace_functional_group(smiles):
@@ -547,9 +430,6 @@ def _replace_functional_group(smiles):
     return smiles, mappings
 
 
-BOND_TYPES = {1: Chem.rdchem.BondType.SINGLE, 2: Chem.rdchem.BondType.DOUBLE, 3: Chem.rdchem.BondType.TRIPLE}
-
-
 def convert_smiles_to_mol(smiles):
     if smiles is None or smiles == '':
         return None
@@ -558,6 +438,9 @@ def convert_smiles_to_mol(smiles):
     except:
         return None
     return mol
+
+
+BOND_TYPES = {1: Chem.rdchem.BondType.SINGLE, 2: Chem.rdchem.BondType.DOUBLE, 3: Chem.rdchem.BondType.TRIPLE}
 
 
 def _expand_functional_group(mol, mappings, debug=False):
@@ -570,8 +453,6 @@ def _expand_functional_group(mol, mappings, debug=False):
         for i, atom in enumerate(mol_w.GetAtoms()):  # reset radical electrons
             atom.SetNumRadicalElectrons(0)
 
-        conf = mol_w.GetConformer()
-        x_coords = conf.GetPositions()[:,0]
         atoms_to_remove = []
         for i in range(num_atoms):
             atom = mol_w.GetAtomWithIdx(i)
@@ -587,7 +468,7 @@ def _expand_functional_group(mol, mappings, debug=False):
                     continue
 
                 bonds = atom.GetBonds()
-                sub_smiles, direction, start_bond = get_smiles_from_symbol(symbol, mol_w, atom, bonds)
+                sub_smiles = get_smiles_from_symbol(symbol, mol_w, atom, bonds)
 
                 # create mol object for abbreviation/condensed formula from its SMILES
                 mol_r = convert_smiles_to_mol(sub_smiles)
@@ -619,21 +500,22 @@ def _expand_functional_group(mol, mappings, debug=False):
 
                 # connect substituent to main body with bonds
                 mol_w = Chem.RWMol(combo)
-                if len(bonding_atoms_r) == 1:  # substituent uses one atom to bond to main body
-                    for atm in bonding_atoms_w:
-                        bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
-                        mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
-                else:
+                # if len(bonding_atoms_r) == 1:  # substituent uses one atom to bond to main body
+                for atm in bonding_atoms_w:
+                    bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
+                    mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
+                # else:
+                #     raise NotImplementedError
                     # TODO: this part is still problematic because combined mol doesn't have conf
-                    bonding_atoms_w.sort(key=lambda i: direction * coords[i])
-                    bonds_added = 0
-                    for atm in bonding_atoms_w:
-                        bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
-                        if bonds_added < start_bond:
-                            mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
-                        else:
-                            mol_w.AddBond(atm, bonding_atoms_r[1], order=BOND_TYPES[bond_order])
-                        bonds_added += bond_order
+                    # bonding_atoms_w.sort(key=lambda idx: direction * x_coords[idx])
+                    # bonds_added = 0
+                    # for atm in bonding_atoms_w:
+                    #     bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
+                    #     if bonds_added < start_bond:
+                    #         mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
+                    #     else:
+                    #         mol_w.AddBond(atm, bonding_atoms_r[1], order=BOND_TYPES[bond_order])
+                    #     bonds_added += bond_order
 
                 # reset radical electrons
                 for atm in bonding_atoms_w:

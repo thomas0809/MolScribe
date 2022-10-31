@@ -9,7 +9,6 @@ import timm
 from bms.utils import FORMAT_INFO, SOS_ID, EOS_ID, PAD_ID, MASK_ID, to_device
 from bms.inference import GreedySearch, BeamSearch
 from bms.transformer import TransformerDecoder, Embeddings
-from bms.chemistry import is_valid_mol, get_edge_prediction, get_edge_scores
 
 
 class Encoder(nn.Module):
@@ -648,6 +647,40 @@ class FeaturePyramidNetwork(nn.Module):
         return class_pred
 
 
+def get_edge_prediction(edge_prob):
+    if not edge_prob:
+        return []
+    n = len(edge_prob)
+    if n == 0:
+        return []
+    for i in range(n):
+        for j in range(i + 1, n):
+            for k in range(5):
+                edge_prob[i][j][k] = (edge_prob[i][j][k] + edge_prob[j][i][k]) / 2
+                edge_prob[j][i][k] = edge_prob[i][j][k]
+            edge_prob[i][j][5] = (edge_prob[i][j][5] + edge_prob[j][i][6]) / 2
+            edge_prob[i][j][6] = (edge_prob[i][j][6] + edge_prob[j][i][5]) / 2
+            edge_prob[j][i][5] = edge_prob[i][j][6]
+            edge_prob[j][i][6] = edge_prob[i][j][5]
+    return np.argmax(edge_prob, axis=2).tolist()
+
+
+def get_edge_scores(edge_prob):
+    if not edge_prob:
+        return 1., []
+    n = len(edge_prob)
+    if n == 0:
+        return 0, []
+    for i in range(n):
+        for j in range(i + 1, n):
+            for k in range(5):
+                assert edge_prob[j][i][k] == edge_prob[i][j][k]
+            assert edge_prob[j][i][5] == edge_prob[i][j][6] and edge_prob[j][i][6] == edge_prob[i][j][5]
+    max_prob = np.max(edge_prob, axis=2)
+    return np.prod(max_prob).item(), max_prob.tolist()
+
+
+
 class Decoder(nn.Module):
     """This class is a wrapper for different decoder architectures, and support multiple decoders."""
 
@@ -801,11 +834,11 @@ class Decoder(nn.Module):
                     """Pick the top valid prediction from n_best outputs
                     """
                     best = preds[0]  # default
-                    if self.args.check_validity:
-                        for i, p in enumerate(preds):
-                            if is_valid_mol(p, format_):
-                                best = p
-                                break
+                    # if self.args.check_validity:
+                    #     for i, p in enumerate(preds):
+                    #         if is_valid_mol(p, format_):
+                    #             best = p
+                    #             break
                     return best
 
                 predictions[format_] = [_pick_valid(pred, format_) for pred in beam_preds]

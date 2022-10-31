@@ -280,17 +280,17 @@ def generate_indigo_image(smiles, mol_augment=True, default_option=False, shuffl
     indigo.setOption('render-label-mode', 'hetero')
     indigo.setOption('render-font-family', 'Arial')
     if not default_option:
-        thickness = random.uniform(0.8, 2)  # limit the sum of the following two parameters to be smaller than 4
+        thickness = random.uniform(0.5, 2)  # limit the sum of the following two parameters to be smaller than 4
         indigo.setOption('render-relative-thickness', thickness)
-        indigo.setOption('render-bond-line-width', random.uniform(1, 3 - thickness))
+        indigo.setOption('render-bond-line-width', random.uniform(1, 4 - thickness))
         if random.random() < 0.5:
             indigo.setOption('render-font-family', random.choice(['Arial', 'Times', 'Courier', 'Helvetica']))
         indigo.setOption('render-label-mode', random.choice(['hetero', 'terminal-hetero']))
         indigo.setOption('render-implicit-hydrogens-visible', random.choice([True, False]))
         if random.random() < 0.1:
             indigo.setOption('render-stereo-style', 'old')
-    # if debug:
-    #     indigo.setOption('render-atom-ids-visible', True)
+        if random.random() < 0.2:
+            indigo.setOption('render-atom-ids-visible', True)
 
     try:
         mol = indigo.loadMolecule(smiles)
