@@ -499,29 +499,3 @@ class CharTokenizer(NodeTokenizer):
             results['coords'] = coords
         return results
 
-
-if __name__ == "__main__":
-    smiles_list = ["N#N", "CN=C=O", "[Cu+2].[O-]S(=O)(=O)[O-]", "O=Cc1ccc(O)c(OC)c1", "COc1cc(C=O)ccc1O",
-            "CC(=O)NCCC1=CNc2c1cc(OC)cc2", "CC(=O)NCCc1c[nH]c2ccc(OC)cc12",
-            "CCc(c1)ccc2[n+]1ccc3c2[nH]c4c3cccc4", "CCc1c[n+]2ccc3c4ccccc4[nH]c3c2cc1",
-            "CN1CCC[C@H]1c2cccnc2", r"CCC[C@@H](O)CC\C=C\C=C\C#CC#C\C=C\CO", "CCC[C@@H](O)CC/C=C/C=C/C#CC#C/C=C/CO",
-            "CC1=C(C(=O)C[C@@H]1OC(=O)[C@@H]2[C@H]", r"(C2(C)C)/C=C(\C)/C(=O)OC)C/C=C\C=C",
-            "O1C=C[C@H]([C@H]1O2)c3c2cc(OC)c4c3OC(=O)C5=C4CCC(=O)5", "OC[C@@H](O1)[C@@H](O)[C@H](O)[C@@H](O)[C@H](O)1",
-            "OC[C@@H](O1)[C@@H](O)[C@H](O)[C@@H]2[C@@H]1c3c(O)c(OC)c(O)cc3C(=O)O2", "CC(=O)OCCC(/C)=C\C[C@H](C(C)=C)CCC=C",
-            "CC[C@H](O1)CC[C@@]12CCCO2", "CC(C)[C@@]12C[C@@H]1[C@@H](C)C(=O)C2", "OCCc1c(C)[n+](cs1)Cc2cnc(C)nc2N",
-            "CC(C)(O1)C[C@@H](O)[C@@]1(O2)[C@@H](C)[C@@H]3CC=C4[C@]3(C2)C(=O)C[C@H]5[C@H]4CC[C@@H](C6)[C@]5(C)Cc(n7)c6nc(C[C@@]89(C))c7C[C@@H]8CC[C@@H]%10[C@@H]9C[C@@H](O)[C@@]%11(C)C%10=C[C@H](O%12)[C@]%11(O)[C@H](C)[C@]%12(O%13)[C@H](O)C[C@@]%13(C)CO"]
-    for tokenizer in [NodeTokenizer(path="molscribe/vocab_uspto_new.json"), CharTokenizer(path="molscribe/vocab_chars.json")]:
-        for smiles in smiles_list:
-            # print("SMILES:", smiles)
-            labels, indices = tokenizer.smiles_to_sequence(smiles, coords=[])
-            results = tokenizer.sequence_to_smiles(labels[1:])
-            # print("NEW SMILES:", results['smiles'])
-            assert smiles == results['smiles']
-            # print("SMILES TO SEQ INDICES:", indices)
-            # print("SEQ TO SMILES INDICES:", results['indices'])
-            assert indices == results['indices']
-            for i, (symbol, idx) in enumerate(zip(results['symbols'], indices)):
-                if isinstance(tokenizer, CharTokenizer):
-                    assert labels[idx-1-len(symbol):idx-1] == list(tokenizer.stoi[char] for char in symbol)
-                else:
-                    assert labels[idx-2] == tokenizer.stoi[symbol]

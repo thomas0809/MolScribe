@@ -1,5 +1,4 @@
 import torch
-from copy import deepcopy
 
 
 class DecodeStrategy(object):

@@ -79,238 +79,6 @@ class Encoder(nn.Module):
         return features, hiddens
 
 
-class Attention(nn.Module):
-    """
-    Attention network for calculate attention value
-    """
-
-    def __init__(self, encoder_dim, decoder_dim, attention_dim):
-        """
-        :param encoder_dim: input size of encoder network
-        :param decoder_dim: input size of decoder network
-        :param attention_dim: input size of attention network
-        """
-        super(Attention, self).__init__()
-        self.encoder_att = nn.Linear(encoder_dim, attention_dim)  # linear layer to transform encoded image
-        self.decoder_att = nn.Linear(decoder_dim, attention_dim)  # linear layer to transform decoder's output
-        self.full_att = nn.Linear(attention_dim, 1)  # linear layer to calculate values to be softmax-ed
-        self.relu = nn.ReLU()
-        self.softmax = nn.Softmax(dim=1)  # softmax layer to calculate weights
-
-    def forward(self, encoder_out, decoder_hidden):
-        att1 = self.encoder_att(encoder_out)  # (batch_size, num_pixels, attention_dim)
-        att2 = self.decoder_att(decoder_hidden)  # (batch_size, attention_dim)
-        att = self.full_att(self.relu(att1 + att2.unsqueeze(1))).squeeze(2)  # (batch_size, num_pixels)
-        alpha = self.softmax(att)  # (batch_size, num_pixels)
-        attention_weighted_encoding = (encoder_out * alpha.unsqueeze(2)).sum(dim=1)  # (batch_size, encoder_dim)
-        return attention_weighted_encoding, alpha
-
-
-class LstmDecoder(nn.Module):
-    """
-    Decoder network with attention network used for training
-    """
-
-    def __init__(self, attention_dim, embed_dim, decoder_dim, max_len, tokenizer, n_layer=1, encoder_dim=512,
-                 dropout=0.5):
-        """
-        :param attention_dim: input size of attention network
-        :param embed_dim: input size of embedding network
-        :param decoder_dim: input size of decoder network
-        :param vocab_size: total number of characters used in training
-        :param encoder_dim: input size of encoder network
-        :param dropout: dropout rate
-        """
-        super(LstmDecoder, self).__init__()
-        self.encoder_dim = encoder_dim
-        self.attention_dim = attention_dim
-        self.embed_dim = embed_dim
-        self.decoder_dim = decoder_dim
-        self.max_len = max_len
-        self.vocab_size = len(tokenizer)
-        self.tokenizer = tokenizer
-        self.attention = Attention(encoder_dim, decoder_dim, attention_dim)  # attention network
-        self.embedding = nn.Embedding(self.vocab_size, embed_dim)  # embedding layer
-        self.dropout = nn.Dropout(p=dropout)
-        self.decode_step = nn.LSTMCell(embed_dim + encoder_dim, decoder_dim, bias=True)  # decoding LSTMCell
-        self.n_layer = n_layer
-        if n_layer > 1:
-            self.decode_layers = nn.ModuleList([
-                nn.LSTMCell(decoder_dim, decoder_dim, bias=True) for i in range(n_layer - 1)
-            ])
-        self.init_h = nn.Linear(encoder_dim, decoder_dim)  # linear layer to find initial hidden state of LSTMCell
-        self.init_c = nn.Linear(encoder_dim, decoder_dim)  # linear layer to find initial cell state of LSTMCell
-        self.f_beta = nn.Linear(decoder_dim, encoder_dim)  # linear layer to create a sigmoid-activated gate
-        self.sigmoid = nn.Sigmoid()
-        self.fc = nn.Linear(decoder_dim, self.vocab_size)  # linear layer to find scores over vocabulary
-        self.init_weights()  # initialize some layers with the uniform distribution
-
-    def init_weights(self):
-        self.embedding.weight.data.uniform_(-0.1, 0.1)
-        self.fc.bias.data.fill_(0)
-        self.fc.weight.data.uniform_(-0.1, 0.1)
-
-    def load_pretrained_embeddings(self, embeddings):
-        self.embedding.weight = nn.Parameter(embeddings)
-
-    def fine_tune_embeddings(self, fine_tune=True):
-        for p in self.embedding.parameters():
-            p.requires_grad = fine_tune
-
-    def init_hidden_state(self, encoder_out):
-        mean_encoder_out = encoder_out.mean(dim=1)
-        h = self.init_h(mean_encoder_out)  # (batch_size, decoder_dim)
-        c = self.init_c(mean_encoder_out)
-        hh = [h for i in range(self.n_layer - 1)]
-        cc = [c for i in range(self.n_layer - 1)]
-        return h, c, hh, cc
-
-    def lstm_step(self, x, h, c, hh, cc, batch_size=-1):
-        if batch_size == -1:
-            batch_size = h.size(0)
-        h, c = self.decode_step(x, (h[:batch_size], c[:batch_size]))
-        x = h
-        for i in range(self.n_layer - 1):
-            hh[i], cc[i] = self.decode_layers[i](x, (hh[i][:batch_size], cc[i][:batch_size]))
-            x = hh[i]
-        preds = self.fc(self.dropout(x))
-        return preds, h, c, hh, cc
-
-    def forward(self, encoder_out, encoded_captions=None, caption_lengths=None):
-        """
-        :param encoder_out: output of encoder network
-        :param encoded_captions: transformed sequence from character to integer
-        :param caption_lengths: length of transformed sequence
-        """
-        device = encoder_out.device
-        batch_size = encoder_out.size(0)
-        encoder_dim = encoder_out.size(-1)
-        vocab_size = self.vocab_size
-        encoder_out = encoder_out.view(batch_size, -1, encoder_dim)  # (batch_size, num_pixels, encoder_dim)
-        num_pixels = encoder_out.size(1)
-        caption_lengths, sort_ind = caption_lengths.squeeze(1).sort(dim=0, descending=True)
-        encoder_out = encoder_out[sort_ind]
-        encoded_captions = encoded_captions[sort_ind]
-        # embedding transformed sequence for vector
-        embeddings = self.embedding(encoded_captions)  # (batch_size, max_caption_length, embed_dim)
-        # initialize hidden state and cell state of LSTM cell
-        h, c, hh, cc = self.init_hidden_state(encoder_out)  # (batch_size, decoder_dim)
-        # set decode length by caption length - 1 because of omitting start token
-        decode_lengths = (caption_lengths - 1).tolist()
-        max_len = max(decode_lengths)
-        predictions = torch.zeros(batch_size, max_len, vocab_size, device=device)
-        alphas = torch.zeros(batch_size, max_len, num_pixels, device=device)
-        # predict sequence
-        for t in range(max(decode_lengths)):
-            batch_size_t = sum([l > t for l in decode_lengths])
-            attention_weighted_encoding, alpha = self.attention(encoder_out[:batch_size_t], h[:batch_size_t])
-            gate = self.sigmoid(self.f_beta(h[:batch_size_t]))  # gating scalar, (batch_size_t, encoder_dim)
-            attention_weighted_encoding = gate * attention_weighted_encoding
-            x = torch.cat([embeddings[:batch_size_t, t, :], attention_weighted_encoding], dim=1)
-            preds, h, c, hh, cc = self.lstm_step(x, h, c, hh, cc, batch_size_t)
-            predictions[:batch_size_t, t, :] = preds
-            alphas[:batch_size_t, t, :] = alpha
-        return predictions, encoded_captions[:, 1:]
-
-    def predict(self, encoder_out):
-        device = encoder_out.device
-        batch_size = encoder_out.size(0)
-        encoder_dim = encoder_out.size(-1)
-        vocab_size = self.vocab_size
-        encoder_out = encoder_out.view(batch_size, -1, encoder_dim)  # (batch_size, num_pixels, encoder_dim)
-        num_pixels = encoder_out.size(1)
-        # embed start tocken for LSTM input
-        start_tockens = torch.ones(batch_size, dtype=torch.long).to(device) * self.tokenizer.stoi["<sos>"]
-        embeddings = self.embedding(start_tockens)
-        # initialize hidden state and cell state of LSTM cell
-        h, c, hh, cc = self.init_hidden_state(encoder_out)  # (batch_size, decoder_dim)
-        predictions = torch.zeros(batch_size, self.max_len, vocab_size).to(device)
-        # predict sequence
-        for t in range(self.max_len):
-            attention_weighted_encoding, alpha = self.attention(encoder_out, h)
-            gate = self.sigmoid(self.f_beta(h))  # gating scalar, (batch_size_t, encoder_dim)
-            attention_weighted_encoding = gate * attention_weighted_encoding
-            x = torch.cat([embeddings, attention_weighted_encoding], dim=1)
-            preds, h, c, hh, cc = self.lstm_step(x, h, c, hh, cc)
-            predictions[:, t, :] = preds
-            if np.all(np.argmax(preds.detach().cpu().numpy(), -1) == self.tokenizer.stoi["<eos>"]):
-                break
-            embeddings = self.embedding(torch.argmax(preds, -1))
-        return predictions
-
-    def decode(self, encoder_out, beam_size=1, n_best=1):
-        """An alternative to `predict`, decoding with greedy or beam search.
-        """
-        memory_bank = encoder_out  # rename
-        if encoder_out.dim() == 4:  # for resnet encoders
-            memory_bank = memory_bank.view(encoder_out.size(0), -1,
-                                           encoder_out.size(-1))  # (batch_size, memory_length, encoder_dim)
-        batch_size, memory_length, encoder_dim = memory_bank.shape
-
-        if beam_size == 1:
-            decode_strategy = GreedySearch(
-                pad=PAD_ID,
-                bos=SOS_ID,
-                eos=EOS_ID,
-                batch_size=batch_size,
-                min_length=0,
-                return_attention=False,
-                max_length=self.max_len,
-                sampling_temp=1,
-                keep_topk=1)
-        else:
-            decode_strategy = BeamSearch(
-                pad=PAD_ID,
-                bos=SOS_ID,
-                eos=EOS_ID,
-                batch_size=batch_size,
-                beam_size=beam_size,
-                n_best=n_best,
-                min_length=0,
-                return_attention=False,
-                max_length=self.max_len)
-
-        # fill in first decoding step as self.bos (self.alive_seq)
-        _, memory_bank = decode_strategy.initialize(memory_bank)
-        # initialize hidden state and cell state of LSTM cell
-        h, c, hh, cc = self.init_hidden_state(memory_bank)
-
-        # for beam search
-        # if fn_map_state is not None:
-        #     self.map_state(fn_map_state)
-
-        for step in range(self.max_len):
-            decoder_input = decode_strategy.current_predictions
-            embeddings = self.embedding(decoder_input)
-
-            # Decoder forward
-            attention_weighted_encoding, alpha = self.attention(memory_bank, h)
-            gate = self.sigmoid(self.f_beta(h))
-            attention_weighted_encoding = gate * attention_weighted_encoding
-            x = torch.cat([embeddings, attention_weighted_encoding], dim=1)
-            preds, h, c, hh, cc = self.lstm_step(x, h, c, hh, cc)
-
-            # convert preds to log_probs (critic for beam-search)
-            log_probs = F.log_softmax(preds, dim=-1)
-
-            decode_strategy.advance(log_probs, alpha)
-            any_finished = decode_strategy.is_finished.any()
-            if any_finished:
-                decode_strategy.update_finished()
-                if decode_strategy.done:
-                    break
-
-            select_indices = decode_strategy.select_indices
-            if beam_size > 1 or any_finished:
-                memory_bank = memory_bank.index_select(0, select_indices)
-                h = h.index_select(0, select_indices)
-                c = c.index_select(0, select_indices)
-                hh = [x.index_select(0, select_indices) for x in hh]
-                cc = [x.index_select(0, select_indices) for x in cc]
-
-        return (decode_strategy.predictions, decode_strategy.scores)
-
-
 class TransformerDecoderBase(nn.Module):
 
     def __init__(self, args):
@@ -455,9 +223,6 @@ class TransformerDecoderAR(TransformerDecoderBase):
                     labels = labels.index_select(0, select_indices)
                 self.map_state(lambda state, dim: state.index_select(dim, select_indices))
 
-        # TODO (zhening)
-        #  decode_strategy.scores is a single score for each sequence.
-        #  Add results['token_scores'], a list of scores for all steps.
         results["scores"] = decode_strategy.scores  # fixed to be average of token scores
         results["token_scores"] = decode_strategy.token_scores
         results["predictions"] = decode_strategy.predictions
@@ -485,71 +250,6 @@ class TransformerDecoderAR(TransformerDecoderBase):
 
         if self.decoder.state["cache"] is not None:
             _recursive_map(self.decoder.state["cache"])
-
-
-class TransformerDecoderNAR(TransformerDecoderBase):
-
-    def __init__(self, args, num_classes):
-        super(TransformerDecoderNAR, self).__init__(args)
-        self.dec_len = args.dec_num_queries
-        dec_dim = args.dec_hidden_size
-        self.query_embedding = nn.Embedding(self.dec_len, dec_dim)
-        self.coords_mlp = nn.Sequential(
-            nn.Linear(dec_dim, dec_dim), nn.GELU(),
-            # nn.Linear(dec_dim, dec_dim), nn.GELU(),
-            nn.Linear(dec_dim, 2)
-        )
-        self.class_mlp = nn.Sequential(
-            nn.Linear(dec_dim, dec_dim), nn.GELU(),
-            # nn.Linear(dec_dim, dec_dim), nn.GELU(),
-            nn.Linear(dec_dim, num_classes)
-        )
-        self.edges_mlp = nn.Sequential(
-            nn.Linear(dec_dim * 2, dec_dim), nn.GELU(),
-            # nn.Linear(dec_dim, dec_dim), nn.GELU(),
-            nn.Linear(dec_dim, 7)
-        )
-
-    def forward(self, encoder_out):
-        batch_size, max_len, _ = encoder_out.size()
-        device = encoder_out.device
-        memory_bank = self.enc_transform(encoder_out)
-        tgt_emb = self.query_embedding(torch.arange(self.dec_len, device=device))
-        tgt_emb = tgt_emb.unsqueeze(0).expand(batch_size, -1, -1)
-
-        dec_out, _, dec_hiddens = self.decoder(tgt_emb=tgt_emb, memory_bank=memory_bank, future=True)
-        b, l, h = dec_out.size()
-
-        def _get_predictions(hidden):
-            coords_pred = self.coords_mlp(hidden)  # (b, t, h) -> (b, t, 2)
-            class_pred = self.class_mlp(hidden)  # (b, t, h) -> (b, t, c)
-            x = torch.cat([hidden.unsqueeze(2).expand(b, l, l, h),
-                           hidden.unsqueeze(1).expand(b, l, l, h)], dim=3)
-            edges_pred = self.edges_mlp(x)
-            return {"coords": coords_pred, "logits": class_pred, "edges": edges_pred}
-
-        predictions = _get_predictions(dec_out)
-        predictions["aux"] = []
-        for hidden in dec_hiddens[:-1]:
-            predictions["aux"].append(_get_predictions(hidden))
-
-        return predictions
-
-    def decode(self, encoder_out):
-        preds = self.forward(encoder_out)
-        batch_size = encoder_out.size(0)
-        outputs = []
-        for i in range(batch_size):
-            output = {}
-            labels = preds["logits"][i].argmax(-1)
-            ids = labels.ne(PAD_ID).nonzero().view(-1)  # len
-            output["labels"] = labels[ids]
-            output["coords"] = preds["coords"][i, ids]
-            edges = preds["edges"][i].argmax(-1)
-            output["edges"] = edges[ids][:, ids]
-            output["edges"] = torch.zeros((len(ids), len(ids)), dtype=torch.int)
-            outputs.append(output)
-        return outputs
 
 
 class GraphPredictor(nn.Module):
@@ -585,69 +285,6 @@ class GraphPredictor(nn.Module):
         return results
 
 
-def conv3x3(in_planes, out_planes, stride=1, has_bias=False):
-    "3x3 convolution with padding"
-    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=has_bias)
-
-
-def conv3x3_bn_relu(in_planes, out_planes, stride=1):
-    return nn.Sequential(
-        conv3x3(in_planes, out_planes, stride),
-        nn.SyncBatchNorm(out_planes, eps=1e-6),
-        nn.ReLU())
-
-
-class FeaturePyramidNetwork(nn.Module):
-
-    def __init__(self, hidden_dims, num_classes):
-        super(FeaturePyramidNetwork, self).__init__()
-        fpn_dim = hidden_dims[0]
-        self.fpn_in = nn.ModuleList()
-        for i, h_dim in enumerate(hidden_dims):
-            self.fpn_in.append(nn.Sequential(
-                nn.Conv2d(h_dim, fpn_dim, kernel_size=1, bias=False),
-                nn.SyncBatchNorm(fpn_dim, eps=1e-6),
-                nn.ReLU()
-            ))
-        self.fpn_out = nn.ModuleList()
-        for i, h_dim in enumerate(hidden_dims[:-1]):
-            self.fpn_out.append(nn.Sequential(
-                conv3x3_bn_relu(fpn_dim, fpn_dim, 1)
-            ))
-        self.conv_fusion = conv3x3_bn_relu(len(hidden_dims) * fpn_dim, fpn_dim, 1)
-        self.class_mlp = nn.Sequential(
-            conv3x3_bn_relu(fpn_dim, fpn_dim, 1),
-            nn.Conv2d(fpn_dim, num_classes, kernel_size=1, bias=True)
-        )
-
-    def _upsample_add(self, x, y):
-        _, _, H, W = y.size()
-        return F.interpolate(x, size=(H, W), mode='bilinear') + y
-
-    def forward(self, hiddens):
-        hiddens = [x.permute(0, 3, 1, 2).contiguous() for x in hiddens]
-        f = self.fpn_in[-1](hiddens[-1])
-        fpn_feature_list = [f]
-        for i in reversed(range(len(hiddens) - 1)):
-            conv_x = hiddens[i]
-            conv_x = self.fpn_in[i](conv_x)  # lateral branch
-            f = self._upsample_add(f, conv_x)
-            fpn_feature_list.append(self.fpn_out[i](f))
-        fpn_feature_list.reverse()  # [P2 - P5]
-
-        output_size = fpn_feature_list[0].size()[2:]
-        fusion_list = [fpn_feature_list[0]]
-        for i in range(1, len(fpn_feature_list)):
-            fusion_list.append(F.interpolate(
-                fpn_feature_list[i], output_size, mode='bilinear', align_corners=False))
-        fusion_out = torch.cat(fusion_list, 1)
-        x = self.conv_fusion(fusion_out)  # B H W C
-
-        class_pred = self.class_mlp(x)  # B C H W
-        return class_pred
-
-
 def get_edge_prediction(edge_prob):
     if not edge_prob:
         return []
@@ -681,7 +318,6 @@ def get_edge_scores(edge_prob):
     return np.prod(max_prob).item(), max_prob.tolist()
 
 
-
 class Decoder(nn.Module):
     """This class is a wrapper for different decoder architectures, and support multiple decoders."""
 
@@ -692,23 +328,10 @@ class Decoder(nn.Module):
         self.tokenizer = tokenizer
         decoder = {}
         for format_ in args.formats:
-            if format_ == 'graph':
-                decoder[format_] = TransformerDecoderNAR(args, tokenizer[format_].len_symbols())
-            elif format_ == 'grid':
-                dim = args.encoder_dim
-                hidden_dims = [dim // 8, dim // 4, dim // 2, dim]
-                decoder[format_] = FeaturePyramidNetwork(hidden_dims, tokenizer[format_].len_symbols())
-            elif format_ == 'edges':
+            if format_ == 'edges':
                 decoder['edges'] = GraphPredictor(args.dec_hidden_size, coords=args.continuous_coords)
             else:
-                if args.decoder == 'lstm':
-                    decoder[format_] = LstmDecoder(
-                        attention_dim=args.attention_dim, embed_dim=args.embed_dim, encoder_dim=args.encoder_dim,
-                        decoder_dim=args.decoder_dim, max_len=FORMAT_INFO[format_]['max_len'], dropout=args.dropout,
-                        n_layer=args.decoder_layer, tokenizer=tokenizer[format_])
-                    args.dec_hidden_size = args.decoder_dim
-                else:
-                    decoder[format_] = TransformerDecoderAR(args, tokenizer[format_])
+                decoder[format_] = TransformerDecoderAR(args, tokenizer[format_])
         self.decoder = nn.ModuleDict(decoder)
 
     def forward(self, encoder_out, hiddens, refs):
@@ -716,17 +339,8 @@ class Decoder(nn.Module):
         results = {}
         refs = to_device(refs, encoder_out.device)
         for format_ in self.formats:
-            if format_ == 'graph':
-                output = self.decoder['graph'](encoder_out)
-                results['graph'] = (output, refs['graph'])
-            elif format_ == 'grid':
-                output = self.decoder['grid'](hiddens)
-                results['grid'] = (output, refs['grid'])
-            elif format_ == 'edges':
-                if 'nodes' in results:
-                    dec_out = results['nodes'][2]
-                    predictions = self.decoder['edges'](dec_out)  # b 7 l l
-                elif 'atomtok_coords' in results:
+            if format_ == 'edges':
+                if 'atomtok_coords' in results:
                     dec_out = results['atomtok_coords'][2]
                     predictions = self.decoder['edges'](dec_out, indices=refs['atom_indices'][0])
                 elif 'chartok_coords' in results:
@@ -752,33 +366,8 @@ class Decoder(nn.Module):
         if refs is not None:
             refs = to_device(refs, encoder_out.device)
         for format_ in self.formats:
-            if format_ == 'graph':
-                outputs = self.decoder['graph'].decode(encoder_out)
-                results['graph'] = outputs
-
-                def _convert(x):
-                    x = {k: v.tolist() for k, v in x.items()}
-                    x['symbols'] = self.tokenizer['graph'].labels_to_symbols(x['labels'])
-                    x.pop('labels')
-                    return x
-
-                predictions['graph'] = [_convert(pred) for pred in outputs]
-            elif format_ == 'grid':
-                outputs = self.decoder['grid'](hiddens)
-                results['grid'] = outputs
-                predictions['grid'] = [self.tokenizer['grid'].grid_to_nodes(grid.tolist())
-                                       for grid in outputs.argmax(1)]
-            elif format_ == 'edges':
-                if 'nodes' in results:
-                    dec_out = results['nodes'][3]  # batch x n_best x len x dim
-                    # outputs = [[self.decoder['edges'](h.unsqueeze(0))['edges'].argmax(1).squeeze(0) for h in hs]
-                    #            for hs in dec_out]
-                    outputs = [
-                        [F.softmax(self.decoder['edges'](h.unsqueeze(0))['edges'].squeeze(0).permute(1, 2, 0), dim=2)
-                         for h in hs]
-                        for hs in dec_out]
-                    predictions['edges'] = [pred[0].tolist() for pred in outputs]
-                elif 'atomtok_coords' in results or 'chartok_coords' in results:
+            if format_ == 'edges':
+                if 'atomtok_coords' in results or 'chartok_coords' in results:
                     atom_format = 'atomtok_coords' if 'atomtok_coords' in results else 'chartok_coords'
                     dec_out = results[atom_format][3]  # batch x n_best x len x dim
                     predictions['edges'] = []
@@ -804,16 +393,6 @@ class Decoder(nn.Module):
                 predictions['edges'] = predictions_edges
                 beam_predictions['edges'] = (predictions['edges'], edge_prods, edge_token_scores)
                 # results['edges'] = outputs     # batch x n_best x len x len
-            # TODO (zhening)
-            #  The following all rely on TransformerDecoderAR. Try to keep compatibility.
-            elif format_ == 'nodes':
-                max_len = FORMAT_INFO['nodes']['max_len']
-                results['nodes'] = self.decoder['nodes'].decode(encoder_out, beam_size, n_best, max_length=max_len)
-                outputs, scores, token_scores, *_ = results['nodes']
-                beam_preds = [[self.tokenizer['nodes'].sequence_to_smiles(x.tolist()) for x in pred] for pred in
-                              outputs]
-                beam_predictions['nodes'] = (beam_preds, scores, token_scores)
-                predictions['nodes'] = [pred[0] for pred in beam_preds]
             elif format_ == 'atomtok_coords' or format_ == 'chartok_coords':
                 labels = refs[format_][0] if self.args.predict_coords else None
                 max_len = FORMAT_INFO[format_]['max_len']

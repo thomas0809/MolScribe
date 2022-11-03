@@ -20,12 +20,13 @@ from molscribe.dataset import TrainDataset, AuxTrainDataset, bms_collate
 from molscribe.model import Encoder, Decoder
 from molscribe.loss import Criterion
 from molscribe.utils import seed_torch, save_args, init_summary_writer, LossMeter, AverageMeter, asMinutes, timeSince, \
-                      print_rank_0, format_df, FORMAT_INFO
+    print_rank_0, format_df, FORMAT_INFO
 from molscribe.chemistry import evaluate_nodes, convert_graph_to_smiles, postprocess_smiles
 from molscribe.evaluate import SmilesEvaluator
 from molscribe.tokenizer import Tokenizer, NodeTokenizer, CharTokenizer
 
-import warnings 
+import warnings
+
 warnings.filterwarnings('ignore')
 
 
@@ -139,7 +140,8 @@ def load_states(args, load_path):
 
 def safe_load(module, module_states):
     def remove_prefix(state_dict):
-        return {k.replace('module.', ''): v for k,v in state_dict.items()}
+        return {k.replace('module.', ''): v for k, v in state_dict.items()}
+
     missing_keys, unexpected_keys = module.load_state_dict(remove_prefix(module_states), strict=False)
     if missing_keys:
         print_rank_0('Missing keys: ' + str(missing_keys))
@@ -154,18 +156,14 @@ def get_model(args, tokenizer, device, load_path=None):
     print_rank_0(f'encoder_dim: {args.encoder_dim}')
 
     decoder = Decoder(args, tokenizer)
-    
     if load_path:
         states = load_states(args, load_path)
-        # print_rank_0('Loading encoder')
         safe_load(encoder, states['encoder'])
-        # print_rank_0('Loading decoder')
         safe_load(decoder, states['decoder'])
         # print_rank_0(f"Model loaded from {load_path}")
-    
     encoder.to(device)
     decoder.to(device)
-    
+
     if args.local_rank != -1:
         encoder = DDP(encoder, device_ids=[args.local_rank], output_device=args.local_rank)
         decoder = DDP(decoder, device_ids=[args.local_rank], output_device=args.local_rank)
@@ -175,13 +173,12 @@ def get_model(args, tokenizer, device, load_path=None):
 
 
 def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
-    
     encoder_optimizer = AdamW(encoder.parameters(), lr=args.encoder_lr, weight_decay=args.weight_decay, amsgrad=False)
     encoder_scheduler = get_scheduler(args.scheduler, encoder_optimizer, args.num_warmup_steps, args.num_training_steps)
 
     decoder_optimizer = AdamW(decoder.parameters(), lr=args.decoder_lr, weight_decay=args.weight_decay, amsgrad=False)
     decoder_scheduler = get_scheduler(args.scheduler, decoder_optimizer, args.num_warmup_steps, args.num_training_steps)
-    
+
     if load_path and args.resume:
         states = load_states(args, load_path)
         encoder_optimizer.load_state_dict(states['encoder_optimizer'])
@@ -195,7 +192,7 @@ def get_optimizer_and_scheduler(args, encoder, decoder, load_path=None):
             encoder_scheduler.load_state_dict(states['encoder_scheduler'])
             decoder_scheduler.load_state_dict(states['decoder_scheduler'])
         print_rank_0(f"Optimizer loaded from {load_path}")
-        
+
     return encoder_optimizer, encoder_scheduler, decoder_optimizer, decoder_scheduler
 
 
@@ -217,9 +214,6 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         images = images.to(device)
         batch_size = images.size(0)
         with torch.cuda.amp.autocast(enabled=args.fp16):
-            # if args.local_rank == 0 and step == 0:
-            #     print(refs['nodes'][0][0])
-            #     print(refs['nodes'][0][1])
             features, hiddens = encoder(images, refs)
             results = decoder(features, hiddens, refs)
             losses = criterion(results, refs)
@@ -245,25 +239,26 @@ def train_fn(train_loader, encoder, decoder, criterion, encoder_optimizer, decod
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-        if step % args.print_freq == 0 or step == (len(train_loader)-1):
+        if step % args.print_freq == 0 or step == (len(train_loader) - 1):
             loss_str = ' '.join([f'{k}:{v.avg:.4f}' for k, v in loss_meter.subs.items()])
             print_rank_0('Epoch: [{0}][{1}/{2}] '
-                'Data {data_time.avg:.3f}s ({sum_data_time}) '
-                'Run {remain:s} '
-                'Loss: {loss.avg:.4f} ({loss_str}) '
-                'Grad: {encoder_grad_norm:.3f}/{decoder_grad_norm:.3f} '
-                'LR: {encoder_lr:.6f} {decoder_lr:.6f}'
-                .format(
-                epoch+1, step, len(train_loader), batch_time=batch_time,
+                         'Data {data_time.avg:.3f}s ({sum_data_time}) '
+                         'Run {remain:s} '
+                         'Loss: {loss.avg:.4f} ({loss_str}) '
+                         'Grad: {encoder_grad_norm:.3f}/{decoder_grad_norm:.3f} '
+                         'LR: {encoder_lr:.6f} {decoder_lr:.6f}'
+            .format(
+                epoch + 1, step, len(train_loader), batch_time=batch_time,
                 data_time=data_time, loss=loss_meter, loss_str=loss_str,
                 sum_data_time=asMinutes(data_time.sum),
-                remain=timeSince(start, float(step+1)/len(train_loader)),
+                remain=timeSince(start, float(step + 1) / len(train_loader)),
                 encoder_grad_norm=encoder_grad_norm,
                 decoder_grad_norm=decoder_grad_norm,
                 encoder_lr=encoder_scheduler.get_lr()[0],
                 decoder_lr=decoder_scheduler.get_lr()[0]))
             loss_meter.reset()
-        if args.train_steps_per_epoch != -1 and (step+1)//args.gradient_accumulation_steps == args.train_steps_per_epoch:
+        if args.train_steps_per_epoch != -1 and (
+                step + 1) // args.gradient_accumulation_steps == args.train_steps_per_epoch:
             break
 
     return loss_meter.epoch.avg, global_step
@@ -302,15 +297,15 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-        if step % args.print_freq == 0 or step == (len(valid_loader)-1):
+        if step % args.print_freq == 0 or step == (len(valid_loader) - 1):
             print_rank_0('EVAL: [{0}/{1}] '
-                'Data {data_time.avg:.3f}s ({sum_data_time}) '
-                'Elapsed {remain:s} '
-                .format(
+                         'Data {data_time.avg:.3f}s ({sum_data_time}) '
+                         'Elapsed {remain:s} '
+            .format(
                 step, len(valid_loader), batch_time=batch_time,
                 data_time=data_time,
                 sum_data_time=asMinutes(data_time.sum),
-                remain=timeSince(start, float(step+1)/len(valid_loader))))
+                remain=timeSince(start, float(step + 1) / len(valid_loader))))
     # gather predictions from different GPUs
     gathered_preds = [None for i in range(dist.get_world_size())]
     dist.all_gather_object(gathered_preds, [predictions, beam_predictions])
@@ -327,16 +322,15 @@ def valid_fn(valid_loader, encoder, decoder, tokenizer, device, args):
 
 
 def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
-    
     SUMMARY = None
-    
+
     if args.local_rank == 0 and not args.debug:
         os.makedirs(save_path, exist_ok=True)
         save_args(args)
         SUMMARY = init_summary_writer(save_path)
-        
+
     print_rank_0("========== training ==========")
-        
+
     device = args.device
 
     # ====================================================
@@ -352,14 +346,14 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
     else:
         train_sampler = RandomSampler(train_dataset)
-    train_loader = DataLoader(train_dataset, 
-                              batch_size=args.batch_size, 
+    train_loader = DataLoader(train_dataset,
+                              batch_size=args.batch_size,
                               sampler=train_sampler,
                               num_workers=args.num_workers,
                               prefetch_factor=4,
                               persistent_workers=True,
                               pin_memory=True,
-                              drop_last=True, 
+                              drop_last=True,
                               collate_fn=bms_collate)
 
     if args.train_steps_per_epoch == -1:
@@ -373,12 +367,10 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
     if args.resume and args.load_path is None:
         args.load_path = args.save_path
     encoder, decoder = get_model(args, tokenizer, device, load_path=args.load_path)
-    
     encoder_optimizer, encoder_scheduler, decoder_optimizer, decoder_scheduler = \
         get_optimizer_and_scheduler(args, encoder, decoder, load_path=args.load_path)
-    
     scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
-        
+
     # ====================================================
     # loop
     # ====================================================
@@ -386,7 +378,7 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
 
     best_score = -np.inf
     best_loss = np.inf
-    
+
     global_step = encoder_scheduler.last_epoch
     start_epoch = global_step // args.train_steps_per_epoch
 
@@ -411,8 +403,8 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
 
         elapsed = time.time() - start_time
 
-        print_rank_0(f'Epoch {epoch+1} - Time: {elapsed:.0f}s')
-        print_rank_0(f'Epoch {epoch+1} - Score: ' + json.dumps(scores))
+        print_rank_0(f'Epoch {epoch + 1} - Time: {elapsed:.0f}s')
+        print_rank_0(f'Epoch {epoch + 1} - Score: ' + json.dumps(scores))
 
         save_obj = {'encoder': encoder.state_dict(),
                     'encoder_optimizer': encoder_optimizer.state_dict(),
@@ -438,7 +430,7 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
 
         if score >= best_score:
             best_score = score
-            print_rank_0(f'Epoch {epoch+1} - Save Best Score: {best_score:.4f} Model')
+            print_rank_0(f'Epoch {epoch + 1} - Save Best Score: {best_score:.4f} Model')
             torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_best.pth'))
             with open(os.path.join(save_path, 'best_valid.json'), 'w') as f:
                 json.dump(scores, f)
@@ -447,19 +439,18 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
             torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_ep{epoch}.pth'))
         if args.save_mode == 'last':
             torch.save(save_obj, os.path.join(save_path, f'{args.encoder}_{args.decoder}_last.pth'))
-    
+
     if args.local_rank != -1:
         dist.barrier()
 
 
 def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=None, split='test'):
-    
     print_rank_0("========== inference ==========")
     print_rank_0(data_df.attrs['file'])
 
     if args.local_rank == 0 and not args.debug:
         os.makedirs(save_path, exist_ok=True)
-    
+
     device = args.device
 
     dataset = TrainDataset(args, data_df, tokenizer, split=split)
@@ -467,20 +458,18 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         sampler = DistributedSampler(dataset, shuffle=False)
     else:
         sampler = SequentialSampler(dataset)
-    dataloader = DataLoader(dataset, 
+    dataloader = DataLoader(dataset,
                             batch_size=args.batch_size * 2,
-                            sampler=sampler, 
+                            sampler=sampler,
                             num_workers=args.num_workers,
                             prefetch_factor=4,
                             persistent_workers=True,
-                            pin_memory=True, 
+                            pin_memory=True,
                             drop_last=False,
                             collate_fn=bms_collate)
-    
     if encoder is None or decoder is None:
         # valid/test mode
         encoder, decoder = get_model(args, tokenizer, device, save_path)
-    
     predictions, beam_predictions = valid_fn(dataloader, encoder, decoder, tokenizer, device, args)
 
     # The evaluation and saving prediction is only performed in the master process.
@@ -495,7 +484,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         data_df['image_id'] = [path.split('/')[-1].split('.')[0] for path in data_df['file_path']]
     pred_df = data_df[['image_id']].copy()
     scores = {}
-    
+
     for format_ in args.formats:
         text_preds = predictions[format_]
         if format_ == 'inchi':
@@ -507,15 +496,15 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             # SMILES
             pred_df['SMILES'] = text_preds
             if args.compute_confidence:
-                pred_df['SMILES_score'] = [beam_predictions[format_][idx][1][0] for idx in range(len(beam_predictions[format_]))]
-                pred_df['SMILES_token_scores'] = [beam_predictions[format_][idx][2][0] for idx in range(len(beam_predictions[format_]))]
+                pred_df['SMILES_score'] = [beam_predictions[format_][idx][1][0] for idx in
+                                           range(len(beam_predictions[format_]))]
+                pred_df['SMILES_token_scores'] = [beam_predictions[format_][idx][2][0] for idx in
+                                                  range(len(beam_predictions[format_]))]
                 pred_df['indices'] = [preds['indices'] for preds in predictions[format_]]
-                pred_df['atoms_score'] = [np.prod(np.array(pred_df['SMILES_token_scores'][idx])[np.array(pred_df['indices'][idx])-3]).item() ** (1 / len(pred_df['indices'][idx])) for idx in range(len(beam_predictions[format_]))]
-            # print('Converting SMILES to InChI ...')
-            # inchi_list, r_success = convert_smiles_to_inchi(text_preds)
-            # pred_df['SMILES_InChI'] = inchi_list
-            # print(f'{split} SMILES to InChI success ratio: {r_success:.4f}')
-            # scores['smiles_inchi_success'] = r_success
+                pred_df['atoms_score'] = [np.prod(
+                    np.array(pred_df['SMILES_token_scores'][idx])[np.array(pred_df['indices'][idx]) - 3]).item() ** (
+                                                      1 / len(pred_df['indices'][idx])) for idx in
+                                          range(len(beam_predictions[format_]))]
         if format_ in ['nodes', 'graph', 'grid', 'atomtok_coords', 'chartok_coords']:
             pred_df['node_coords'] = [pred['coords'] for pred in predictions[format_]]
             pred_df['node_symbols'] = [pred['symbols'] for pred in predictions[format_]]
@@ -526,7 +515,8 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     if 'edges' in predictions:
         pred_df['edges'] = predictions['edges']
         if args.compute_confidence:
-            pred_df['edges_token_scores'] = [beam_predictions['edges'][idx][2] for idx in range(len(beam_predictions['edges']))]
+            pred_df['edges_token_scores'] = [beam_predictions['edges'][idx][2] for idx in
+                                             range(len(beam_predictions['edges']))]
             pred_df['edges_prod'] = [beam_predictions['edges'][idx][1] for idx in range(len(beam_predictions['edges']))]
             pred_df['twice_num_edges'] = [int(np.sum(np.array(pred).astype(bool))) for pred in predictions['edges']]
             rectified_twice_num_edges = pred_df['twice_num_edges'].replace(0, 1)
@@ -543,11 +533,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         pred_df['graph_SMILES'] = smiles_list
         if args.molblock:
             pred_df['molblock'] = molblock_list
-        # old graph to smiles
-        # old_smiles_list, old_molblock_list, old_r_success = chemistry_old.convert_graph_to_smiles(
-        #     pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
-        # print(f'Old graph to SMILES success ratio: {old_r_success:.4f}')
-        # pred_df['old_graph_SMILES'] = old_smiles_list
 
     # Postprocess the predicted SMILES (verify chirality, expand functional groups)
     if 'SMILES' in pred_df.columns:
@@ -558,14 +543,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             smiles_list, _, r_success = postprocess_smiles(pred_df['SMILES'])
         print(f'Postprocess SMILES success ratio: {r_success:.4f}')
         pred_df['post_SMILES'] = smiles_list
-        # old postprocessing
-        # if 'edges' in pred_df.columns:
-        #     old_smiles_list, _, old_r_success = chemistry_old.postprocess_smiles(
-        #         pred_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'], pred_df['edges'])
-        # else:
-        #     old_smiles_list, _, old_r_success = chemistry_old.postprocess_smiles(pred_df['SMILES'])
-        # print(f'Old postprocess SMILES success ratio: {old_r_success:.4f}')
-        # pred_df['old_post_SMILES'] = old_smiles_list
 
     # Compute scores
     if 'SMILES' in data_df.columns:
@@ -581,14 +558,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             scores['post_graph'] = post_scores['graph']
             scores['post_chiral'] = post_scores['chiral']
             scores['post_valid'] = post_scores['pred_valid']
-        # old
-        if 'old_post_SMILES' in pred_df.columns:
-            old_post_scores = evaluator.evaluate(pred_df['old_post_SMILES'])
-            scores['old_post_smiles_em'] = old_post_scores['canon_smiles_em']
-            scores['old_post_smiles'] = old_post_scores['canon_smiles']
-            scores['old_post_graph'] = old_post_scores['graph']
-            scores['old_post_chiral'] = old_post_scores['chiral']
-            scores['old_post_valid'] = old_post_scores['pred_valid']
         if 'graph_SMILES' in pred_df.columns:
             if 'SMILES' not in pred_df.columns:
                 print('graph:', pred_df['graph_SMILES'].values[:2])
@@ -597,15 +566,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             scores['graph_smiles'] = graph_scores['canon_smiles']
             scores['graph_graph'] = graph_scores['graph']
             scores['graph_chiral'] = graph_scores['chiral']
-        # old
-        if 'old_graph_SMILES' in pred_df.columns:
-            if 'SMILES' not in pred_df.columns:
-                print('old_graph:', pred_df['old_graph_SMILES'].values[:2])
-            old_graph_scores = evaluator.evaluate(pred_df['old_graph_SMILES'])
-            scores['old_graph_smiles_em'] = old_graph_scores['canon_smiles_em']
-            scores['old_graph_smiles'] = old_graph_scores['canon_smiles']
-            scores['old_graph_graph'] = old_graph_scores['graph']
-            scores['old_graph_chiral'] = old_graph_scores['chiral']
         if 'node_coords' in pred_df.columns:
             _, scores['num_nodes'], scores['symbols'] = \
                 evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])
@@ -620,7 +580,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
     if split == 'test':
         with open(os.path.join(save_path, f'eval_scores_{os.path.splitext(file)[0]}_{args.load_ckpt}.json'), 'w') as f:
             json.dump(scores, f)
-    
+
     return scores
 
 
@@ -647,32 +607,28 @@ def get_chemdraw_data(args):
     for format_ in args.formats:
         if format_ == 'atomtok':
             if args.vocab_file is None:
-                args.vocab_file = 'molscribe/vocab.json'
+                args.vocab_file = 'vocab/vocab.json'
             tokenizer['atomtok'] = Tokenizer(args.vocab_file)
             print_rank_0(f'tokenizer: {args.vocab_file}')
         elif format_ in ['nodes', 'graph', 'grid']:
-            tokenizer[format_] = NodeTokenizer(args.coord_bins, 'molscribe/vocab.json', args.sep_xy)
+            tokenizer[format_] = NodeTokenizer(args.coord_bins, 'vocab/vocab.json', args.sep_xy)
             args.num_symbols = tokenizer[format_].len_symbols()
         elif format_ == "atomtok_coords":
             if args.vocab_file is None:
-                args.vocab_file = 'molscribe/vocab_rf.json' if args.mol_augment else 'molscribe/vocab.json'
+                args.vocab_file = 'vocab/vocab_rf.json' if args.mol_augment else 'vocab/vocab.json'
             tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
                                                         continuous_coords=args.continuous_coords)
             print_rank_0(f'tokenizer: {args.vocab_file} {len(tokenizer["atomtok_coords"])}')
         elif format_ == "chartok_coords":
             if args.vocab_file is None:
-                args.vocab_file = 'molscribe/vocab_chars.json'
+                args.vocab_file = 'vocab/vocab_chars.json'
             tokenizer["chartok_coords"] = CharTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
                                                         continuous_coords=args.continuous_coords)
 
-    if args.patch:
-        tokenizer['graph'] = NodeTokenizer(args.coord_bins, 'molscribe/node_vocab.json', args.sep_xy)
-        args.num_symbols = tokenizer['graph'].len_symbols()
     return train_df, valid_df, test_df, aux_df, tokenizer
 
 
 def main():
-
     args = get_args()
     seed_torch(seed=args.seed)
 
@@ -695,24 +651,10 @@ def main():
         train_df = train_df[:args.trunc_train]
     if (args.do_train or args.do_valid) and args.trunc_valid:
         valid_df = valid_df[:args.trunc_valid]
-<<<<<<< HEAD
-=======
 
-    if args.debug:
-        args.epochs = 1
-        args.save_path = 'output/debug'
-        args.print_freq = 50
-        if args.do_train:
-            train_df = train_df.sample(n=2000, random_state=42).reset_index(drop=True)
-        if args.do_train or args.do_valid:
-            valid_df = valid_df.sample(n=1000, random_state=42).reset_index(drop=True)
-        if args.do_test:
-            test_df = [df[:1000] for df in test_df]
->>>>>>> 15fd3606e3243e2a4f536443b6a6fba09c3c30eb
-    
     if args.do_train:
         train_loop(args, train_df, valid_df, aux_df, tokenizer, args.save_path)
-        
+
     if args.do_valid:
         scores = inference(args, valid_df, tokenizer, save_path=args.save_path, split='test')
         print_rank_0(json.dumps(scores, indent=4))

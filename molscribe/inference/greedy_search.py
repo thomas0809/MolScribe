@@ -1,5 +1,5 @@
 import torch
-from bms.inference.decode_strategy import DecodeStrategy
+from .decode_strategy import DecodeStrategy
 
 
 def sample_with_temperature(logits, sampling_temp, keep_topk):

@@ -16,8 +16,8 @@ from albumentations.pytorch import ToTensorV2
 from indigo import Indigo
 from indigo.renderer import IndigoRenderer
 
-from .augment import SafeRotate, CropWhite, NormalizedGridDistortion, PadWhite, SaltAndPepperNoise
-from .utils import FORMAT_INFO, print_rank_0
+from .augment import SafeRotate, CropWhite, PadWhite, SaltAndPepperNoise
+from .utils import FORMAT_INFO
 from .tokenizer import PAD_ID
 from .chemistry import get_num_atoms, normalize_nodes
 from .constants import RGROUP_SYMBOLS, SUBSTITUTIONS, ELEMENTS, COLORS
@@ -417,21 +417,8 @@ class TrainDataset(Dataset):
                 max_len = FORMAT_INFO['atomtok']['max_len']
                 label = self.tokenizer['atomtok'].text_to_sequence(smiles, tokenized=False)
                 ref['atomtok'] = torch.LongTensor(label[:max_len])
-            if 'nodes' in self.formats:
-                max_len = FORMAT_INFO['nodes']['max_len']
-                label, indices = self.tokenizer['nodes'].smiles_to_sequence(smiles, graph['coords'], atom_only=True)
-                ref['nodes'] = torch.LongTensor(label[:max_len])
             if 'edges' in self.formats and 'atomtok_coords' not in self.formats and 'chartok_coords' not in self.formats:
                 ref['edges'] = torch.tensor(graph['edges'])
-            if 'graph' in self.formats or self.args.patch:
-                graph_ref = {
-                    'coords': torch.tensor(graph['coords']),
-                    'labels': torch.tensor(self.tokenizer['graph'].symbols_to_labels(graph['symbols'])),
-                    'edges': torch.tensor(graph['edges'])
-                }
-                ref['graph'] = graph_ref
-            if 'grid' in self.formats:
-                ref['grid'] = torch.tensor(self.tokenizer['grid'].nodes_to_grid(graph))
             if 'atomtok_coords' in self.formats:
                 self._process_atomtok_coords(idx, ref, smiles, graph['coords'], graph['edges'],
                                              mask_ratio=self.args.mask_ratio)
@@ -556,23 +543,12 @@ class AuxTrainDataset(Dataset):
 
     def __len__(self):
         return len(self.train_dataset) + len(self.aux_dataset)
-        # return len(self.train_dataset) * 2
 
     def __getitem__(self, idx):
         if idx < len(self.train_dataset):
             return self.train_dataset[idx]
         else:
             return self.aux_dataset[idx - len(self.train_dataset)]
-            # worker_info = torch.utils.data.get_worker_info()
-            # n = len(self.aux_dataset)
-            # if worker_info is None:
-            #     idx = (idx + random.randrange(n)) % n
-            # else:
-            #     per_worker = int(len(self.aux_dataset) / worker_info.num_workers)
-            #     worker_id = worker_info.id
-            #     start = worker_id * per_worker
-            #     idx = start + (idx + random.randrange(per_worker)) % per_worker
-            # return self.aux_dataset[idx]
 
 
 def pad_images(imgs):
@@ -613,14 +589,6 @@ def bms_collate(batch):
     # Time
     # if 'time' in formats:
     #     refs['time'] = [ex[2]['time'] for ex in batch]
-    if 'reweight_coef' in formats:
-        refs['reweight_coef'] = torch.tensor([ex[2]['reweight_coef'] for ex in batch])
-    # Graph
-    if 'graph' in formats:
-        refs['graph'] = [ex[2]['graph'] for ex in batch]
-    # Grid
-    if 'grid' in formats:
-        refs['grid'] = torch.stack([ex[2]['grid'] for ex in batch])
     # Coords
     if 'coords' in formats:
         refs['coords'] = pad_sequence([ex[2]['coords'] for ex in batch], batch_first=True, padding_value=-1.)

@@ -1,7 +1,5 @@
 import torch
-from bms.inference.decode_strategy import DecodeStrategy
-
-import warnings
+from .decode_strategy import DecodeStrategy
 
 
 class BeamSearch(DecodeStrategy):
@@ -29,6 +27,7 @@ class BeamSearch(DecodeStrategy):
     def initialize(self, memory_bank, device=None):
         """Repeat src objects `beam_size` times.
         """
+
         def fn_map_state(state, dim):
             return torch.repeat_interleave(state, self.beam_size, dim=dim)
 
@@ -39,21 +38,16 @@ class BeamSearch(DecodeStrategy):
         self.memory_length = memory_bank.size(1)
         super().initialize(memory_bank, device)
 
-        self.best_scores = torch.full(
-            [self.batch_size], -1e10, dtype=torch.float, device=device)
+        self.best_scores = torch.full([self.batch_size], -1e10, dtype=torch.float, device=device)
         self._beam_offset = torch.arange(
-            0, self.batch_size * self.beam_size, step=self.beam_size,
-            dtype=torch.long, device=device)
+            0, self.batch_size * self.beam_size, step=self.beam_size, dtype=torch.long, device=device)
         self.topk_log_probs = torch.tensor(
             [0.0] + [float("-inf")] * (self.beam_size - 1), device=device
         ).repeat(self.batch_size)
         # buffers for the topk scores and 'backpointer'
-        self.topk_scores = torch.empty((self.batch_size, self.beam_size),
-                                        dtype=torch.float, device=device)
-        self.topk_ids = torch.empty((self.batch_size, self.beam_size),
-                                        dtype=torch.long, device=device)
-        self._batch_index = torch.empty([self.batch_size, self.beam_size],
-                                        dtype=torch.long, device=device)
+        self.topk_scores = torch.empty((self.batch_size, self.beam_size), dtype=torch.float, device=device)
+        self.topk_ids = torch.empty((self.batch_size, self.beam_size), dtype=torch.long, device=device)
+        self._batch_index = torch.empty([self.batch_size, self.beam_size], dtype=torch.long, device=device)
 
         return fn_map_state, memory_bank
 
@@ -97,14 +91,14 @@ class BeamSearch(DecodeStrategy):
         # (non-finished) batch_size
         _B = log_probs.shape[0] // self.beam_size
 
-        step = len(self) # alive_seq
+        step = len(self)  # alive_seq
         self.ensure_min_length(log_probs)
 
         # Multiply probs by the beam probability
         log_probs += self.topk_log_probs.view(_B * self.beam_size, 1)
 
         curr_length = step + 1
-        curr_scores = log_probs / curr_length # avg log_prob
+        curr_scores = log_probs / curr_length  # avg log_prob
         self.topk_scores, self.topk_ids = self._pick(curr_scores)
         # topk_scores/topk_ids: (batch_size, beam_size)
 
@@ -115,7 +109,7 @@ class BeamSearch(DecodeStrategy):
         self._batch_index = self.topk_ids // vocab_size
         self._batch_index += self._beam_offset[:_B].unsqueeze(1)
         self.select_indices = self._batch_index.view(_B * self.beam_size)
-        self.topk_ids.fmod_(vocab_size) # resolve true word ids
+        self.topk_ids.fmod_(vocab_size)  # resolve true word ids
 
         # Append last prediction.
         self.alive_seq = torch.cat(
@@ -136,7 +130,7 @@ class BeamSearch(DecodeStrategy):
 
     def update_finished(self):
         _B_old = self.topk_log_probs.shape[0]
-        step = self.alive_seq.shape[-1] # len(self)
+        step = self.alive_seq.shape[-1]  # len(self)
         self.topk_log_probs.masked_fill_(self.is_finished, -1e10)
 
         self.is_finished = self.is_finished.to('cpu')
@@ -151,10 +145,10 @@ class BeamSearch(DecodeStrategy):
             b = self._batch_offset[i]
             finished_hyp = self.is_finished[i].nonzero(as_tuple=False).view(-1)
             # Store finished hypothesis for this batch.
-            for j in finished_hyp: # Beam level: finished beam j in batch i
+            for j in finished_hyp:  # Beam level: finished beam j in batch i
                 self.hypotheses[b].append((
                     self.topk_scores[i, j],
-                    predictions[i, j, 1:], # Ignore start token
+                    predictions[i, j, 1:],  # Ignore start token
                     attention[:, i, j, :self.memory_length]
                     if attention is not None else None))
             # End condition is the top beam finished and we can return
@@ -180,16 +174,13 @@ class BeamSearch(DecodeStrategy):
 
         _B_new = non_finished.shape[0]
         # Remove finished batches for the next step
-        self.top_beam_finished = self.top_beam_finished.index_select(
-            0, non_finished)
+        self.top_beam_finished = self.top_beam_finished.index_select(0, non_finished)
         self._batch_offset = self._batch_offset.index_select(0, non_finished)
         non_finished = non_finished.to(self.topk_ids.device)
-        self.topk_log_probs = self.topk_log_probs.index_select(
-            0, non_finished)
+        self.topk_log_probs = self.topk_log_probs.index_select(0, non_finished)
         self._batch_index = self._batch_index.index_select(0, non_finished)
         self.select_indices = self._batch_index.view(_B_new * self.beam_size)
-        self.alive_seq = predictions.index_select(0, non_finished) \
-            .view(-1, self.alive_seq.size(-1))
+        self.alive_seq = predictions.index_select(0, non_finished).view(-1, self.alive_seq.size(-1))
         self.topk_scores = self.topk_scores.index_select(0, non_finished)
         self.topk_ids = self.topk_ids.index_select(0, non_finished)
 
@@ -197,4 +188,3 @@ class BeamSearch(DecodeStrategy):
             inp_seq_len = self.alive_attn.size(-1)
             self.alive_attn = attention.index_select(1, non_finished) \
                 .view(step - 1, _B_new * self.beam_size, inp_seq_len)
-
