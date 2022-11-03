@@ -308,11 +308,13 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
     """
     # `direction` not specified: try left to right; if fails, try right to left
     if direction is None:
+        num_trials = 1
         for dir_choice in [1, -1]:
             smiles, bonds_left, trials, success = _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond, dir_choice)
+            num_trials += trials
             if success:
-                return smiles, bonds_left, trials, success
-        return None, None, 0, False
+                return smiles, bonds_left, num_trials, success
+        return None, None, num_trials, False
     assert direction == 1 or direction == -1
 
     def dfs(smiles, bonds_left, cur_idx, add_idx):
