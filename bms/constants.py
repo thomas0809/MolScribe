@@ -1,15 +1,12 @@
 from typing import List
 import re
 
-
 ORGANIC_SET = {'B', 'C', 'N', 'O', 'P', 'S', 'F', 'Cl', 'Br', 'I'}
 
 RGROUP_SYMBOLS = ['R', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12',
                   'Ra', 'Rb', 'Rc', 'Rd', 'X', 'Y', 'Z', 'Q', 'A', 'E', 'Ar']
 
-# PLACEHOLDER_ATOMS = ["Xe", "Rn", "Nd", "Yb", "At", "Fm", "Er"]
 PLACEHOLDER_ATOMS = ["Lv", "Lu", "Nd", "Yb", "At", "Fm", "Er"]
-
 
 '''
 Define common substitutions for chemical shorthand
@@ -48,14 +45,14 @@ SUBSTITUTIONS: List[Substitution] = [
     Substitution(['Cbz'], 'C(=O)OC[cH]1[cH][cH][cH1][cH][cH]1', "[C](=O)OCc1ccccc1", 0.4),
     Substitution(['Cy'], '[CH1;X3]1[CH2][CH2][CH2][CH2][CH2]1', "[CH1]1CCCCC1", 0.3),
     Substitution(['Fmoc'], 'C(=O)O[CH2][CH1]1c([cH1][cH1][cH1][cH1]2)c2c3c1[cH1][cH1][cH1][cH1]3',
-                           "[C](=O)OCC1c(cccc2)c2c3c1cccc3", 0.6),
+                 "[C](=O)OCC1c(cccc2)c2c3c1cccc3", 0.6),
     Substitution(['Mes'], '[cH0]1c([CH3])cc([CH3])cc([CH3])1', "[c]1c(C)cc(C)cc(C)1", 0.5),
     Substitution(['OMs'], '[OH0;D2]S(=O)(=O)[CH3]', "[O]S(=O)(=O)C", 0.7),
     Substitution(['Ms'], 'S(=O)(=O)[CH3]', "[S](=O)(=O)C", 0.2),
     Substitution(['Ph'], '[cH0]1[cH][cH][cH1][cH][cH]1', "[c]1ccccc1", 0.5),
-    Substitution(['PMB'], '[CH2;D2][cH0]1[cH1][cH1][cH0](O[CH3])[cH1][cH1]1', "[CH2]c1ccc(OC)cc1", 0.2),  # what's probability? what's SMARTS?
+    Substitution(['PMB'], '[CH2;D2][cH0]1[cH1][cH1][cH0](O[CH3])[cH1][cH1]1', "[CH2]c1ccc(OC)cc1", 0.2),
     Substitution(['Py'], '[cH0]1[n;+0][cH1][cH1][cH1][cH1]1', "[c]1ncccc1", 0.1),
-    Substitution(['SEM'], '[CH2;D2][CH2][Si]([CH3])([CH3])[CH3]', "[CH2]CSi(C)(C)C", 0.2),  # what's probability? what's SMARTS?
+    Substitution(['SEM'], '[CH2;D2][CH2][Si]([CH3])([CH3])[CH3]', "[CH2]CSi(C)(C)C", 0.2),
     Substitution(['Suc'], 'C(=O)[CH2][CH2]C(=O)[OH]', "[C](=O)CCC(=O)O", 0.2),
     Substitution(['TBS'], '[Si]([CH3])([CH3])C([CH3])([CH3])[CH3]', "[Si](C)(C)C(C)(C)C", 0.5),
     Substitution(['TBZ'], 'C(=S)[cH]1[cH][cH][cH1][cH][cH]1', "[C](=S)c1ccccc1", 0.2),
@@ -93,11 +90,10 @@ SUBSTITUTIONS: List[Substitution] = [
     Substitution(['SO3H'], 'S(=O)(=O)[OH]', "[S](=O)(=O)O", 0.4),
 ]
 
-
 ABBREVIATIONS = {abbrv: sub for sub in SUBSTITUTIONS for abbrv in sub.abbrvs}
 
 VALENCES = {
-    "H": [1], "Li": [1], "Be": [2], "B": [3], "C": [4], "N": [3,5], "O": [2], "F": [1],
+    "H": [1], "Li": [1], "Be": [2], "B": [3], "C": [4], "N": [3, 5], "O": [2], "F": [1],
     "Na": [1], "Mg": [2], "Al": [3], "Si": [4], "P": [5, 3], "S": [6, 2, 4], "Cl": [1], "K": [1], "Ca": [2],
     "Br": [1], "I": [1]
 }
@@ -123,7 +119,8 @@ COLORS = {
 }
 
 # tokens of condensed formula
-FORMULA_REGEX = re.compile('(' + '|'.join(ELEMENTS + list(ABBREVIATIONS.keys())) + '|[0-9]+|\(|\))')
+FORMULA_REGEX = re.compile(
+    '(' + '|'.join(list(ABBREVIATIONS.keys())) + '|R[0-9]*|[A-Z][a-z]+|[A-Z]|[0-9]+|\(|\))')
 # abbreviations that don't follow the pattern [A-Z][a-z]*
 SPECIAL_ABBREV = ["PMB", "SEM", "TBS", "TBZ", "TFA", "TMS", "n-?Pr", "i-?Pr", "n-?Bu", "i-?Bu", "t-?Bu", "R[0-9]*"]
 # tokens of condensed formula (extended)

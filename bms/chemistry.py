@@ -222,8 +222,8 @@ def _parse_formula(formula: str):
     Example: "C2H4O" -> [('C', 2), ('H', 4), ('O', 1)]
     """
     tokens = FORMULA_REGEX.findall(formula)
-    if ''.join(tokens) != formula:
-        tokens = FORMULA_REGEX_BACKUP.findall(formula)
+    # if ''.join(tokens) != formula:
+    #     tokens = FORMULA_REGEX_BACKUP.findall(formula)
     return _parse_tokens(tokens)
 
 
@@ -343,7 +343,9 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
             if bonds_left > 1:
                 # "atom" added does not use up remaining bonds of current atom
                 # get smiles of "atom" (which is itself a condensed formula)
-                add_str, _, trials, success = _condensed_formula_list_to_smiles(to_add, 1, 0, direction)
+                add_str, val, trials, success = _condensed_formula_list_to_smiles(to_add, 1, None, direction)
+                if val > 0:
+                    add_str = _get_bond_symb(val + 1) + add_str
                 num_trials += trials
                 if not success:
                     return smiles, bonds_left, num_trials, False
