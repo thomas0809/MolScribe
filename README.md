@@ -4,7 +4,7 @@
 This is the repository for MolScribe, an image-to-graph model that translates a molecular image to its chemical
 structure.
 
-![MolScribe](assets/model.pdf)
+![MolScribe](assets/model.png)
 
 [Paper](https://arxiv.org/abs/2205.14311):
 ```
@@ -26,18 +26,18 @@ Please use the modified [Indigo](https://github.com/epam/Indigo) toolkit is incl
 ## Data
 Training data:
 
-| Dataset                                                                | Description                                                                                                                                   |
-|------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
-| [USPTO](https://www.dropbox.com/s/3podz99nuwagudy/uspto_mol.zip?dl=0)  | Downloaded from [USPTO, Grant Red Book](https://bulkdata.uspto.gov/).                                                                         |
-| [PubChem](https://www.dropbox.com/s/mxvm5i8139y5cvk/pubchem.zip?dl=0)  | Molecules are downloaded from [PubChem](https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/), and images are dynamically rendered during training. |
+| Datasets                                                              | Description                                                                                                                                   |
+|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| [USPTO](https://www.dropbox.com/s/3podz99nuwagudy/uspto_mol.zip?dl=0) | Downloaded from [USPTO, Grant Red Book](https://bulkdata.uspto.gov/).                                                                         |
+| [PubChem](https://www.dropbox.com/s/mxvm5i8139y5cvk/pubchem.zip?dl=0) | Molecules are downloaded from [PubChem](https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/), and images are dynamically rendered during training. |
 
 Benchmarks:
 
-| Dataset                                                                                              | Description                                                                                                                                                                                |
-|------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| [Synthetic](https://www.dropbox.com/s/kihxlv4mx7qplc9/synthetic.zip?dl=0) (Indigo, ChemDraw)         | Images are rendered by Indigo and ChemDraw.                                                                                                                                                |
-| [Realistic](https://www.dropbox.com/s/4v8pktjcdsjsou8/real.zip?dl=0) (CLEF, UOB, USPTO, Staker, ACS) | CLEF, UOB, and USPTO are downloaded from https://github.com/Kohulan/OCSR_Review. <br/> Staker is downloaded from https://drive.google.com/drive/folders/16OjPwQ7bQ486VhdX4DWpfYzRsTGgJkSu. |
-| [Perturbed](https://www.dropbox.com/s/a6fje4vc0iowwgr/perturb.zip?dl=0) (CLEF, UOB, USPTO, Staker)   | Downloaded from https://github.com/bayer-science-for-a-better-life/Img2Mol/                                                                                                                |
+| Category                                                                  | Datasets                                                                         | Description                                                                                                                                                                                |
+|---------------------------------------------------------------------------|----------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| [Synthetic](https://www.dropbox.com/s/kihxlv4mx7qplc9/synthetic.zip?dl=0) | <li> Indigo </li> <li> ChemDraw </li>                                            | Images are rendered by Indigo and ChemDraw.                                                                                                                                                |
+| [Realistic](https://www.dropbox.com/s/4v8pktjcdsjsou8/real.zip?dl=0)      | <li> CLEF </li> <li> UOB </li> <li> USPTO </li> <li> Staker </li> <li> ACS </li> | CLEF, UOB, and USPTO are downloaded from https://github.com/Kohulan/OCSR_Review. <br/> Staker is downloaded from https://drive.google.com/drive/folders/16OjPwQ7bQ486VhdX4DWpfYzRsTGgJkSu. |
+| [Perturbed](https://www.dropbox.com/s/a6fje4vc0iowwgr/perturb.zip?dl=0)   | <li> CLEF </li> <li> UOB </li> <li> USPTO </li> <li> Staker </li>                | Downloaded from https://github.com/bayer-science-for-a-better-life/Img2Mol/                                                                                                                |
 
 For training or evaluation, please download the corresponding datasets to `data/`.
 
