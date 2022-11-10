@@ -287,10 +287,10 @@ class GraphPredictor(nn.Module):
 
 def get_edge_prediction(edge_prob):
     if not edge_prob:
-        return []
+        return [], []
     n = len(edge_prob)
     if n == 0:
-        return []
+        return [], []
     for i in range(n):
         for j in range(i + 1, n):
             for k in range(5):
@@ -300,22 +300,9 @@ def get_edge_prediction(edge_prob):
             edge_prob[i][j][6] = (edge_prob[i][j][6] + edge_prob[j][i][5]) / 2
             edge_prob[j][i][5] = edge_prob[i][j][6]
             edge_prob[j][i][6] = edge_prob[i][j][5]
-    return np.argmax(edge_prob, axis=2).tolist()
-
-
-def get_edge_scores(edge_prob):
-    if not edge_prob:
-        return 1., []
-    n = len(edge_prob)
-    if n == 0:
-        return 0, []
-    for i in range(n):
-        for j in range(i + 1, n):
-            for k in range(5):
-                assert edge_prob[j][i][k] == edge_prob[i][j][k]
-            assert edge_prob[j][i][5] == edge_prob[i][j][6] and edge_prob[j][i][6] == edge_prob[i][j][5]
-    max_prob = np.max(edge_prob, axis=2)
-    return np.prod(max_prob).item(), max_prob.tolist()
+    prediction = np.argmax(edge_prob, axis=2).tolist()
+    score = np.max(edge_prob, axis=2).tolist()
+    return prediction, score
 
 
 class Decoder(nn.Module):
@@ -333,6 +320,7 @@ class Decoder(nn.Module):
             else:
                 decoder[format_] = TransformerDecoderAR(args, tokenizer[format_])
         self.decoder = nn.ModuleDict(decoder)
+        self.compute_confidence = args.compute_confidence
 
     def forward(self, encoder_out, hiddens, refs):
         """Training mode. Compute the logits with teacher forcing."""
@@ -357,69 +345,37 @@ class Decoder(nn.Module):
                 results[format_] = self.decoder[format_](encoder_out, labels, label_lengths)
         return results
 
-    def decode(self, encoder_out, hiddens, refs=None, beam_size=1, n_best=1):
+    def decode(self, encoder_out, hiddens=None, refs=None, beam_size=1, n_best=1):
         """Inference mode. Call each decoder's decode method (if required), convert the output format (e.g. token to
-        sequence)."""
+        sequence). Beam search is not supported yet."""
         results = {}
-        predictions = {}
-        beam_predictions = {}
-        if refs is not None:
-            refs = to_device(refs, encoder_out.device)
+        predictions = []
         for format_ in self.formats:
-            if format_ == 'edges':
-                if 'atomtok_coords' in results or 'chartok_coords' in results:
-                    atom_format = 'atomtok_coords' if 'atomtok_coords' in results else 'chartok_coords'
-                    dec_out = results[atom_format][3]  # batch x n_best x len x dim
-                    predictions['edges'] = []
-                    for i in range(len(dec_out)):
-                        hidden = dec_out[i][0].unsqueeze(0)  # 1 * len * dim
-                        indices = torch.LongTensor(predictions[atom_format][i]['indices']).unsqueeze(0)  # 1 * k
-                        pred = self.decoder['edges'](hidden, indices)  # k * k
-                        # predictions['edges'].append(pred['edges'].argmax(1).squeeze(0).tolist())
-                        predictions['edges'].append(
-                            F.softmax(pred['edges'].squeeze(0).permute(1, 2, 0), dim=2).tolist())  # (batch *) k * k * 7
-                        if 'coords' in pred:
-                            predictions[atom_format][i]['coords'] = pred['coords'].squeeze(0).tolist()
-                else:
-                    raise NotImplemented
-                edge_prods = [None for _ in predictions['edges']]
-                edge_token_scores = [None for _ in predictions['edges']]
-                # predictions_edges = [get_edge_prediction(prob) for prob in predictions['edges']]
-                predictions_edges = []
-                for i, prob in enumerate(predictions['edges']):
-                    predictions_edges.append(get_edge_prediction(prob))
-                for idx, prob in enumerate(predictions['edges']):
-                    edge_prods[idx], edge_token_scores[idx] = get_edge_scores(prob)
-                predictions['edges'] = predictions_edges
-                beam_predictions['edges'] = (predictions['edges'], edge_prods, edge_token_scores)
-                # results['edges'] = outputs     # batch x n_best x len x len
-            elif format_ == 'atomtok_coords' or format_ == 'chartok_coords':
-                labels = refs[format_][0] if self.args.predict_coords else None
-                max_len = FORMAT_INFO[format_]['max_len']
-                results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best, max_length=max_len,
-                                                                labels=labels)
-                outputs, scores, token_scores, *_ = results[format_]
-                beam_preds = [[self.tokenizer[format_].sequence_to_smiles(x.tolist()) for x in pred]
-                              for pred in outputs]
-                beam_predictions[format_] = (beam_preds, scores, token_scores)
-                predictions[format_] = [pred[0] for pred in beam_preds]
-            else:
+            if format_ in ['atomtok', 'atomtok_coords', 'chartok_coords']:
                 max_len = FORMAT_INFO[format_]['max_len']
                 results[format_] = self.decoder[format_].decode(encoder_out, beam_size, n_best, max_length=max_len)
                 outputs, scores, token_scores, *_ = results[format_]
-                beam_preds = [[self.tokenizer[format_].predict_caption(x.tolist()) for x in pred] for pred in outputs]
-                beam_predictions[format_] = (beam_preds, scores, token_scores)
-
-                def _pick_valid(preds, format_):
-                    """Pick the top valid prediction from n_best outputs
-                    """
-                    best = preds[0]  # default
-                    # if self.args.check_validity:
-                    #     for i, p in enumerate(preds):
-                    #         if is_valid_mol(p, format_):
-                    #             best = p
-                    #             break
-                    return best
-
-                predictions[format_] = [_pick_valid(pred, format_) for pred in beam_preds]
-        return predictions, beam_predictions
+                beam_preds = [[self.tokenizer[format_].sequence_to_smiles(x.tolist()) for x in pred]
+                              for pred in outputs]
+                predictions = [{format_: pred[0]} for pred in beam_preds]
+                if self.compute_confidence:
+                    for i in range(len(predictions)):
+                        predictions[i][format_]['scores'] = token_scores[i][0]
+            if format_ == 'edges':
+                if 'atomtok_coords' in results:
+                    atom_format = 'atomtok_coords'
+                elif 'chartok_coords' in results:
+                    atom_format = 'chartok_coords'
+                else:
+                    raise NotImplemented
+                dec_out = results[atom_format][3]  # batch x n_best x len x dim
+                for i in range(len(dec_out)):
+                    hidden = dec_out[i][0].unsqueeze(0)  # 1 * len * dim
+                    indices = torch.LongTensor(predictions[i][atom_format]['indices']).unsqueeze(0)  # 1 * k
+                    pred = self.decoder['edges'](hidden, indices)  # k * k
+                    prob = F.softmax(pred['edges'].squeeze(0).permute(1, 2, 0), dim=2).tolist()  # k * k * 7
+                    edge_pred, edge_score = get_edge_prediction(prob)
+                    predictions[i]['edges'] = edge_pred
+                    if self.compute_confidence:
+                        predictions[i]['edges_scores'] = edge_score
+        return predictions

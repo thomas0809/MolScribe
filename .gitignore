@@ -2,6 +2,7 @@
 data/
 output/
 notebook/
+scripts/
 *.log
 **/__pycache__
 *.csv

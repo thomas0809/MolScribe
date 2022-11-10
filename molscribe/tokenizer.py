@@ -1,3 +1,4 @@
+import os
 import json
 import random
 import numpy as np
@@ -97,6 +98,9 @@ class Tokenizer(object):
             caption = self.predict_caption(sequence)
             captions.append(caption)
         return captions
+
+    def sequence_to_smiles(self, sequence):
+        return {'smiles': self.predict_caption(sequence)}
 
 
 class NodeTokenizer(Tokenizer):
@@ -499,3 +503,22 @@ class CharTokenizer(NodeTokenizer):
             results['coords'] = coords
         return results
 
+
+def get_tokenizer(args):
+    tokenizer = {}
+    for format_ in args.formats:
+        if format_ == 'atomtok':
+            if args.vocab_file is None:
+                args.vocab_file = os.path.join(os.path.dirname(__file__), '../vocab/vocab_uspto.json')
+            tokenizer['atomtok'] = Tokenizer(args.vocab_file)
+        elif format_ == "atomtok_coords":
+            if args.vocab_file is None:
+                args.vocab_file = os.path.join(os.path.dirname(__file__), '../vocab/vocab_uspto.json')
+            tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
+                                                        continuous_coords=args.continuous_coords)
+        elif format_ == "chartok_coords":
+            if args.vocab_file is None:
+                args.vocab_file = os.path.join(os.path.dirname(__file__), '../vocab/vocab_chars.json')
+            tokenizer["chartok_coords"] = CharTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
+                                                        continuous_coords=args.continuous_coords)
+    return tokenizer

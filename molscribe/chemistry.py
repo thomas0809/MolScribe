@@ -11,8 +11,7 @@ rdkit.RDLogger.DisableLog('rdApp.*')
 
 from SmilesPE.pretokenizer import atomwise_tokenizer
 
-from .constants import RGROUP_SYMBOLS, PLACEHOLDER_ATOMS, SUBSTITUTIONS, ABBREVIATIONS, VALENCES, FORMULA_REGEX, \
-    FORMULA_REGEX_BACKUP
+from .constants import RGROUP_SYMBOLS, ABBREVIATIONS, VALENCES, FORMULA_REGEX
 
 
 def is_valid_mol(s, format_='atomtok'):
@@ -222,8 +221,8 @@ def _parse_formula(formula: str):
     Example: "C2H4O" -> [('C', 2), ('H', 4), ('O', 1)]
     """
     tokens = FORMULA_REGEX.findall(formula)
-    if ''.join(tokens) != formula:
-        tokens = FORMULA_REGEX_BACKUP.findall(formula)
+    # if ''.join(tokens) != formula:
+    #     tokens = FORMULA_REGEX_BACKUP.findall(formula)
     return _parse_tokens(tokens)
 
 
@@ -343,7 +342,9 @@ def _condensed_formula_list_to_smiles(formula_list, start_bond, end_bond=None, d
             if bonds_left > 1:
                 # "atom" added does not use up remaining bonds of current atom
                 # get smiles of "atom" (which is itself a condensed formula)
-                add_str, _, trials, success = _condensed_formula_list_to_smiles(to_add, 1, 0, direction)
+                add_str, val, trials, success = _condensed_formula_list_to_smiles(to_add, 1, None, direction)
+                if val > 0:
+                    add_str = _get_bond_symb(val + 1) + add_str
                 num_trials += trials
                 if not success:
                     return smiles, bonds_left, num_trials, False
@@ -458,7 +459,7 @@ def _expand_functional_group(mol, mappings, debug=False):
         atoms_to_remove = []
         for i in range(num_atoms):
             atom = mol_w.GetAtomWithIdx(i)
-            if atom.GetSymbol() == '*' and atom.GetIsotope() > 0:
+            if atom.GetSymbol() == '*':
                 symbol = Chem.GetAtomAlias(atom)
                 isotope = atom.GetIsotope()
                 if isotope > 0 and isotope in mappings:
@@ -506,18 +507,6 @@ def _expand_functional_group(mol, mappings, debug=False):
                 for atm in bonding_atoms_w:
                     bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
                     mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
-                # else:
-                #     raise NotImplementedError
-                    # TODO: this part is still problematic because combined mol doesn't have conf
-                    # bonding_atoms_w.sort(key=lambda idx: direction * x_coords[idx])
-                    # bonds_added = 0
-                    # for atm in bonding_atoms_w:
-                    #     bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
-                    #     if bonds_added < start_bond:
-                    #         mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
-                    #     else:
-                    #         mol_w.AddBond(atm, bonding_atoms_r[1], order=BOND_TYPES[bond_order])
-                    #     bonds_added += bond_order
 
                 # reset radical electrons
                 for atm in bonding_atoms_w:
@@ -554,7 +543,6 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
         elif symbol in ABBREVIATIONS:
             atom = Chem.Atom("*")
             Chem.SetAtomAlias(atom, symbol)
-            atom.SetIsotope(50)
         else:
             try:  # try to get SMILES of atom
                 atom = Chem.AtomFromSmiles(symbols[i])
@@ -562,7 +550,9 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
             except:  # otherwise, abbreviation or condensed formula
                 atom = Chem.Atom("*")
                 Chem.SetAtomAlias(atom, symbol)
-                atom.SetIsotope(50)
+
+        if atom.GetSymbol() == '*':
+            atom.SetProp('molFileAlias', symbol)
 
         idx = mol.AddAtom(atom)
         assert idx == i
@@ -616,10 +606,6 @@ def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16)
             results = p.starmap(_convert_graph_to_smiles, zip(coords, symbols, edges), chunksize=128)
         else:
             results = p.starmap(_convert_graph_to_smiles, zip(coords, symbols, edges, images), chunksize=128)
-    # results = []
-    # for i, (coord, symbol, edge) in enumerate(zip(coords, symbols, edges)):
-    #     print(i, end=' ', flush=True)
-    #     results.append(_convert_graph_to_smiles(coord, symbol, edge))
     smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
     return smiles_list, molblock_list, r_success
@@ -661,49 +647,7 @@ def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=F
             results = p.starmap(_postprocess_smiles, zip(smiles, coords, symbols, edges), chunksize=128)
         else:
             results = p.map(_postprocess_smiles, smiles, chunksize=128)
-    # results = []
-    # for i, (s, coord, symbol, edge) in enumerate(zip(smiles, coords, symbols, edges)):
-    #     print(i, end=' ', flush=True)
-    #     results.append(_postprocess_smiles(s, coord, symbol, edge))
     smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
     return smiles_list, molblock_list, r_success
 
-
-if __name__ == "__main__":
-    test_convert_condensed = False
-    if test_convert_condensed:
-        # formulas = ["NHOH", "CONH2", "F3CH2CO", "SO3H", "(CH2)2", "SO2NH2", "HNOC", "CONH", "CH2CO2CH3", "CO2CH3",
-        #             "HOOC", "CO2CH3", "OC2H5", "SO2Me", "PMBN", "CO2iPr", "PPh2", "OMe", "(C2H4O)4CH3", "Si(OEt)3",
-        #             "CO2tBu", "i-Pr2P", "OiPr"]
-        formulas = ["(CH2)6OH"]
-        total_bonds = [1, 1, 1, 1, 2, 1, 2, 2, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 3, 1]
-        # formulas = ["OiPr"]
-        # total_bonds = [1]
-        for formula, tb in zip(formulas, total_bonds):
-            print(formula)
-            # parsed = _parse_formula(formula)
-            # print(parsed)
-            # expanded = _expand_carbon(parsed)
-            # print(expanded)
-            # smiles = _condensed_formula_list_to_smiles(expanded, 1)
-            # print(canonicalize_smiles(smiles[0]), smiles[1], smiles[2], smiles[3])
-            # smiles, bonds_left, last_idx, direction, success = _condensed_formula_to_smiles(formula, tb)
-            smiles, direction = _condensed_formula_to_smiles(formula, 1, 0, 1)
-            print(smiles)
-            # print("BL:", bonds_left, "\tLI:", last_idx, "\tDIR:", direction, "\tS:", success)
-    else:
-        import pandas as pd
-
-        gold_files = ["../data/molbank/Img2Mol/staker.csv"]
-        pred_files = ["../output/uspto/swin_base_aux_200k_new1_char/prediction_staker.csv"]
-        indices = [18500]
-        for gold_file, pred_file, idx in zip(gold_files, pred_files, indices):
-            gold_df = pd.read_csv(gold_file)
-            pred_df = pd.read_csv(pred_file)
-            gold_row = gold_df.iloc[idx]
-            print(gold_row['SMILES'])
-            pred_row = pred_df.iloc[idx]
-            res = _convert_graph_to_smiles(eval(pred_row['node_coords']), eval(pred_row['node_symbols']),
-                                           eval(pred_row['edges']), debug=True)
-            print(res)

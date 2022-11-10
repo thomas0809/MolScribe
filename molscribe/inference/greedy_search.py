@@ -78,9 +78,6 @@ class GreedySearch(DecodeStrategy):
         """
         self.ensure_min_length(log_probs)
         topk_ids, self.topk_scores = self._pick(log_probs)  # log_probs: b x v; topk_ids & self.topk_scores: b x (t=1)
-        # TODO (zhening)
-        #  topk_scores is the log prob for the current step. We should record the scores for all steps, similar to
-        #  alive_seq and alive_hidden
         self.is_finished = topk_ids.eq(self.eos)
         if label is not None:
             label = label.view_as(self.is_finished)
@@ -109,9 +106,6 @@ class GreedySearch(DecodeStrategy):
             b_orig = self.original_batch_idx[b]
             # scores/predictions/attention are lists,
             # (to be compatible with beam-search)
-            # TODO (zhening)
-            #  It seems to be the score of the last step (as we are not using the score for greedy decoding, it doesn't
-            #  matter). Change it to average/sum scores over all steps.
             self.scores[b_orig].append(torch.exp(torch.mean(self.alive_log_token_scores[b])).item())
             self.token_scores[b_orig].append(torch.exp(self.alive_log_token_scores[b]).tolist())
             self.predictions[b_orig].append(self.alive_seq[b, 1:])
@@ -129,8 +123,6 @@ class GreedySearch(DecodeStrategy):
             self.alive_attn = self.alive_attn[is_alive]
         if self.alive_hidden is not None:
             self.alive_hidden = self.alive_hidden[is_alive]
-        # TODO (zhening)
-        #  After implementing alive_scores, update it here
         self.select_indices = is_alive.nonzero().view(-1)
         self.original_batch_idx = self.original_batch_idx[is_alive]
         # select_indices is equal to original_batch_idx for greedy search?

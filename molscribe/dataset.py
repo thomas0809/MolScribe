@@ -344,16 +344,8 @@ class TrainDataset(Dataset):
                     field = FORMAT_INFO[format_]['name']
                     if field in df.columns:
                         self.labels[format_] = df[field].values
-        if args.load_graph_path:
-            self.load_graph = True
-            file = df.attrs['file'].split('/')[-1]
-            file = os.path.join(args.load_graph_path, f'prediction_{file}')
-            self.pred_graph_df = pd.read_csv(file)
-        else:
-            self.load_graph = False
         self.transform = get_transforms(args.input_size,
-                                        augment=(self.labelled and args.augment),
-                                        rotate=args.rotate)
+                                        augment=(self.labelled and args.augment))
         # self.fix_transform = A.Compose([A.Transpose(p=1), A.VerticalFlip(p=1)])
         self.dynamic_indigo = (dynamic_indigo and split == 'train')
         if self.labelled and not dynamic_indigo and args.coords_file is not None:
