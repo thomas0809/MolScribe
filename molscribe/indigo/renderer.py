@@ -19,7 +19,7 @@ import os
 import platform
 from ctypes import CDLL, POINTER, c_char_p, c_int
 
-from indigo import IndigoException
+from . import IndigoException
 
 
 class IndigoRenderer(object):

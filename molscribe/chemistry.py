@@ -3,7 +3,6 @@ import traceback
 import numpy as np
 import multiprocessing
 
-from indigo import Indigo
 import rdkit
 import rdkit.Chem as Chem
 
@@ -79,44 +78,6 @@ def normalize_nodes(nodes, flip_y=True):
     else:
         y = (y - miny) / max(maxy - miny, 1e-6)
     return np.stack([x, y], axis=1)
-
-
-def convert_smiles_to_nodes(smiles):
-    try:
-        indigo = Indigo()
-        mol = indigo.loadMolecule(smiles)
-        coords, symbols = [], []
-        for atom in mol.iterateAtoms():
-            symbols.append(atom.symbol())
-    except:
-        return [], []
-    return coords, symbols
-
-
-def _evaluate_nodes(smiles, coords, symbols):
-    gold_coords, gold_symbols = convert_smiles_to_nodes(smiles)
-    n = len(gold_symbols)
-    m = len(symbols)
-    num_node_correct = (n == m)
-    # coords = np.array(coords)
-    # dist = np.zeros((n, m))
-    # for i in range(n):
-    #     for j in range(m):
-    #         dist[i, j] = np.linalg.norm(gold_coords[i] - coords[j])
-    # score = (dist.min(axis=1).mean() + dist.min(axis=0).mean()) / 2 if n * m > 0 else 0
-    score = 0
-    symbols_em = (sorted(symbols) == sorted(gold_symbols))
-    return score, num_node_correct, symbols_em
-
-
-def evaluate_nodes(smiles_list, node_coords, node_symbols, num_workers=16):
-    with multiprocessing.Pool(num_workers) as p:
-        results = p.starmap(_evaluate_nodes,
-                            zip(smiles_list, node_coords, node_symbols),
-                            chunksize=128)
-    results = np.array(results)
-    score, num_node_acc, symbols_em = results.mean(axis=0)
-    return score, num_node_acc, symbols_em
 
 
 def _verify_chirality(mol, coords, symbols, edges, debug=False):

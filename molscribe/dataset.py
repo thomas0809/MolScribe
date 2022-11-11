@@ -13,8 +13,8 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
-from indigo import Indigo
-from indigo.renderer import IndigoRenderer
+from .indigo import Indigo
+from .indigo.renderer import IndigoRenderer
 
 from .augment import SafeRotate, CropWhite, PadWhite, SaltAndPepperNoise
 from .utils import FORMAT_INFO

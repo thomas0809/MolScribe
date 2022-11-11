@@ -20,8 +20,8 @@ from molscribe.dataset import TrainDataset, AuxTrainDataset, bms_collate
 from molscribe.model import Encoder, Decoder
 from molscribe.loss import Criterion
 from molscribe.utils import seed_torch, save_args, init_summary_writer, LossMeter, AverageMeter, asMinutes, timeSince, \
-    print_rank_0, format_df, FORMAT_INFO
-from molscribe.chemistry import evaluate_nodes, convert_graph_to_smiles, postprocess_smiles
+    print_rank_0, format_df
+from molscribe.chemistry import convert_graph_to_smiles, postprocess_smiles
 from molscribe.evaluate import SmilesEvaluator
 from molscribe.tokenizer import get_tokenizer
 
@@ -516,9 +516,6 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             scores['graph_smiles'] = graph_scores['canon_smiles']
             scores['graph_graph'] = graph_scores['graph']
             scores['graph_chiral'] = graph_scores['chiral']
-        if 'node_coords' in pred_df.columns:
-            _, scores['num_nodes'], scores['symbols'] = \
-                evaluate_nodes(data_df['SMILES'], pred_df['node_coords'], pred_df['node_symbols'])
 
     print('Save predictions...')
     file = data_df.attrs['file'].split('/')[-1]

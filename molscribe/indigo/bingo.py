@@ -16,7 +16,7 @@
 # limitations under the License.
 
 import os
-from indigo import *
+from . import *
 
 
 class BingoException(Exception):

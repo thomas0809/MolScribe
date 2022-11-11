@@ -509,16 +509,16 @@ def get_tokenizer(args):
     for format_ in args.formats:
         if format_ == 'atomtok':
             if args.vocab_file is None:
-                args.vocab_file = os.path.join(os.path.dirname(__file__), '../vocab/vocab_uspto.json')
+                args.vocab_file = os.path.join(os.path.dirname(__file__), 'vocab/vocab_uspto.json')
             tokenizer['atomtok'] = Tokenizer(args.vocab_file)
         elif format_ == "atomtok_coords":
             if args.vocab_file is None:
-                args.vocab_file = os.path.join(os.path.dirname(__file__), '../vocab/vocab_uspto.json')
+                args.vocab_file = os.path.join(os.path.dirname(__file__), 'vocab/vocab_uspto.json')
             tokenizer["atomtok_coords"] = NodeTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
                                                         continuous_coords=args.continuous_coords)
         elif format_ == "chartok_coords":
             if args.vocab_file is None:
-                args.vocab_file = os.path.join(os.path.dirname(__file__), '../vocab/vocab_chars.json')
+                args.vocab_file = os.path.join(os.path.dirname(__file__), 'vocab/vocab_chars.json')
             tokenizer["chartok_coords"] = CharTokenizer(args.coord_bins, args.vocab_file, args.sep_xy,
                                                         continuous_coords=args.continuous_coords)
     return tokenizer

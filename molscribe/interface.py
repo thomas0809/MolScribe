@@ -97,6 +97,10 @@ class MolScribe:
         smiles, molblock, r_success = convert_graph_to_smiles(node_coords, node_symbols, edges, images=input_images)
         return smiles, molblock
 
+    def predict_image(self, image):
+        smiles, molblock = self.predic_images([image])
+        return smiles[0], molblock[0]
+
     def predict_image_files(self, image_files: List):
         input_images = []
         for path in image_files:
