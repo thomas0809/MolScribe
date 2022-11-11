@@ -1,7 +1,8 @@
 torch
-numpy
-pandas
-matplotlib
+numpy==1.19.5
+pandas==1.2.4
+matplotlib==3.5.3
+opencv-python==4.5.3.56
 transformers==4.5.1
 tensorboardX
 SmilesPE==0.0.3

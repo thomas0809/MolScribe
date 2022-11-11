@@ -56,8 +56,9 @@ python predict.py \
     --model_path output/uspto/swin_base_char_aux_200k/swin_base_transformer_last.pth \
     --image_path assets/example.png
 ```
+MolScribe prediction interface is in [`molscribe/interface.py`](molscribe/interface.py).
 See python script [`predict.py`](predict.py) or jupyter notebook [`notebook/predict.ipynb`](notebook/predict.ipynb)
-for more details.
+for example usage.
 
 ### Evaluate MolScribe on benchmarks
 ```
