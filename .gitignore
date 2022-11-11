@@ -9,3 +9,4 @@ scripts/
 tmp/
 **/checkpoints/
 *.png
+**/.DS_Store
