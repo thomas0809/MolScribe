@@ -323,6 +323,7 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
     else:
         train_sampler = RandomSampler(train_dataset)
+    # TODO: may need to set timeout, as sometimes train_loader unexpectedly stucks
     train_loader = DataLoader(train_dataset,
                               batch_size=args.batch_size,
                               sampler=train_sampler,
@@ -446,7 +447,9 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                             collate_fn=bms_collate)
     if encoder is None or decoder is None:
         # valid/test mode
-        encoder, decoder = get_model(args, tokenizer, device, save_path)
+        if args.load_path is None:
+            args.load_path = save_path
+        encoder, decoder = get_model(args, tokenizer, device, args.load_path)
     predictions = valid_fn(dataloader, encoder, decoder, tokenizer, device, args)
 
     # The evaluation and saving prediction is only performed in the master process.

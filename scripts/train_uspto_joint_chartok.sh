@@ -3,13 +3,11 @@
 NUM_NODES=1
 NUM_GPUS_PER_NODE=4
 NODE_RANK=0
+MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 BATCH_SIZE=256
 ACCUM_STEP=1
 
-MASTER_PORT=$(shuf -n 1 -i 10000-65535)
-
-DATESTR=$(date +"%m-%d-%H-%M")
 SAVE_PATH=output/uspto/swin_base_char_aux_200k
 mkdir -p ${SAVE_PATH}
 

@@ -3,12 +3,11 @@
 NUM_NODES=1
 NUM_GPUS_PER_NODE=1
 NODE_RANK=0
+MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
 BATCH_SIZE=64
 
-MASTER_PORT=$(shuf -n 1 -i 10000-65535)
-
-DATESTR=$(date +"%m-%d-%H-%M")
+LOAD_PATH=ckpts/swin_base_char_aux_200k.pth
 SAVE_PATH=output/uspto/swin_base_char_aux_200k/
 mkdir -p ${SAVE_PATH}
 
@@ -25,7 +24,8 @@ torchrun \
     --input_size 384 \
     --encoder swin_base \
     --decoder transformer \
-    --save_path $SAVE_PATH --load_ckpt last \
+    --load_path $LOAD_PATH \
+    --save_path $SAVE_PATH \
     --batch_size $((BATCH_SIZE / NUM_GPUS_PER_NODE)) \
     --use_checkpoint \
     --print_freq 200 \

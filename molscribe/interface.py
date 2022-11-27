@@ -26,12 +26,14 @@ class MolScribe:
         :param device: torch device, defaults to be CPU.
         """
         args = self._get_args()
-        args.formats = ['chartok_coords', 'edges']
+        model_states = torch.load(model_path, map_location=torch.device('cpu'))
+        for key, value in model_states['args'].items():
+            args.__dict__[key] = value
         if device is None:
             device = torch.device('cpu')
         self.device = device
         self.tokenizer = get_tokenizer(args)
-        self.encoder, self.decoder = self._get_model(args, self.tokenizer, self.device, model_path)
+        self.encoder, self.decoder = self._get_model(args, self.tokenizer, self.device, model_states)
         self.transform = get_transforms(args.input_size, augment=False)
 
     def _get_args(self):
@@ -64,12 +66,10 @@ class MolScribe:
         args = parser.parse_args([])
         return args
 
-    def _get_model(self, args, tokenizer, device, load_path):
+    def _get_model(self, args, tokenizer, device, states):
         encoder = Encoder(args, pretrained=False)
         args.encoder_dim = encoder.n_features
         decoder = Decoder(args, tokenizer)
-
-        states = torch.load(load_path, map_location=torch.device('cpu'))
 
         safe_load(encoder, states['encoder'])
         safe_load(decoder, states['decoder'])
