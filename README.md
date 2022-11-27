@@ -102,7 +102,7 @@ The script uses one GPU and batch size of 64 by default. If more GPUs are availa
 bash scripts/train_uspto_joint_chartok.sh
 ```
 The script uses four GPUs and batch size of 256 by default. It takes about one day to train the model with four A100 GPUs.
-We modified the code of [Indigo](https://github.com/epam/Indigo), which is included in `molscribe/indigo/`.
+During training, we use a modified code of [Indigo](https://github.com/epam/Indigo) (included in `molscribe/indigo/`).
 
 
 ## Evaluation Script
