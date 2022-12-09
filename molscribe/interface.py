@@ -81,13 +81,18 @@ class MolScribe:
         decoder.eval()
         return encoder, decoder
 
-    def predic_images(self, input_images: List):
+    def predict_images(self, input_images: List, batch_size=16):
         device = self.device
-        images = [self.transform(image=image, keypoints=[])['image'] for image in input_images]
-        images = torch.stack(images, dim=0).to(device)
-        with torch.no_grad():
-            features, hiddens = self.encoder(images)
-            predictions = self.decoder.decode(features, hiddens)
+        predictions = []
+
+        for idx in range(0, len(input_images), batch_size):
+            batch_images = input_images[idx:idx+batch_size]
+            images = [self.transform(image=image, keypoints=[])['image'] for image in batch_images]
+            images = torch.stack(images, dim=0).to(device)
+            with torch.no_grad():
+                features, hiddens = self.encoder(images)
+                batch_predictions = self.decoder.decode(features, hiddens)
+            predictions += batch_predictions
 
         smiles = [pred['chartok_coords']['smiles'] for pred in predictions]
         node_coords = [pred['chartok_coords']['coords'] for pred in predictions]
@@ -98,7 +103,7 @@ class MolScribe:
         return smiles, molblock
 
     def predict_image(self, image):
-        smiles, molblock = self.predic_images([image])
+        smiles, molblock = self.predict_images([image])
         return smiles[0], molblock[0]
 
     def predict_image_files(self, image_files: List):
@@ -107,7 +112,7 @@ class MolScribe:
             image = cv2.imread(path)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             input_images.append(image)
-        return self.predic_images(input_images)
+        return self.predict_images(input_images)
 
     def predict_image_file(self, image_file: str):
         smiles, molblock = self.predict_image_files([image_file])
