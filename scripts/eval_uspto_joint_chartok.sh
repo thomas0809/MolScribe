@@ -18,7 +18,7 @@ torchrun \
     train.py \
     --data_path data \
     --test_file real/CLEF.csv,real/UOB.csv,real/USPTO.csv,real/staker.csv,real/acs.csv,synthetic/indigo.csv,synthetic/chemdraw.csv \
-    --vocab_file vocab/vocab_chars.json \
+    --vocab_file molscribe/vocab/vocab_chars.json \
     --formats chartok_coords,edges \
     --coord_bins 64 --sep_xy \
     --input_size 384 \
