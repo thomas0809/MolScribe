@@ -21,9 +21,9 @@ from molscribe.model import Encoder, Decoder
 from molscribe.loss import Criterion
 from molscribe.utils import seed_torch, save_args, init_summary_writer, LossMeter, AverageMeter, asMinutes, timeSince, \
     print_rank_0, format_df
-from molscribe.chemistry import convert_graph_to_smiles, postprocess_smiles
-from molscribe.evaluate import SmilesEvaluator
+from molscribe.chemistry import convert_graph_to_smiles, postprocess_smiles, keep_main_molecule
 from molscribe.tokenizer import get_tokenizer
+from evaluate import SmilesEvaluator
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -110,6 +110,7 @@ def get_args():
     parser.add_argument('--save_attns', action='store_true')
     parser.add_argument('--molblock', action='store_true')
     parser.add_argument('--compute_confidence', action='store_true')
+    parser.add_argument('--keep_main_molecule', action='store_true')
     args = parser.parse_args()
     return args
 
@@ -384,13 +385,16 @@ def train_loop(args, train_df, valid_df, aux_df, tokenizer, save_path):
         print_rank_0(f'Epoch {epoch + 1} - Time: {elapsed:.0f}s')
         print_rank_0(f'Epoch {epoch + 1} - Score: ' + json.dumps(scores))
 
-        save_obj = {'encoder': encoder.state_dict(),
-                    'encoder_optimizer': encoder_optimizer.state_dict(),
-                    'encoder_scheduler': encoder_scheduler.state_dict(),
-                    'decoder': decoder.state_dict(),
-                    'decoder_optimizer': decoder_optimizer.state_dict(),
-                    'decoder_scheduler': decoder_scheduler.state_dict(),
-                    'global_step': global_step}
+        save_obj = {
+            'encoder': encoder.state_dict(),
+            'encoder_optimizer': encoder_optimizer.state_dict(),
+            'encoder_scheduler': encoder_scheduler.state_dict(),
+            'decoder': decoder.state_dict(),
+            'decoder_optimizer': decoder_optimizer.state_dict(),
+            'decoder_scheduler': decoder_scheduler.state_dict(),
+            'global_step': global_step,
+            'args': {key: args.__dict__[key] for key in ['formats', 'input_size', 'coord_bins', 'sep_xy']}
+        }
 
         for name in ['post_smiles', 'graph_smiles', 'canon_smiles']:
             if name in scores:
@@ -475,6 +479,7 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
                 pred_df['node_symbols'] = [preds['symbols'] for preds in format_preds]
             if args.compute_confidence:
                 pred_df['SMILES_scores'] = [preds['scores'] for preds in format_preds]
+                pred_df['indices'] = [preds['indices'] for preds in format_preds]
 
     # Construct graph from predicted atoms and bonds (including verify chirality)
     if 'edges' in args.formats:
@@ -499,9 +504,16 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
         print(f'Postprocess SMILES success ratio: {r_success:.4f}')
         pred_df['post_SMILES'] = smiles_list
 
+    # Keep the main molecule
+    if args.keep_main_molecule:
+        if 'graph_SMILES' in pred_df:
+            pred_df['graph_SMILES'] = keep_main_molecule(pred_df['graph_SMILES'])
+        if 'post_SMILES' in pred_df:
+            pred_df['post_SMILES'] = keep_main_molecule(pred_df['post_SMILES'])
+
     # Compute scores
     if 'SMILES' in data_df.columns:
-        evaluator = SmilesEvaluator(data_df['SMILES'])
+        evaluator = SmilesEvaluator(data_df['SMILES'], tanimoto=True)
         print('label:', data_df['SMILES'].values[:2])
         if 'SMILES' in pred_df.columns:
             print('pred:', pred_df['SMILES'].values[:2])
@@ -511,14 +523,13 @@ def inference(args, data_df, tokenizer, encoder=None, decoder=None, save_path=No
             scores['post_smiles'] = post_scores['canon_smiles']
             scores['post_graph'] = post_scores['graph']
             scores['post_chiral'] = post_scores['chiral']
-            scores['post_valid'] = post_scores['pred_valid']
+            scores['post_tanimoto'] = post_scores['tanimoto']
         if 'graph_SMILES' in pred_df.columns:
-            if 'SMILES' not in pred_df.columns:
-                print('graph:', pred_df['graph_SMILES'].values[:2])
             graph_scores = evaluator.evaluate(pred_df['graph_SMILES'])
             scores['graph_smiles'] = graph_scores['canon_smiles']
             scores['graph_graph'] = graph_scores['graph']
             scores['graph_chiral'] = graph_scores['chiral']
+            scores['graph_tanimoto'] = graph_scores['tanimoto']
 
     print('Save predictions...')
     file = data_df.attrs['file'].split('/')[-1]

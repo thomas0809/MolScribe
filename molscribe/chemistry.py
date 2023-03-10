@@ -612,3 +612,22 @@ def postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=F
     r_success = np.mean(success)
     return smiles_list, molblock_list, r_success
 
+
+def _keep_main_molecule(smiles, debug=False):
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        frags = Chem.GetMolFrags(mol, asMols=True)
+        if len(frags) > 1:
+            num_atoms = [m.GetNumAtoms() for m in frags]
+            main_mol = frags[np.argmax(num_atoms)]
+            smiles = Chem.MolToSmiles(main_mol)
+    except Exception as e:
+        if debug:
+            print(traceback.format_exc())
+    return smiles
+
+
+def keep_main_molecule(smiles, num_workers=16):
+    with multiprocessing.Pool(num_workers) as p:
+        results = p.map(_keep_main_molecule, smiles, chunksize=128)
+    return results

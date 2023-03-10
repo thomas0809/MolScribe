@@ -25,10 +25,8 @@ class MolScribe:
         :param model_path: path of the model checkpoint.
         :param device: torch device, defaults to be CPU.
         """
-        args = self._get_args()
         model_states = torch.load(model_path, map_location=torch.device('cpu'))
-        for key, value in model_states['args'].items():
-            args.__dict__[key] = value
+        args = self._get_args(model_states['args'])
         if device is None:
             device = torch.device('cpu')
         self.device = device
@@ -36,7 +34,7 @@ class MolScribe:
         self.encoder, self.decoder = self._get_model(args, self.tokenizer, self.device, model_states)
         self.transform = get_transforms(args.input_size, augment=False)
 
-    def _get_args(self):
+    def _get_args(self, args_states=None):
         parser = argparse.ArgumentParser()
         # Model
         parser.add_argument('--encoder', type=str, default='swin_base')
@@ -64,6 +62,9 @@ class MolScribe:
         parser.add_argument('--sep_xy', action='store_true', default=True)
 
         args = parser.parse_args([])
+        if args_states:
+            for key, value in args_states.items():
+                args.__dict__[key] = value
         return args
 
     def _get_model(self, args, tokenizer, device, states):

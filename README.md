@@ -1,8 +1,7 @@
-# MolScribe: Robust Molecular Structure Recognition with Image-To-Graph Generation
+# MolScribe
 
----
 This is the repository for MolScribe, an image-to-graph model that translates a molecular image to its chemical
-structure. Try our [demo](https://huggingface.co/spaces/yujieq/MolScribe) on HuggingFace first!
+structure. Try our [demo](https://huggingface.co/spaces/yujieq/MolScribe) on HuggingFace!
 
 ![MolScribe](assets/model.png)
 
@@ -77,14 +76,14 @@ Model architecture:
 Download the model checkpoint to reproduce our experiments:
 ```
 mkdir -p ckpts
-wget -P ckpts https://huggingface.co/yujieq/MolScribe/resolve/main/swin_base_char_aux_200k.pth
+wget -P ckpts https://huggingface.co/yujieq/MolScribe/resolve/main/swin_base_char_aux_1m680k.pth
 ```
 
 ## Usage
 
 ### Prediction
 ```
-python predict.py --model_path ckpts/swin_base_char_aux_200k.pth --image_path assets/example.png
+python predict.py --model_path ckpts/swin_base_char_aux_1m680k.pth --image_path assets/example.png
 ```
 MolScribe prediction interface is in [`molscribe/interface.py`](molscribe/interface.py).
 See python script [`predict.py`](predict.py) or jupyter notebook [`notebook/predict.ipynb`](notebook/predict.ipynb)
@@ -92,14 +91,14 @@ for example usage.
 
 ### Evaluate MolScribe
 ```
-bash scripts/eval_uspto_joint_chartok.sh
+bash scripts/eval_uspto_joint_chartok_1m680k.sh
 ```
 The script uses one GPU and batch size of 64 by default. If more GPUs are available, update `NUM_GPUS_PER_NODE` and 
 `BATCH_SIZE` for faster evaluation.
 
 ### Train MolScribe
 ```
-bash scripts/train_uspto_joint_chartok.sh
+bash scripts/train_uspto_joint_chartok_1m680k.sh
 ```
 The script uses four GPUs and batch size of 256 by default. It takes about one day to train the model with four A100 GPUs.
 During training, we use a modified code of [Indigo](https://github.com/epam/Indigo) (included in `molscribe/indigo/`).
@@ -110,7 +109,7 @@ We implement a standalone evaluation script [`evaluate.py`](evaluate.py). Exampl
 ```
 python evaluate.py \
     --gold_file data/real/acs.csv \
-    --pred_file output/uspto/swin_base_char_aux_200k/prediction_acs.csv \
+    --pred_file output/uspto/swin_base_char_aux_1m680k/prediction_acs.csv \
     --pred_field post_SMILES
 ```
 The prediction should be saved in a csv file, with columns `image_id` for the index (must match the gold file),

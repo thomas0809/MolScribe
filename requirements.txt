@@ -1,8 +1,9 @@
 torch
+torchvision
 numpy>=1.19.5
 pandas>=1.2.4
 matplotlib>=3.5.3
-opencv-python>=4.5.3.56
+opencv-python==4.5.5.64
 transformers>=4.5.1
 huggingface-hub>=0.11.0
 tensorboardX
