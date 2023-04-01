@@ -10,6 +10,9 @@ from .chemistry import convert_graph_to_smiles
 from .tokenizer import get_tokenizer
 
 
+BOND_TYPES = ["", "single", "double", "triple", "aromatic", "solid wedge", "dashed wedge"]
+
+
 def safe_load(module, module_states):
     def remove_prefix(state_dict):
         return {k.replace('module.', ''): v for k, v in state_dict.items()}
@@ -82,9 +85,10 @@ class MolScribe:
         decoder.eval()
         return encoder, decoder
 
-    def predict_images(self, input_images: List, batch_size=16):
+    def predict_images(self, input_images: List, compute_confidence=False, get_atoms_bonds=False, batch_size=16):
         device = self.device
         predictions = []
+        self.decoder.compute_confidence = compute_confidence
 
         for idx in range(0, len(input_images), batch_size):
             batch_images = input_images[idx:idx+batch_size]
@@ -100,21 +104,49 @@ class MolScribe:
         node_symbols = [pred['chartok_coords']['symbols'] for pred in predictions]
         edges = [pred['edges'] for pred in predictions]
 
-        smiles, molblock, r_success = convert_graph_to_smiles(node_coords, node_symbols, edges, images=input_images)
-        return smiles, molblock
+        smiles_list, molblock_list, r_success = convert_graph_to_smiles(node_coords, node_symbols, edges, images=input_images)
 
-    def predict_image(self, image):
-        smiles, molblock = self.predict_images([image])
-        return smiles[0], molblock[0]
+        outputs = []
+        for smiles, molblock, symbols, coords, pred in zip(smiles_list, molblock_list, node_symbols, node_coords, predictions):
+            pred_dict = {"smiles": smiles}
+            if compute_confidence:
+                pred_dict["confidence"] = pred["overall_score"]
+            pred_dict["molfile"] = molblock
+            if get_atoms_bonds:
+                # get atoms info
+                atom_list = []
+                for i, (symbol, coord) in enumerate(zip(symbols, coords)):
+                    atom_dict = {"atom_symbol": symbol, "x": coord[0], "y": coord[1]}
+                    if compute_confidence:
+                        atom_dict["confidence"] = pred['chartok_coords']['atom_scores'][i]
+                    atom_list.append(atom_dict)
+                pred_dict["atoms"] = atom_list
+                # get bonds info
+                bond_list = []
+                num_atoms = len(symbols)
+                for i in range(num_atoms-1):
+                    for j in range(i+1, num_atoms):
+                        bond_type_int = pred['edges'][i][j]
+                        if bond_type_int != 0:
+                            bond_type_str = BOND_TYPES[bond_type_int]
+                            bond_dict = {"bond_type": bond_type_str, "endpoint_atoms": (i, j)}
+                            if compute_confidence:
+                                bond_dict["confidence"] = pred["edge_scores"][i][j]
+                            bond_list.append(bond_dict)
+                pred_dict["bonds"] = bond_list
+            outputs.append(pred_dict)
+        return outputs
 
-    def predict_image_files(self, image_files: List):
+    def predict_image(self, image, compute_confidence=False, get_atoms_bonds=False):
+        return self.predict_images([image], compute_confidence=compute_confidence, get_atoms_bonds=get_atoms_bonds)[0]
+
+    def predict_image_files(self, image_files: List, compute_confidence=False, get_atoms_bonds=False):
         input_images = []
         for path in image_files:
             image = cv2.imread(path)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             input_images.append(image)
-        return self.predict_images(input_images)
+        return self.predict_images(input_images, compute_confidence=compute_confidence, get_atoms_bonds=get_atoms_bonds)
 
-    def predict_image_file(self, image_file: str):
-        smiles, molblock = self.predict_image_files([image_file])
-        return smiles[0], molblock[0]
+    def predict_image_file(self, image_file: str, compute_confidence=False, get_atoms_bonds=False):
+        return self.predict_image_files([image_file], compute_confidence=compute_confidence, get_atoms_bonds=get_atoms_bonds)[0]

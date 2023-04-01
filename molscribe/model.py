@@ -360,7 +360,16 @@ class Decoder(nn.Module):
                 predictions = [{format_: pred[0]} for pred in beam_preds]
                 if self.compute_confidence:
                     for i in range(len(predictions)):
-                        predictions[i][format_]['scores'] = token_scores[i][0]
+                        indices = np.array(predictions[i][format_]['indices']) - 3
+                        if format_ == 'chartok_coords':
+                            atom_scores = []
+                            for symbol, index in zip(predictions[i][format_]['symbols'], indices):
+                                atom_score = (np.prod(token_scores[i][0][index-len(symbol)+1:index+1]) ** (1 / len(symbol))).item()
+                                atom_scores.append(atom_score)
+                        else:
+                            atom_scores = np.array(token_scores[i][0])[indices].tolist()
+                        predictions[i][format_]['atom_scores'] = atom_scores
+                        predictions[i][format_]['average_token_score'] = scores[i][0]
             if format_ == 'edges':
                 if 'atomtok_coords' in results:
                     atom_format = 'atomtok_coords'
@@ -377,5 +386,7 @@ class Decoder(nn.Module):
                     edge_pred, edge_score = get_edge_prediction(prob)
                     predictions[i]['edges'] = edge_pred
                     if self.compute_confidence:
-                        predictions[i]['edges_scores'] = edge_score
+                        predictions[i]['edge_scores'] = edge_score
+                        predictions[i]['edge_score_product'] = np.sqrt(np.prod(edge_score)).item()
+                        predictions[i]['overall_score'] = predictions[i][atom_format]['average_token_score'] * predictions[i]['edge_score_product']
         return predictions
