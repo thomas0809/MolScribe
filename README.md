@@ -9,7 +9,7 @@ structure. Try our [demo](https://huggingface.co/spaces/yujieq/MolScribe) on Hug
 ```
 @article{qian2022robust,
   title={Robust Molecular Image Recognition: A Graph Generation Approach},
-  author={Qian, Yujie and Tu, Zhengkai and Guo, Jiang and Coley, Connor W and Barzilay, Regina},
+  author={Qian, Yujie and Tu, Zhengkai and Guo, Jiang and Li, Zhening and Coley, Connor W and Barzilay, Regina},
   journal={arXiv preprint arXiv:2205.14311},
   year={2022}
 }
@@ -33,7 +33,12 @@ from huggingface_hub import hf_hub_download
 ckpt_path = hf_hub_download("yujieq/MolScribe", "swin_base_char_aux_1m.pth")
 
 model = MolScribe(ckpt_path, device=torch.device('cpu'))
-smiles, molblock = model.predict_image_file('assets/example.png')
+output = model.predict_image_file('assets/example.png', compute_confidence=True, get_atoms_bonds=True)
+smiles = output['smiles']
+confidence = output['confidence']
+molfile = output['molfile']
+atoms_info = output['atoms']
+bonds_info = output['bonds']
 ```
 Alternatively, manually download the checkpoint and instantiate MolScribe with the local path. 
 
