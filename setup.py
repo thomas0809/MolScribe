@@ -15,7 +15,7 @@ def get_install_requires():
 requirements = get_install_requires()
 
 setup(name='MolScribe',
-      version='1.0',
+      version='1.1',
       description='MolScribe',
       author='Yujie Qian',
       author_email='yujieq@csail.mit.edu',
