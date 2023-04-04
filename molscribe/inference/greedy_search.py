@@ -99,7 +99,7 @@ class GreedySearch(DecodeStrategy):
 
     def update_finished(self):
         """Finalize scores and predictions."""
-        # is_finished indicates the the decoder finished generating the sequence. Remove it from the batch and update
+        # is_finished indicates the decoder finished generating the sequence. Remove it from the batch and update
         # the results.
         finished_batches = self.is_finished.view(-1).nonzero()
         for b in finished_batches.view(-1):
@@ -108,7 +108,7 @@ class GreedySearch(DecodeStrategy):
             # (to be compatible with beam-search)
             self.scores[b_orig].append(torch.exp(torch.mean(self.alive_log_token_scores[b])).item())
             self.token_scores[b_orig].append(torch.exp(self.alive_log_token_scores[b]).tolist())
-            self.predictions[b_orig].append(self.alive_seq[b, 1:])
+            self.predictions[b_orig].append(self.alive_seq[b, 1:])  # skip <bos>
             self.attention[b_orig].append(
                 self.alive_attn[b, :, :self.memory_length] if self.alive_attn is not None else [])
             self.hidden[b_orig].append(
