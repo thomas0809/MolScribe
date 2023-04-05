@@ -5,7 +5,6 @@ import torch
 import math
 import time
 import datetime
-from tensorboardX import SummaryWriter
 import json
 from json import encoder
 
@@ -41,7 +40,7 @@ def init_logger(log_file='train.log'):
 
 
 def init_summary_writer(save_path):
-    # summary = SummaryWriter(os.path.join(save_path, datetime.now().strftime("%Y%m%d-%H%M%S")))
+    from tensorboardX import SummaryWriter
     summary = SummaryWriter(save_path)
     return summary
 
