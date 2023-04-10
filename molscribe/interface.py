@@ -3,6 +3,9 @@ from typing import List
 
 import cv2
 import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from .dataset import get_transforms
 from .model import Encoder, Decoder
@@ -104,8 +107,8 @@ class MolScribe:
         node_symbols = [pred['chartok_coords']['symbols'] for pred in predictions]
         edges = [pred['edges'] for pred in predictions]
 
-        smiles_list, molblock_list, r_success = convert_graph_to_smiles(node_coords, node_symbols, edges,
-                                                                        images=input_images)
+        smiles_list, molblock_list, r_success = convert_graph_to_smiles(
+            node_coords, node_symbols, edges, images=input_images)
 
         outputs = []
         for smiles, molblock, pred in zip(smiles_list, molblock_list, predictions):
@@ -155,3 +158,59 @@ class MolScribe:
     def predict_image_file(self, image_file: str, return_atoms_bonds=False, return_confidence=False):
         return self.predict_image_files(
             [image_file], return_atoms_bonds=return_atoms_bonds, return_confidence=return_confidence)[0]
+
+    def draw_prediction(self, prediction, image, notebook=False):
+        if "atoms" not in prediction or "bonds" not in prediction:
+            raise ValueError("atoms and bonds information are not provided.")
+        h, w, _ = image.shape
+        fig, ax = plt.subplots(1, 1)
+        ax.axis('off')
+        ax.set_xlim(-0.05 * w, w * 1.05)
+        ax.set_ylim(1.05 * h, -0.05 * h)
+        plt.imshow(image, alpha=0.)
+        x = [a['x'] * w for a in prediction['atoms']]
+        y = [a['y'] * h for a in prediction['atoms']]
+        markersize = min(w, h) / 3
+        plt.scatter(x, y, marker='o', s=markersize, color='lightskyblue', zorder=10)
+        for i, atom in enumerate(prediction['atoms']):
+            symbol = atom['atom_symbol'].lstrip('[').rstrip(']')
+            plt.annotate(symbol, xy=(x[i], y[i]), ha='center', va='center', color='black', zorder=100)
+        for bond in prediction['bonds']:
+            u, v = bond['endpoint_atoms']
+            x1, y1, x2, y2 = x[u], y[u], x[v], y[v]
+            bond_type = bond['bond_type']
+            if bond_type == 'single':
+                color = 'tab:green'
+                ax.plot([x1, x2], [y1, y2], color, linewidth=4)
+            elif bond_type == 'aromatic':
+                color = 'tab:purple'
+                ax.plot([x1, x2], [y1, y2], color, linewidth=4)
+            elif bond_type == 'double':
+                color = 'tab:green'
+                ax.plot([x1, x2], [y1, y2], color=color, linewidth=7)
+                ax.plot([x1, x2], [y1, y2], color='w', linewidth=1.5, zorder=2.1)
+            elif bond_type == 'triple':
+                color = 'tab:green'
+                x1s, x2s = 0.8 * x1 + 0.2 * x2, 0.2 * x1 + 0.8 * x2
+                y1s, y2s = 0.8 * y1 + 0.2 * y2, 0.2 * y1 + 0.8 * y2
+                ax.plot([x1s, x2s], [y1s, y2s], color=color, linewidth=9)
+                ax.plot([x1, x2], [y1, y2], color='w', linewidth=5, zorder=2.05)
+                ax.plot([x1, x2], [y1, y2], color=color, linewidth=2, zorder=2.1)
+            else:
+                length = 10
+                width = 10
+                color = 'tab:green'
+                if bond_type == 'solid wedge':
+                    ax.annotate('', xy=(x1, y1), xytext=(x2, y2),
+                                arrowprops=dict(color=color, width=3, headwidth=width, headlength=length), zorder=2)
+                else:
+                    ax.annotate('', xy=(x2, y2), xytext=(x1, y1),
+                                arrowprops=dict(color=color, width=3, headwidth=width, headlength=length), zorder=2)
+        fig.tight_layout()
+        if not notebook:
+            canvas = FigureCanvasAgg(fig)
+            canvas.draw()
+            buf = canvas.buffer_rgba()
+            result_image = np.asarray(buf)
+            plt.close(fig)
+            return result_image

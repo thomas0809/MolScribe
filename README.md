@@ -19,13 +19,21 @@ If you use MolScribe in your research, please cite our [paper](https://pubs.acs.
 ```
 
 ## Quick Start
-Run the following command to install the package and its dependencies:
+
+### Installation
+Option 1: Install MolScribe with pip
+```
+pip install MolScribe
+```
+
+Option 2: Run the following command to install the package and its dependencies:
 ```
 git clone git@github.com:thomas0809/MolScribe.git
 cd MolScribe
 python setup.py install
 ```
 
+### Example
 Download the MolScribe checkpoint from [HuggingFace Hub](https://huggingface.co/yujieq/MolScribe/tree/main) 
 and predict molecular structures:
 ```python
@@ -50,7 +58,8 @@ The output is a dictionary, with the following format
 }
 ```
 
-Please refer to [`molscribe/interface.py`](molscribe/interface.py) for details and other available APIs.
+Please refer to [`molscribe/interface.py`](molscribe/interface.py) and [`notebook/predict.ipynb`](notebook/predict.ipynb) 
+for details and other available APIs.
 
 For development or reproducing the experiments, please follow the instructions below.
 
