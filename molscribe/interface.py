@@ -163,6 +163,8 @@ class MolScribe:
         if "atoms" not in prediction or "bonds" not in prediction:
             raise ValueError("atoms and bonds information are not provided.")
         h, w, _ = image.shape
+        h, w = np.array([h, w]) * 400 / max(h, w)
+        image = cv2.resize(image, (int(w), int(h)))
         fig, ax = plt.subplots(1, 1)
         ax.axis('off')
         ax.set_xlim(-0.05 * w, w * 1.05)

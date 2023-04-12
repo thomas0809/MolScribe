@@ -26,7 +26,7 @@ Option 1: Install MolScribe with pip
 pip install MolScribe
 ```
 
-Option 2: Run the following command to install the package and its dependencies:
+Option 2: Run the following command to install the package and its dependencies
 ```
 git clone git@github.com:thomas0809/MolScribe.git
 cd MolScribe
@@ -44,7 +44,7 @@ from huggingface_hub import hf_hub_download
 ckpt_path = hf_hub_download('yujieq/MolScribe', 'swin_base_char_aux_1m.pth')
 
 model = MolScribe(ckpt_path, device=torch.device('cpu'))
-output = model.predict_image_file('assets/example.png', compute_confidence=True, get_atoms_bonds=True)
+output = model.predict_image_file('assets/example.png', return_atoms_bonds=True, return_confidence=True)
 ```
 
 The output is a dictionary, with the following format
