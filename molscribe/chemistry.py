@@ -114,7 +114,7 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
             conf.SetAtomPosition(i, (x, 1 - y, 0))
         mol.AddConformer(conf)
 
-        # Magic, infering chirality from coordinates and BondDir. DO NOT CHANGE.
+        # Magic, inferring chirality from coordinates and BondDir. DO NOT CHANGE.
         Chem.SanitizeMol(mol)
         Chem.AssignChiralTypesFromBondDirs(mol)
         Chem.AssignStereochemistry(mol, force=True)
@@ -135,9 +135,9 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
             Chem.AssignChiralTypesFromBondDirs(mol)
             Chem.AssignStereochemistry(mol, force=True)
 
-        # reset chiral tags for nitrogen
+        # reset chiral tags for non-carbon atom
         for atom in mol.GetAtoms():
-            if atom.GetSymbol() == "N":
+            if atom.GetSymbol() != "C":
                 atom.SetChiralTag(Chem.rdchem.ChiralType.CHI_UNSPECIFIED)
         mol = mol.GetMol()
 

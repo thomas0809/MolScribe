@@ -18,6 +18,10 @@ If you use MolScribe in your research, please cite our [paper](https://pubs.acs.
 }
 ```
 
+Please check out our work on reaction diagram parsing: RxnScribe 
+([paper](https://pubs.acs.org/doi/10.1021/acs.jcim.3c00439),
+[code](https://github.com/thomas0809/RxnScribe), [demo](https://huggingface.co/spaces/yujieq/RxnScribe))!
+
 ## Quick Start
 
 ### Installation
