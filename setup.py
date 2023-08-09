@@ -14,7 +14,7 @@ setup(name='MolScribe',
       setup_requires=['numpy'],
       install_requires=[
         "numpy",
-        "torch>=1.11.0,<2.0",
+        "torch>=1.11.0",
         "pandas",
         "matplotlib",
         "opencv-python>=4.5.5.64",
