@@ -108,7 +108,7 @@ class MolScribe:
         edges = [pred['edges'] for pred in predictions]
 
         smiles_list, molblock_list, r_success = convert_graph_to_smiles(
-            node_coords, node_symbols, edges, images=input_images)
+            node_coords, node_symbols, edges, images=input_images, num_workers=0)
 
         outputs = []
         for smiles, molblock, pred in zip(smiles_list, molblock_list, predictions):
