@@ -562,17 +562,16 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
 
 
 def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16):
-
     if images is None:
-        argzips = zip(coords, symbols, edges)
+        args_zip = zip(coords, symbols, edges)
     else:
-        argzips = zip(coords, symbols, edges, images)
+        args_zip = zip(coords, symbols, edges, images)
 
     if num_workers == 0:
-        results = [_convert_graph_to_smiles(*args) for args in argzips]
+        results = [_convert_graph_to_smiles(*args) for args in args_zip]
     else:
         with multiprocessing.Pool(num_workers) as p:
-            results = p.starmap(_convert_graph_to_smiles, argzips, chunksize=128)
+            results = p.starmap(_convert_graph_to_smiles, args_zip, chunksize=128)
 
     smiles_list, molblock_list, success = zip(*results)
     r_success = np.mean(success)
