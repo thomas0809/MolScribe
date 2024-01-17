@@ -25,11 +25,12 @@ def safe_load(module, module_states):
 
 class MolScribe:
 
-    def __init__(self, model_path, device=None):
+    def __init__(self, model_path, device=None, multiprocessing_enabled=False):
         """
         MolScribe Interface
         :param model_path: path of the model checkpoint.
         :param device: torch device, defaults to be CPU.
+        :param multiprocessing_enabled: uses multiprocessing to parallelize parts of the inference when enabled, defaults to False.
         """
         model_states = torch.load(model_path, map_location=torch.device('cpu'))
         args = self._get_args(model_states['args'])
@@ -39,6 +40,7 @@ class MolScribe:
         self.tokenizer = get_tokenizer(args)
         self.encoder, self.decoder = self._get_model(args, self.tokenizer, self.device, model_states)
         self.transform = get_transforms(args.input_size, augment=False)
+        self.num_workers = 16 if multiprocessing_enabled else 0
 
     def _get_args(self, args_states=None):
         parser = argparse.ArgumentParser()
@@ -108,7 +110,7 @@ class MolScribe:
         edges = [pred['edges'] for pred in predictions]
 
         smiles_list, molblock_list, r_success = convert_graph_to_smiles(
-            node_coords, node_symbols, edges, images=input_images, num_workers=0)
+            node_coords, node_symbols, edges, images=input_images, num_workers=self.num_workers)
 
         outputs = []
         for smiles, molblock, pred in zip(smiles_list, molblock_list, predictions):
