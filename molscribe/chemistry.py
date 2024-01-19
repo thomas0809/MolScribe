@@ -2,6 +2,7 @@ import copy
 import traceback
 import numpy as np
 import multiprocessing
+import itertools
 
 import rdkit
 import rdkit.Chem as Chem
@@ -568,7 +569,8 @@ def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16)
         args_zip = zip(coords, symbols, edges, images)
 
     if num_workers == 0:
-        results = [_convert_graph_to_smiles(*args) for args in args_zip]
+        results = itertools.starmap(_convert_graph_to_smiles, args_zip)
+        results = list(results)
     else:
         with multiprocessing.Pool(num_workers) as p:
             results = p.starmap(_convert_graph_to_smiles, args_zip, chunksize=128)
