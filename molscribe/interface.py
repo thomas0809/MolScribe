@@ -25,7 +25,7 @@ def safe_load(module, module_states):
 
 class MolScribe:
 
-    def __init__(self, model_path, device=None, multiprocessing_enabled=False):
+    def __init__(self, model_path, device=None, num_workers=1):
         """
         MolScribe Interface
         :param model_path: path of the model checkpoint.
@@ -40,7 +40,7 @@ class MolScribe:
         self.tokenizer = get_tokenizer(args)
         self.encoder, self.decoder = self._get_model(args, self.tokenizer, self.device, model_states)
         self.transform = get_transforms(args.input_size, augment=False)
-        self.num_workers = 16 if multiprocessing_enabled else 0
+        self.num_workers = num_workers
 
     def _get_args(self, args_states=None):
         parser = argparse.ArgumentParser()
