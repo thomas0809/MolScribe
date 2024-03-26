@@ -568,7 +568,7 @@ def convert_graph_to_smiles(coords, symbols, edges, images=None, num_workers=16)
     else:
         args_zip = zip(coords, symbols, edges, images)
 
-    if num_workers == 0:
+    if num_workers <= 1:
         results = itertools.starmap(_convert_graph_to_smiles, args_zip)
         results = list(results)
     else:
