@@ -198,6 +198,9 @@ def _expand_carbon(elements: list):
     i = 0
     while i < len(elements):
         elt, num = elements[i]
+        # skip unreasonable number of atoms
+        if num > 100000:
+            break
         # expand carbon sequence
         if elt == 'C' and num > 1 and i + 1 < len(elements):
             next_elt, next_num = elements[i + 1]
