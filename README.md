@@ -18,9 +18,11 @@ If you use MolScribe in your research, please cite our [paper](https://pubs.acs.
 }
 ```
 
-Please check out our work on reaction diagram parsing: RxnScribe 
-([paper](https://pubs.acs.org/doi/10.1021/acs.jcim.3c00439),
-[code](https://github.com/thomas0809/RxnScribe), [demo](https://huggingface.co/spaces/yujieq/RxnScribe))!
+Please check out our subsequent works on parsing chemical diagrams:
+- [RxnScribe](https://github.com/thomas0809/RxnScribe) (reaction diagram parsing):
+[paper](https://pubs.acs.org/doi/10.1021/acs.jcim.3c00439),
+[code](https://github.com/thomas0809/RxnScribe), [demo](https://huggingface.co/spaces/yujieq/RxnScribe)
+- [OpenChemIE](https://github.com/CrystalEye42/OpenChemIE) (information extraction toolkit for chemistry literature): [paper](https://pubs.acs.org/doi/10.1021/acs.jcim.4c00572), [code](https://github.com/CrystalEye42/OpenChemIE), [demo](https://mit.openchemie.info)
 
 ## Quick Start
 
