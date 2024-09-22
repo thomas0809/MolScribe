@@ -84,8 +84,8 @@ Training data:
 
 | Datasets                                                                            | Description                                                                                                                                   |
 |-------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
-| USPTO <br> [Download](https://www.dropbox.com/s/3podz99nuwagudy/uspto_mol.zip?dl=0) | Downloaded from [USPTO, Grant Red Book](https://bulkdata.uspto.gov/).                                                                         |
-| PubChem <br> [Download](https://www.dropbox.com/s/mxvm5i8139y5cvk/pubchem.zip?dl=0) | Molecules are downloaded from [PubChem](https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/), and images are dynamically rendered during training. |
+| USPTO <br> [Download](https://huggingface.co/yujieq/MolScribe/blob/main/uspto_mol.zip) | Downloaded from [USPTO, Grant Red Book](https://bulkdata.uspto.gov/).                                                                         |
+| PubChem <br> [Download](https://huggingface.co/yujieq/MolScribe/blob/main/pubchem.zip) | Molecules are downloaded from [PubChem](https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/), and images are dynamically rendered during training. |
 
 Benchmarks:
 
