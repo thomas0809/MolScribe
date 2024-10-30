@@ -114,7 +114,7 @@ class MolScribe:
         if len(input_images) <= 100:
             self.num_workers = 1
         else:
-            self.num_workers = os.cpu_count() - 2  # subtract 2 for main and other processes
+            self.num_workers = os.cpu_count()
 
         smiles_list, molblock_list, r_success = convert_graph_to_smiles(
             node_coords, node_symbols, edges, images=input_images, num_workers=self.num_workers)
