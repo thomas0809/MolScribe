@@ -20,7 +20,7 @@ setup(name='MolScribe',
         "opencv-python>=4.5.5.64",
         "SmilesPE==0.0.3",
         "OpenNMT-py==2.2.0",
-        "rdkit-pypi>=2021.03.2",
+        "rdkit>=2022.3.3",
         "albumentations==1.1.0",
         "timm==0.4.12"
       ])
