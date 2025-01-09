@@ -13,7 +13,7 @@ setup(name='MolScribe',
       python_requires='>=3.7',
       setup_requires=['numpy'],
       install_requires=[
-        "numpy",
+        "numpy>=1.19.5,<2.0",
         "torch>=1.11.0",
         "pandas",
         "matplotlib",

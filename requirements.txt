@@ -1,6 +1,6 @@
 torch
 torchvision
-numpy>=1.19.5
+numpy>=1.19.5,<2.0
 pandas>=1.2.4
 matplotlib>=3.5.3
 opencv-python==4.5.5.64
