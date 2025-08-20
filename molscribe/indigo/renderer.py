@@ -33,7 +33,7 @@ class IndigoRenderer(object):
         ):
             self._lib = CDLL(indigo.dllpath + "/libindigo-renderer.so")
         elif os.name == "nt" or platform.system().startswith("CYGWIN"):
-            self._lib = CDLL(indigo.dllpath + "\indigo-renderer.dll")
+            self._lib = CDLL(indigo.dllpath + "/indigo-renderer.dll")
         elif platform.mac_ver()[0]:
             self._lib = CDLL(indigo.dllpath + "/libindigo-renderer.dylib")
         else:
