@@ -2,7 +2,7 @@ from distutils.core import setup
 from pathlib import Path
 
 setup(name='MolScribe',
-      version='1.1.1',
+      version='1.1.2',
       description='MolScribe',
       author='Yujie Qian',
       author_email='yujieq@csail.mit.edu',
