@@ -8,7 +8,7 @@ huggingface-hub>=0.11.0
 tensorboardX
 SmilesPE==0.0.3
 OpenNMT-py==2.2.0
-rdkit>=2024.3.5
+rdkit~=2025.3.6
 albumentations==1.1.0
 timm>=0.4.12,<=0.5.4
 # Only this version of transformers are compatible with timm

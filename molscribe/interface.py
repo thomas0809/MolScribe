@@ -44,7 +44,7 @@ class MolScribe:
         self.num_workers = num_workers
         # MPS-specific optimizations
         self.is_mps = str(device).startswith('mps')
-        self.optimal_batch_size = 32 if self.is_mps else 16
+        self.optimal_batch_size = 32 if self.is_mps else 4
 
     def _get_args(self, args_states=None):
         parser = argparse.ArgumentParser()

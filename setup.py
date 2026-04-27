@@ -6,7 +6,7 @@ def read_requirements():
         return fh.read().splitlines()
 
 setup(name='MolScribe',
-      version='1.2.0',
+      version='1.2.1',
       description='MolScribe',
       author='Yujie Qian',
       author_email='yujieq@csail.mit.edu',
