@@ -4,10 +4,11 @@ import numpy as np
 import multiprocessing
 import itertools
 
-import rdkit
+import rdkit.RDLogger as RDLogger
 import rdkit.Chem as Chem
+import rdkit.Chem.AllChem as AllChem
 
-rdkit.RDLogger.DisableLog('rdApp.*')
+RDLogger.DisableLog('rdApp.*')
 
 from SmilesPE.pretokenizer import atomwise_tokenizer
 
@@ -366,7 +367,11 @@ def get_smiles_from_symbol(symbol, mol, atom, bonds):
 
     total_bonds = int(sum([bond.GetBondTypeAsDouble() for bond in bonds]))
     formula_list = _expand_carbon(_parse_formula(symbol))
-    smiles, bonds_left, num_trails, success = _condensed_formula_list_to_smiles(formula_list, total_bonds, None)
+    # smiles, bonds_left, num_trails, success = _condensed_formula_list_to_smiles(formula_list, total_bonds, None)
+    if len(bonds) != 2:
+        smiles, bonds_left, num_trails, success = _condensed_formula_list_to_smiles(formula_list, total_bonds, None)
+    else:
+        smiles, bonds_left, num_trails, success = _condensed_formula_list_to_smiles(formula_list, 1, None)
     if success:
         return smiles
     return None
@@ -448,39 +453,61 @@ def _expand_functional_group(mol, mappings, debug=False):
                     atom.SetIsotope(0)
                     continue
 
-                # remove bonds connected to abbreviation/condensed formula
-                adjacent_indices = [bond.GetOtherAtomIdx(i) for bond in bonds]
-                for adjacent_idx in adjacent_indices:
-                    mol_w.RemoveBond(i, adjacent_idx)
+                if "(" in symbol and len(bonds) == 2:
+                    # Get connection information for the current atom
+                    connected_info = [(neighbor.GetIdx(), mol_w.GetBondBetweenAtoms(i, neighbor.GetIdx()).GetBondType())
+                                      for neighbor in atom.GetNeighbors()]
 
-                adjacent_atoms = [mol_w.GetAtomWithIdx(adjacent_idx) for adjacent_idx in adjacent_indices]
-                for adjacent_atom, bond in zip(adjacent_atoms, bonds):
-                    adjacent_atom.SetNumRadicalElectrons(int(bond.GetBondTypeAsDouble()))
+                    # Create a new molecule by combining the current molecule with the expanded fragment
+                    combined = Chem.RWMol(AllChem.CombineMols(mol_w, mol_r))
 
-                # get indices of atoms of main body that connect to substituent
-                bonding_atoms_w = adjacent_indices
-                # assume indices are concated after combine mol_w and mol_r
-                bonding_atoms_r = [mol_w.GetNumAtoms()]
-                for atm in mol_r.GetAtoms():
-                    if atm.GetNumRadicalElectrons() and atm.GetIdx() > 0:
-                        bonding_atoms_r.append(mol_w.GetNumAtoms() + atm.GetIdx())
+                    # Connect the first atom of the expanded fragment to the first neighbor
+                    combined.AddBond(connected_info[0][0], mol_w.GetNumAtoms(), connected_info[0][1])
 
-                # combine main body and substituent into a single molecule object
-                combo = Chem.CombineMols(mol_w, mol_r)
+                    # Connect the last atom of the expanded fragment to the second neighbor
+                    combined.AddBond(connected_info[1][0], mol_w.GetNumAtoms() + mol_r.GetNumAtoms() - 1,
+                                     connected_info[1][1])
 
-                # connect substituent to main body with bonds
-                mol_w = Chem.RWMol(combo)
-                # if len(bonding_atoms_r) == 1:  # substituent uses one atom to bond to main body
-                for atm in bonding_atoms_w:
-                    bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
-                    mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
+                    # Update the working molecule
+                    mol_w = combined
 
-                # reset radical electrons
-                for atm in bonding_atoms_w:
-                    mol_w.GetAtomWithIdx(atm).SetNumRadicalElectrons(0)
-                for atm in bonding_atoms_r:
-                    mol_w.GetAtomWithIdx(atm).SetNumRadicalElectrons(0)
-                atoms_to_remove.append(i)
+                    # Mark the original atom for removal
+                    atoms_to_remove.append(i)
+
+                else:
+                    # remove bonds connected to abbreviation/condensed formula
+                    adjacent_indices = [bond.GetOtherAtomIdx(i) for bond in bonds]
+                    for adjacent_idx in adjacent_indices:
+                        mol_w.RemoveBond(i, adjacent_idx)
+
+                    adjacent_atoms = [mol_w.GetAtomWithIdx(adjacent_idx) for adjacent_idx in adjacent_indices]
+                    for adjacent_atom, bond in zip(adjacent_atoms, bonds):
+                        adjacent_atom.SetNumRadicalElectrons(int(bond.GetBondTypeAsDouble()))
+
+                    # get indices of atoms of main body that connect to substituent
+                    bonding_atoms_w = adjacent_indices
+                    # assume indices are concated after combine mol_w and mol_r
+                    bonding_atoms_r = [mol_w.GetNumAtoms()]
+                    for atm in mol_r.GetAtoms():
+                        if atm.GetNumRadicalElectrons() and atm.GetIdx() > 0:
+                            bonding_atoms_r.append(mol_w.GetNumAtoms() + atm.GetIdx())
+
+                    # combine main body and substituent into a single molecule object
+                    combo = Chem.CombineMols(mol_w, mol_r)
+
+                    # connect substituent to main body with bonds
+                    mol_w = Chem.RWMol(combo)
+                    # if len(bonding_atoms_r) == 1:  # substituent uses one atom to bond to main body
+                    for atm in bonding_atoms_w:
+                        bond_order = mol_w.GetAtomWithIdx(atm).GetNumRadicalElectrons()
+                        mol_w.AddBond(atm, bonding_atoms_r[0], order=BOND_TYPES[bond_order])
+
+                    # reset radical electrons
+                    for atm in bonding_atoms_w:
+                        mol_w.GetAtomWithIdx(atm).SetNumRadicalElectrons(0)
+                    for atm in bonding_atoms_r:
+                        mol_w.GetAtomWithIdx(atm).SetNumRadicalElectrons(0)
+                    atoms_to_remove.append(i)
 
         # Remove atom in the end, otherwise the id will change
         # Reverse the order and remove atoms with larger id first
@@ -551,10 +578,12 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
             ratio = width / height
             coords = [[x * ratio * 10, y * 10] for x, y in coords]
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
-        # molblock is obtained before expanding func groups, otherwise the expanded group won't have coordinates.
-        # TODO: make sure molblock has the abbreviation information
-        pred_molblock = Chem.MolToMolBlock(mol)
-        pred_smiles, mol = _expand_functional_group(mol, {}, debug)
+
+        # First expand functional groups
+        pred_smiles, expanded_mol = _expand_functional_group(mol, {}, debug)
+
+        # Generate molblock from the expanded molecule
+        pred_molblock = Chem.MolToMolBlock(expanded_mol)
         success = True
     except Exception as e:
         if debug:

@@ -10,3 +10,4 @@ tmp/
 **/checkpoints/
 *.png
 **/.DS_Store
+*.egg-info

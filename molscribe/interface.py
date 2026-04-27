@@ -1,4 +1,5 @@
 import argparse
+import os
 from typing import List
 
 import cv2
@@ -30,7 +31,7 @@ class MolScribe:
         MolScribe Interface
         :param model_path: path of the model checkpoint.
         :param device: torch device, defaults to be CPU.
-        :param multiprocessing_enabled: uses multiprocessing to parallelize parts of the inference when enabled, defaults to False.
+        :param num_workers: number of workers for parallel processing, defaults to 1.
         """
         model_states = torch.load(model_path, map_location=torch.device('cpu'))
         args = self._get_args(model_states['args'])
@@ -41,6 +42,9 @@ class MolScribe:
         self.encoder, self.decoder = self._get_model(args, self.tokenizer, self.device, model_states)
         self.transform = get_transforms(args.input_size, augment=False)
         self.num_workers = num_workers
+        # MPS-specific optimizations
+        self.is_mps = str(device).startswith('mps')
+        self.optimal_batch_size = 32 if self.is_mps else 4
 
     def _get_args(self, args_states=None):
         parser = argparse.ArgumentParser()
@@ -90,7 +94,13 @@ class MolScribe:
         decoder.eval()
         return encoder, decoder
 
-    def predict_images(self, input_images: List, return_atoms_bonds=False, return_confidence=False, batch_size=16):
+    def predict_images(self, input_images: List, return_atoms_bonds=False, return_confidence=False, batch_size=None):
+        """
+         Optimized version of predict_images with better MPS performance
+         """
+        if batch_size is None:
+            batch_size = self.optimal_batch_size
+
         device = self.device
         predictions = []
         self.decoder.compute_confidence = return_confidence
@@ -104,7 +114,9 @@ class MolScribe:
                 batch_predictions = self.decoder.decode(features, hiddens)
             predictions += batch_predictions
 
-        smiles = [pred['chartok_coords']['smiles'] for pred in predictions]
+        return self.convert_graph_to_output(predictions, input_images, return_confidence, return_atoms_bonds)
+
+    def convert_graph_to_output(self, predictions, input_images, return_confidence=False, return_atoms_bonds=False):
         node_coords = [pred['chartok_coords']['coords'] for pred in predictions]
         node_symbols = [pred['chartok_coords']['symbols'] for pred in predictions]
         edges = [pred['edges'] for pred in predictions]
