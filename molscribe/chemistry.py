@@ -450,12 +450,14 @@ def _expand_functional_group(mol, mappings, debug=False):
 
                 # remove bonds connected to abbreviation/condensed formula
                 adjacent_indices = [bond.GetOtherAtomIdx(i) for bond in bonds]
+                # read bond orders before removing the bonds; a removed Bond no longer reports its order
+                bond_orders = [int(bond.GetBondTypeAsDouble()) for bond in bonds]
                 for adjacent_idx in adjacent_indices:
                     mol_w.RemoveBond(i, adjacent_idx)
 
                 adjacent_atoms = [mol_w.GetAtomWithIdx(adjacent_idx) for adjacent_idx in adjacent_indices]
-                for adjacent_atom, bond in zip(adjacent_atoms, bonds):
-                    adjacent_atom.SetNumRadicalElectrons(int(bond.GetBondTypeAsDouble()))
+                for adjacent_atom, order in zip(adjacent_atoms, bond_orders):
+                    adjacent_atom.SetNumRadicalElectrons(order)
 
                 # get indices of atoms of main body that connect to substituent
                 bonding_atoms_w = adjacent_indices
